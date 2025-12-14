@@ -246,6 +246,32 @@ Using Codex...
 ✓ Commit created successfully!
 ```
 
+## Claude Code との連携
+
+Claude Code の Hooks 機能を使用して、セッション終了時に自動でコミットメッセージを生成できます。
+
+`~/.claude/settings.json` に以下を追加：
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git-sc --all --yes"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+これにより、Claude Code のセッション終了時に変更があれば自動的にコミットされます。変更がない場合は正常終了します。
+
 ## ライセンス
 
 MIT

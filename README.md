@@ -246,6 +246,32 @@ Using Codex...
 ✓ Commit created successfully!
 ```
 
+## Integration with Claude Code
+
+You can use Claude Code's Hooks feature to automatically generate commit messages when a session ends.
+
+Add the following to `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git-sc --all --yes"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+This will automatically commit changes when a Claude Code session ends. If there are no changes, it exits gracefully.
+
 ## License
 
 MIT
