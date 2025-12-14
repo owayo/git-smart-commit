@@ -165,7 +165,7 @@ fi
 # Generate commit message for staged changes
 git-sc
 
-# Stage all changes and generate commit message
+# Stage all changes (including unstaged) and generate commit message
 git-sc -a
 
 # Generate message without confirmation prompt
@@ -173,9 +173,6 @@ git-sc -y
 
 # Preview message without committing (dry run)
 git-sc -n
-
-# Use unstaged changes if no staged changes exist
-git-sc -u
 
 # Regenerate message for the last commit (amend)
 git-sc --amend
@@ -195,8 +192,7 @@ git-sc --amend -y      # Amend last commit without confirmation
 |--------|-------|-------------|
 | `--yes` | `-y` | Skip confirmation prompt and commit directly |
 | `--dry-run` | `-n` | Show generated message without actually committing |
-| `--all` | `-a` | Stage all changes before generating commit message |
-| `--unstaged` | `-u` | Include unstaged changes if no staged changes exist |
+| `--all` | `-a` | Stage all changes (including unstaged) and commit |
 | `--amend` | | Regenerate message for the last commit |
 | `--lang` | `-l` | Override language setting from config |
 | `--help` | `-h` | Print help information |
