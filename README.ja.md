@@ -95,7 +95,7 @@ claude = "haiku"
 # プレフィックススクリプト設定（オプション）
 # リモートURLに基づいて外部スクリプトを実行し、コミットメッセージのプレフィックスを生成
 [[prefix_scripts]]
-url_pattern = "git@gitlab.example.com:"
+url_pattern = "https://gitlab.example.com/"
 script = "/path/to/prefix-generate.py"
 
 # プレフィックスルール設定（オプション）

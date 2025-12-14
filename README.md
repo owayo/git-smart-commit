@@ -95,7 +95,7 @@ claude = "haiku"
 # Prefix script configuration (optional)
 # Execute external scripts to generate commit message prefix based on remote URL
 [[prefix_scripts]]
-url_pattern = "git@gitlab.example.com:"
+url_pattern = "https://gitlab.example.com/"
 script = "/path/to/prefix-generate.py"
 
 # Prefix rules configuration (optional)
