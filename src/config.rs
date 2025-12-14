@@ -181,7 +181,7 @@ providers = ["claude"]
 language = "Japanese"
 
 [[prefix_scripts]]
-url_pattern = "https://github.com/myorg/"
+url_pattern = "^https://github\\.com/myorg/"
 script = "/path/to/script.sh"
 "#;
 
@@ -190,7 +190,7 @@ script = "/path/to/script.sh"
         assert_eq!(config.prefix_scripts.len(), 1);
         assert_eq!(
             config.prefix_scripts[0].url_pattern,
-            "https://github.com/myorg/"
+            "^https://github\\.com/myorg/"
         );
         assert_eq!(config.prefix_scripts[0].script, "/path/to/script.sh");
     }
@@ -202,23 +202,20 @@ providers = ["gemini"]
 language = "Japanese"
 
 [[prefix_rules]]
-url_pattern = "https://github.com/myorg/"
+url_pattern = "github\\.com[:/]myorg/"
 prefix_type = "conventional"
 
 [[prefix_rules]]
-url_pattern = "https://gitlab.com/"
+url_pattern = "^https://gitlab\\.com/"
 prefix_type = "bracket"
 "#;
 
         let config = Config::from_str(toml).unwrap();
 
         assert_eq!(config.prefix_rules.len(), 2);
-        assert_eq!(
-            config.prefix_rules[0].url_pattern,
-            "https://github.com/myorg/"
-        );
+        assert_eq!(config.prefix_rules[0].url_pattern, "github\\.com[:/]myorg/");
         assert_eq!(config.prefix_rules[0].prefix_type, "conventional");
-        assert_eq!(config.prefix_rules[1].url_pattern, "https://gitlab.com/");
+        assert_eq!(config.prefix_rules[1].url_pattern, "^https://gitlab\\.com/");
         assert_eq!(config.prefix_rules[1].prefix_type, "bracket");
     }
 
@@ -236,7 +233,7 @@ providers = ["gemini"]
 language = "Japanese"
 
 [[prefix_rules]]
-url_pattern = "https://example.com/"
+url_pattern = "^https://example\\.com/"
 prefix_type = "{}"
 "#,
             prefix_type
@@ -258,11 +255,11 @@ codex = "gpt-4"
 claude = "opus"
 
 [[prefix_scripts]]
-url_pattern = "git@gitlab.example.com"
+url_pattern = "^git@gitlab\\.example\\.com:"
 script = "/opt/scripts/prefix.py"
 
 [[prefix_rules]]
-url_pattern = "https://github.com/myorg/"
+url_pattern = "github\\.com[:/]myorg/"
 prefix_type = "conventional"
 "#;
 
