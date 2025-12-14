@@ -95,14 +95,14 @@ claude = "haiku"
 # プレフィックススクリプト設定（オプション）
 # リモートURLに基づいて外部スクリプトを実行し、コミットメッセージのプレフィックスを生成
 [[prefix_scripts]]
-host_pattern = "gitlab.example.com"
+url_pattern = "git@gitlab.example.com:"
 script = "/path/to/prefix-generate.py"
 
 # プレフィックスルール設定（オプション）
 # リモートURLに基づいてプレフィックス形式を指定
 [[prefix_rules]]
 url_pattern = "https://github.com/myorg/"
-prefix_type = "conventional"  # conventional, none, またはカスタム形式
+prefix_type = "conventional"  # conventional, bracket, colon, emoji, plain, none, またはカスタム形式
 ```
 
 ### 設定オプション
@@ -119,7 +119,7 @@ prefix_type = "conventional"  # conventional, none, またはカスタム形式
 
 ### プレフィックス判定の優先順位
 
-1. **prefix_scripts**（最優先）: `host_pattern` にマッチすればスクリプトを実行
+1. **prefix_scripts**（最優先）: `url_pattern` に前方一致すればスクリプトを実行
 2. **prefix_rules**: `url_pattern` に前方一致すれば指定された `prefix_type` を使用
 3. **Auto**（デフォルト）: 過去5件のコミットから形式を自動判定
 
@@ -129,13 +129,17 @@ URLベースでプレフィックス形式を指定できます。
 
 | prefix_type | 動作 |
 |-------------|------|
-| `conventional` | Conventional Commits形式（feat:, fix:, etc.） |
+| `conventional` | Conventional Commits形式（feat:, fix:, docs:, etc.） |
+| `bracket` | ブラケット形式（[Add], [Fix], [Update], etc.） |
+| `colon` | コロン形式（Add:, Fix:, Update:, etc.） |
+| `emoji` | 絵文字形式（✨, 🐛, 📝, etc.） |
+| `plain` | プレフィックスなし（本文のみ） |
 | `none` | プレフィックスなし（本文のみ） |
 | その他 | カスタム形式として指定 |
 
 ### プレフィックススクリプト
 
-リモートURLに基づいてコミットメッセージのプレフィックスを生成する外部スクリプトを設定できます。リモートURLに指定した `host_pattern` が含まれている場合、スクリプトがリモートURLとブランチ名を引数として実行されます。
+リモートURLに基づいてコミットメッセージのプレフィックスを生成する外部スクリプトを設定できます。リモートURLが指定した `url_pattern` で始まる場合、スクリプトがリモートURLとブランチ名を引数として実行されます。
 
 **スクリプトの終了コードによる動作：**
 

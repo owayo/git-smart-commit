@@ -115,7 +115,16 @@ impl AiService {
             Some("conventional") => {
                 "Use Conventional Commits format (e.g., feat:, fix:, docs:, refactor:, test:, chore:).".to_string()
             }
-            Some("none") => {
+            Some("bracket") => {
+                "Use bracket prefix format (e.g., [Add], [Fix], [Update], [Remove], [Refactor]).".to_string()
+            }
+            Some("colon") => {
+                "Use colon prefix format (e.g., Add:, Fix:, Update:, Remove:, Refactor:).".to_string()
+            }
+            Some("emoji") => {
+                "Use emoji prefix format (e.g., ✨ for new feature, 🐛 for bug fix, 📝 for docs, ♻️ for refactor, 🔧 for config).".to_string()
+            }
+            Some("plain") | Some("none") => {
                 "Do NOT use any prefix. Write only the commit message without type prefix.".to_string()
             }
             Some(custom) => {
@@ -293,5 +302,199 @@ Changes:
 impl Default for AiService {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+    use rstest::rstest;
+
+    #[test]
+    fn test_ai_provider_name() {
+        assert_eq!(AiProvider::Gemini.name(), "Gemini");
+        assert_eq!(AiProvider::Codex.name(), "Codex");
+        assert_eq!(AiProvider::Claude.name(), "Claude");
+    }
+
+    #[test]
+    fn test_ai_provider_command() {
+        assert_eq!(AiProvider::Gemini.command(), "gemini");
+        assert_eq!(AiProvider::Codex.command(), "codex");
+        assert_eq!(AiProvider::Claude.command(), "claude");
+    }
+
+    #[rstest]
+    #[case("gemini", Some(AiProvider::Gemini))]
+    #[case("GEMINI", Some(AiProvider::Gemini))]
+    #[case("Gemini", Some(AiProvider::Gemini))]
+    #[case("codex", Some(AiProvider::Codex))]
+    #[case("claude", Some(AiProvider::Claude))]
+    #[case("unknown", None)]
+    #[case("", None)]
+    fn test_ai_provider_from_str(#[case] input: &str, #[case] expected: Option<AiProvider>) {
+        let result = AiProvider::from_str(input);
+        match (result, expected) {
+            (Some(r), Some(e)) => assert_eq!(r.name(), e.name()),
+            (None, None) => {}
+            _ => panic!("Mismatch for input: {}", input),
+        }
+    }
+
+    #[test]
+    fn test_ai_service_new() {
+        let service = AiService::new();
+        assert_eq!(service.language, "Japanese");
+        assert_eq!(service.providers.len(), 3);
+    }
+
+    #[test]
+    fn test_ai_service_set_language() {
+        let mut service = AiService::new();
+        service.set_language("English".to_string());
+        assert_eq!(service.language, "English");
+    }
+
+    #[rstest]
+    #[case(Some("conventional"), "Use Conventional Commits format")]
+    #[case(Some("bracket"), "Use bracket prefix format")]
+    #[case(Some("colon"), "Use colon prefix format")]
+    #[case(Some("emoji"), "Use emoji prefix format")]
+    #[case(Some("plain"), "Do NOT use any prefix")]
+    #[case(Some("none"), "Do NOT use any prefix")]
+    fn test_build_prompt_prefix_types(#[case] prefix_type: Option<&str>, #[case] expected: &str) {
+        let diff = "test diff";
+        let recent_commits: Vec<String> = vec![];
+        let prompt = AiService::build_prompt(diff, &recent_commits, "Japanese", prefix_type);
+        assert!(
+            prompt.contains(expected),
+            "Prompt should contain '{}' for prefix_type {:?}",
+            expected,
+            prefix_type
+        );
+    }
+
+    #[test]
+    fn test_build_prompt_custom_prefix() {
+        let diff = "test diff";
+        let recent_commits: Vec<String> = vec![];
+        let prompt = AiService::build_prompt(diff, &recent_commits, "Japanese", Some("JIRA-123: "));
+        assert!(prompt.contains("Use the following prefix format: JIRA-123:"));
+    }
+
+    #[test]
+    fn test_build_prompt_auto_mode_empty_commits() {
+        let diff = "test diff";
+        let recent_commits: Vec<String> = vec![];
+        let prompt = AiService::build_prompt(diff, &recent_commits, "Japanese", None);
+        assert!(prompt.contains("No recent commits found"));
+        assert!(prompt.contains("Conventional Commits format"));
+    }
+
+    #[test]
+    fn test_build_prompt_auto_mode_with_commits() {
+        let diff = "test diff";
+        let recent_commits = vec![
+            "feat: add new feature".to_string(),
+            "fix: resolve bug".to_string(),
+        ];
+        let prompt = AiService::build_prompt(diff, &recent_commits, "Japanese", None);
+        assert!(prompt.contains("Recent commit messages in this repository"));
+        assert!(prompt.contains("1. feat: add new feature"));
+        assert!(prompt.contains("2. fix: resolve bug"));
+        assert!(prompt.contains("match their style/format"));
+    }
+
+    #[test]
+    fn test_build_prompt_contains_diff() {
+        let diff = "--- a/file.rs\n+++ b/file.rs\n+new line";
+        let recent_commits: Vec<String> = vec![];
+        let prompt =
+            AiService::build_prompt(diff, &recent_commits, "English", Some("conventional"));
+        assert!(prompt.contains(diff));
+        assert!(prompt.contains("```diff"));
+    }
+
+    #[test]
+    fn test_build_prompt_contains_language() {
+        let diff = "test diff";
+        let recent_commits: Vec<String> = vec![];
+
+        let prompt_ja =
+            AiService::build_prompt(diff, &recent_commits, "Japanese", Some("conventional"));
+        assert!(prompt_ja.contains("Japanese"));
+
+        let prompt_en =
+            AiService::build_prompt(diff, &recent_commits, "English", Some("conventional"));
+        assert!(prompt_en.contains("English"));
+    }
+
+    #[test]
+    fn test_clean_message_basic() {
+        let message = "feat: add new feature";
+        assert_eq!(AiService::clean_message(message), "feat: add new feature");
+    }
+
+    #[test]
+    fn test_clean_message_trim_whitespace() {
+        let message = "  feat: add new feature  \n";
+        assert_eq!(AiService::clean_message(message), "feat: add new feature");
+    }
+
+    #[test]
+    fn test_clean_message_remove_code_block() {
+        let message = "```\nfeat: add new feature\n```";
+        assert_eq!(AiService::clean_message(message), "feat: add new feature");
+    }
+
+    #[test]
+    fn test_clean_message_remove_quotes() {
+        let message = "\"feat: add new feature\"";
+        assert_eq!(AiService::clean_message(message), "feat: add new feature");
+
+        let message = "'feat: add new feature'";
+        assert_eq!(AiService::clean_message(message), "feat: add new feature");
+    }
+
+    #[test]
+    fn test_clean_message_code_block_with_language() {
+        let message = "```text\nfeat: add new feature\n```";
+        assert_eq!(AiService::clean_message(message), "feat: add new feature");
+    }
+
+    #[test]
+    fn test_extract_error_gemini_api_error() {
+        let stderr = "Some warning\n[API Error: Rate limit exceeded]\nMore text";
+        let error = AiService::extract_error(stderr, &AiProvider::Gemini);
+        assert_eq!(error, "[API Error: Rate limit exceeded]");
+    }
+
+    #[test]
+    fn test_extract_error_gemini_generic() {
+        let stderr = "Some generic error";
+        let error = AiService::extract_error(stderr, &AiProvider::Gemini);
+        assert_eq!(error, "Gemini API request failed");
+    }
+
+    #[test]
+    fn test_extract_error_codex() {
+        let stderr = "\nError: Something went wrong\nMore details";
+        let error = AiService::extract_error(stderr, &AiProvider::Codex);
+        assert_eq!(error, "Error: Something went wrong");
+    }
+
+    #[test]
+    fn test_extract_error_claude() {
+        let stderr = "Claude error message";
+        let error = AiService::extract_error(stderr, &AiProvider::Claude);
+        assert_eq!(error, "Claude error message");
+    }
+
+    #[test]
+    fn test_extract_error_empty_stderr() {
+        let stderr = "";
+        let error = AiService::extract_error(stderr, &AiProvider::Codex);
+        assert_eq!(error, "API request failed");
     }
 }

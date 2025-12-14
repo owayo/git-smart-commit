@@ -59,16 +59,12 @@ impl App {
         };
         let branch = self.git.get_current_branch();
 
-        // 1. プレフィックススクリプトをチェック（最優先）
+        // 1. プレフィックススクリプトをチェック（最優先、URL前方一致）
         for script_config in &self.prefix_scripts {
-            if remote_url.contains(&script_config.host_pattern) {
+            if remote_url.starts_with(&script_config.url_pattern) {
                 println!(
                     "{}",
-                    format!(
-                        "Running prefix script for {}...",
-                        script_config.host_pattern
-                    )
-                    .cyan()
+                    format!("Running prefix script for {}...", script_config.url_pattern).cyan()
                 );
                 if let Some(branch_name) = &branch {
                     if let Some(result) =

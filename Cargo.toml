@@ -15,6 +15,13 @@ serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
 dirs = "5.0"
 
+[dev-dependencies]
+rstest = "0.23"
+pretty_assertions = "1.4"
+tempfile = "3.14"
+assert_cmd = "2.0"
+predicates = "3.1"
+
 [profile.release]
 strip = true
 lto = true

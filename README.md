@@ -95,14 +95,14 @@ claude = "haiku"
 # Prefix script configuration (optional)
 # Execute external scripts to generate commit message prefix based on remote URL
 [[prefix_scripts]]
-host_pattern = "gitlab.example.com"
+url_pattern = "git@gitlab.example.com:"
 script = "/path/to/prefix-generate.py"
 
 # Prefix rules configuration (optional)
 # Specify prefix format based on remote URL
 [[prefix_rules]]
 url_pattern = "https://github.com/myorg/"
-prefix_type = "conventional"  # conventional, none, or custom format
+prefix_type = "conventional"  # conventional, bracket, colon, emoji, plain, none, or custom format
 ```
 
 ### Configuration Options
@@ -119,7 +119,7 @@ prefix_type = "conventional"  # conventional, none, or custom format
 
 ### Prefix Priority Order
 
-1. **prefix_scripts** (highest priority): Execute script if `host_pattern` matches
+1. **prefix_scripts** (highest priority): Execute script if `url_pattern` matches (prefix match)
 2. **prefix_rules**: Use specified `prefix_type` if `url_pattern` matches (prefix match)
 3. **Auto** (default): Auto-detect format from last 5 commits
 
@@ -129,13 +129,17 @@ You can specify prefix format based on the remote URL.
 
 | prefix_type | Behavior |
 |-------------|----------|
-| `conventional` | Conventional Commits format (feat:, fix:, etc.) |
+| `conventional` | Conventional Commits format (feat:, fix:, docs:, etc.) |
+| `bracket` | Bracket prefix format ([Add], [Fix], [Update], etc.) |
+| `colon` | Colon prefix format (Add:, Fix:, Update:, etc.) |
+| `emoji` | Emoji prefix format (✨, 🐛, 📝, etc.) |
+| `plain` | No prefix (message body only) |
 | `none` | No prefix (message body only) |
 | other | Use as custom format |
 
 ### Prefix Scripts
 
-You can configure external scripts to generate commit message prefixes based on the remote URL. When the remote URL contains the specified `host_pattern`, the script is executed with the remote URL and branch name as arguments.
+You can configure external scripts to generate commit message prefixes based on the remote URL. When the remote URL starts with the specified `url_pattern`, the script is executed with the remote URL and branch name as arguments.
 
 **Script Exit Code Behavior:**
 
