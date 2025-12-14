@@ -107,6 +107,10 @@ script = "/path/to/prefix-generate.py"
 [[prefix_rules]]
 url_pattern = "https://github.com/myorg/"
 prefix_type = "conventional"  # conventional, bracket, colon, emoji, plain, none, またはカスタム形式
+
+[[prefix_rules]]
+url_pattern = "git@github.com:myorg/"
+prefix_type = "conventional"
 ```
 
 ### 設定オプション
