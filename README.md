@@ -109,6 +109,10 @@ script = "/path/to/prefix-generate.py"
 [[prefix_rules]]
 url_pattern = "github\\.com[:/]myorg/"  # matches both HTTPS and SSH
 prefix_type = "conventional"  # conventional, bracket, colon, emoji, plain, none, or custom format
+
+[[prefix_rules]]
+url_pattern = "^https://gitlab\\.example\\.com/"
+prefix_type = "emoji"
 ```
 
 ### Configuration Options
