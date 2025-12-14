@@ -118,24 +118,6 @@ impl GitService {
         Ok(Self::filter_binary_diff(&diff))
     }
 
-    /// アンステージのdiffを取得（バイナリファイルを除外）
-    pub fn get_unstaged_diff(&self) -> Result<String, AppError> {
-        let output = Command::new("git")
-            .args(["diff"])
-            .current_dir(&self.repo_path)
-            .output()
-            .map_err(|e| AppError::GitError(e.to_string()))?;
-
-        if !output.status.success() {
-            return Err(AppError::GitError(
-                String::from_utf8_lossy(&output.stderr).to_string(),
-            ));
-        }
-
-        let diff = String::from_utf8_lossy(&output.stdout).to_string();
-        Ok(Self::filter_binary_diff(&diff))
-    }
-
     /// 直近のコミットメッセージを取得
     pub fn get_recent_commits(&self, count: usize) -> Result<Vec<String>, AppError> {
         let output = Command::new("git")

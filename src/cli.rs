@@ -14,13 +14,9 @@ pub struct Cli {
     #[arg(short = 'n', long = "dry-run")]
     pub dry_run: bool,
 
-    /// コミットメッセージ生成前に全ての変更をステージング
+    /// アンステージの変更も含めて全てをステージングしてコミット
     #[arg(short = 'a', long = "all")]
     pub stage_all: bool,
-
-    /// ステージ済みの変更がない場合にアンステージの変更を含める
-    #[arg(short = 'u', long = "unstaged")]
-    pub include_unstaged: bool,
 
     /// 直前のコミットを新しく生成されたメッセージで修正
     #[arg(long = "amend")]

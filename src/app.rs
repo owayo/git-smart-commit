@@ -108,21 +108,10 @@ impl App {
             self.git.stage_all()?;
         }
 
-        // diffを取得（デフォルトはステージ済み、-uフラグでアンステージも含む）
+        // ステージ済みのdiffを取得
         let staged_diff = self.git.get_staged_diff()?;
-        let (diff, needs_staging) = if !staged_diff.trim().is_empty() {
-            (staged_diff, false)
-        } else if cli.include_unstaged {
-            // -uフラグ: アンステージの変更にフォールバック
-            let unstaged_diff = self.git.get_unstaged_diff()?;
-            if unstaged_diff.trim().is_empty() {
-                return Err(AppError::NoChanges);
-            }
-            println!(
-                "{}",
-                "No staged changes. Using unstaged changes for message generation.".yellow()
-            );
-            (unstaged_diff, true)
+        let diff = if !staged_diff.trim().is_empty() {
+            staged_diff
         } else if cli.stage_all {
             // --allフラグ指定時で変更がない場合は正常終了
             println!("{}", "変更がありません。".cyan());
@@ -187,11 +176,6 @@ impl App {
 
         // 確認してコミット
         if cli.auto_confirm || self.confirm_commit()? {
-            // アンステージだった場合はステージング
-            if needs_staging {
-                println!("{}", "Staging changes...".cyan());
-                self.git.stage_all()?;
-            }
             self.git.commit(&message)?;
             println!("{}", "✓ Commit created successfully!".green().bold());
         } else {
