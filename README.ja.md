@@ -97,6 +97,12 @@ claude = "haiku"
 [[prefix_scripts]]
 host_pattern = "gitlab.example.com"
 script = "/path/to/prefix-generate.py"
+
+# プレフィックスルール設定（オプション）
+# リモートURLに基づいてプレフィックス形式を指定
+[[prefix_rules]]
+url_pattern = "https://github.com/myorg/"
+prefix_type = "conventional"  # conventional, none, またはカスタム形式
 ```
 
 ### 設定オプション
@@ -109,6 +115,23 @@ script = "/path/to/prefix-generate.py"
 | `models.codex` | Codex CLI のモデル | `"gpt-5.1-codex-mini"` |
 | `models.claude` | Claude CLI のモデル | `"haiku"` |
 | `prefix_scripts` | プレフィックス生成用外部スクリプト | `[]` |
+| `prefix_rules` | URLベースのプレフィックス形式設定 | `[]` |
+
+### プレフィックス判定の優先順位
+
+1. **prefix_scripts**（最優先）: `host_pattern` にマッチすればスクリプトを実行
+2. **prefix_rules**: `url_pattern` に前方一致すれば指定された `prefix_type` を使用
+3. **Auto**（デフォルト）: 過去5件のコミットから形式を自動判定
+
+### プレフィックスルール
+
+URLベースでプレフィックス形式を指定できます。
+
+| prefix_type | 動作 |
+|-------------|------|
+| `conventional` | Conventional Commits形式（feat:, fix:, etc.） |
+| `none` | プレフィックスなし（本文のみ） |
+| その他 | カスタム形式として指定 |
 
 ### プレフィックススクリプト
 

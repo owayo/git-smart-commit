@@ -105,32 +105,49 @@ impl AiService {
     }
 
     /// AI用のプロンプトを構築
-    fn build_prompt(diff: &str, recent_commits: &[String], language: &str) -> String {
-        let commits_section = if recent_commits.is_empty() {
-            "No recent commits found. Use Conventional Commits format (e.g., feat:, fix:, docs:, refactor:, test:, chore:).".to_string()
-        } else {
-            format!(
-                "Recent commit messages in this repository:\n{}",
-                recent_commits
-                    .iter()
-                    .enumerate()
-                    .map(|(i, c)| format!("{}. {}", i + 1, c))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            )
+    fn build_prompt(
+        diff: &str,
+        recent_commits: &[String],
+        language: &str,
+        prefix_type: Option<&str>,
+    ) -> String {
+        let format_section = match prefix_type {
+            Some("conventional") => {
+                "Use Conventional Commits format (e.g., feat:, fix:, docs:, refactor:, test:, chore:).".to_string()
+            }
+            Some("none") => {
+                "Do NOT use any prefix. Write only the commit message without type prefix.".to_string()
+            }
+            Some(custom) => {
+                format!("Use the following prefix format: {}", custom)
+            }
+            None => {
+                // 自動判定モード: 過去のコミットから推論
+                if recent_commits.is_empty() {
+                    "No recent commits found. Use Conventional Commits format (e.g., feat:, fix:, docs:, refactor:, test:, chore:).".to_string()
+                } else {
+                    format!(
+                        "Recent commit messages in this repository:\n{}\n\nAnalyze the recent commit messages above and match their style/format.",
+                        recent_commits
+                            .iter()
+                            .enumerate()
+                            .map(|(i, c)| format!("{}. {}", i + 1, c))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    )
+                }
+            }
         };
 
         format!(
             r#"Generate a concise git commit message for the following changes.
 
-{commits_section}
+{format_section}
 
 Instructions:
-- Analyze the recent commit messages above and match their style/format
 - If the commits use Conventional Commits (feat:, fix:, etc.), use that format
 - If the commits use bracket prefix ([Add], [Fix], etc.), use that format
 - If the commits use other prefix styles, match that style
-- If no clear pattern or no recent commits, use Conventional Commits format
 - Write the commit message in {language}
 
 Rules:
@@ -147,12 +164,19 @@ Changes:
     }
 
     /// フォールバック付きでAI CLIを使用してコミットメッセージを生成
+    ///
+    /// prefix_type:
+    /// - None: 自動判定（過去コミットから推論）
+    /// - Some("conventional"): Conventional Commits形式
+    /// - Some("none"): プレフィックスなし
+    /// - Some(other): カスタム形式
     pub fn generate_commit_message(
         &self,
         diff: &str,
         recent_commits: &[String],
+        prefix_type: Option<&str>,
     ) -> Result<String, AppError> {
-        let prompt = Self::build_prompt(diff, recent_commits, &self.language);
+        let prompt = Self::build_prompt(diff, recent_commits, &self.language, prefix_type);
         let mut last_error = None;
 
         for provider in &self.providers {

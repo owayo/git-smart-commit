@@ -97,6 +97,12 @@ claude = "haiku"
 [[prefix_scripts]]
 host_pattern = "gitlab.example.com"
 script = "/path/to/prefix-generate.py"
+
+# Prefix rules configuration (optional)
+# Specify prefix format based on remote URL
+[[prefix_rules]]
+url_pattern = "https://github.com/myorg/"
+prefix_type = "conventional"  # conventional, none, or custom format
 ```
 
 ### Configuration Options
@@ -109,6 +115,23 @@ script = "/path/to/prefix-generate.py"
 | `models.codex` | Model for Codex CLI | `"gpt-5.1-codex-mini"` |
 | `models.claude` | Model for Claude CLI | `"haiku"` |
 | `prefix_scripts` | External scripts for prefix generation | `[]` |
+| `prefix_rules` | URL-based prefix format configuration | `[]` |
+
+### Prefix Priority Order
+
+1. **prefix_scripts** (highest priority): Execute script if `host_pattern` matches
+2. **prefix_rules**: Use specified `prefix_type` if `url_pattern` matches (prefix match)
+3. **Auto** (default): Auto-detect format from last 5 commits
+
+### Prefix Rules
+
+You can specify prefix format based on the remote URL.
+
+| prefix_type | Behavior |
+|-------------|----------|
+| `conventional` | Conventional Commits format (feat:, fix:, etc.) |
+| `none` | No prefix (message body only) |
+| other | Use as custom format |
 
 ### Prefix Scripts
 

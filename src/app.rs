@@ -4,15 +4,26 @@ use colored::Colorize;
 
 use crate::ai::AiService;
 use crate::cli::Cli;
-use crate::config::{Config, PrefixScriptConfig};
+use crate::config::{Config, PrefixRuleConfig, PrefixScriptConfig};
 use crate::error::AppError;
 use crate::git::{GitService, ScriptResult};
+
+/// プレフィックス判定結果
+pub enum PrefixMode {
+    /// スクリプトによるプレフィックス
+    Script(ScriptResult),
+    /// ルールによるプレフィックスタイプ指定
+    Rule(String),
+    /// 自動判定（過去コミットから推論）
+    Auto,
+}
 
 /// アプリケーションのメインオーケストレーター
 pub struct App {
     git: GitService,
     ai: AiService,
     prefix_scripts: Vec<PrefixScriptConfig>,
+    prefix_rules: Vec<PrefixRuleConfig>,
 }
 
 impl App {
@@ -30,22 +41,25 @@ impl App {
             git: GitService::new(),
             ai,
             prefix_scripts: config.prefix_scripts,
+            prefix_rules: config.prefix_rules,
         })
     }
 
-    /// プレフィックススクリプトを実行してプレフィックスを取得
+    /// プレフィックスモードを判定
     ///
-    /// 戻り値:
-    /// - `Some(ScriptResult::Prefix(s))`: カスタムプレフィックスを使用
-    /// - `Some(ScriptResult::Empty)`: プレフィックスなし（本文のみ）
-    /// - `Some(ScriptResult::Failed)`: AI生成メッセージをそのまま使用
-    /// - `None`: スクリプト未設定または実行失敗
-    fn get_prefix(&self) -> Option<ScriptResult> {
+    /// 優先順位:
+    /// 1. prefix_scripts: host_patternにマッチすればスクリプト実行
+    /// 2. prefix_rules: url_patternに前方一致すればそのprefix_typeを使用
+    /// 3. Auto: 上記に該当しなければ過去コミットから自動判定
+    fn get_prefix_mode(&self) -> PrefixMode {
         // リモートURLとブランチ名を取得
-        let remote_url = self.git.get_remote_url()?;
-        let branch = self.git.get_current_branch()?;
+        let remote_url = match self.git.get_remote_url() {
+            Some(url) => url,
+            None => return PrefixMode::Auto,
+        };
+        let branch = self.git.get_current_branch();
 
-        // 設定されたプレフィックススクリプトをチェック
+        // 1. プレフィックススクリプトをチェック（最優先）
         for script_config in &self.prefix_scripts {
             if remote_url.contains(&script_config.host_pattern) {
                 println!(
@@ -56,16 +70,34 @@ impl App {
                     )
                     .cyan()
                 );
-                if let Some(result) =
-                    self.git
-                        .run_prefix_script(&script_config.script, &remote_url, &branch)
-                {
-                    return Some(result);
+                if let Some(branch_name) = &branch {
+                    if let Some(result) =
+                        self.git
+                            .run_prefix_script(&script_config.script, &remote_url, branch_name)
+                    {
+                        return PrefixMode::Script(result);
+                    }
                 }
             }
         }
 
-        None
+        // 2. プレフィックスルールをチェック（URL前方一致）
+        for rule_config in &self.prefix_rules {
+            if remote_url.starts_with(&rule_config.url_pattern) {
+                println!(
+                    "{}",
+                    format!(
+                        "Using prefix rule for {}: {}",
+                        rule_config.url_pattern, rule_config.prefix_type
+                    )
+                    .cyan()
+                );
+                return PrefixMode::Rule(rule_config.prefix_type.clone());
+            }
+        }
+
+        // 3. 該当なし: 自動判定モード
+        PrefixMode::Auto
     }
 
     /// コミットメッセージにプレフィックスを適用
@@ -121,29 +153,50 @@ impl App {
             return Err(AppError::NoStagedChanges);
         };
 
-        // フォーマット検出用に直近のコミットを取得
-        let recent_commits = self.git.get_recent_commits(2)?;
+        // プレフィックスモードを判定
+        let prefix_mode = self.get_prefix_mode();
 
-        // 参照用に直近のコミットを表示
-        if recent_commits.is_empty() {
-            println!(
-                "{} {}",
-                "No recent commits found.".cyan(),
-                "Using Conventional Commits format.".yellow()
-            );
-        } else {
-            println!("{}", "Recent commits (for format reference):".cyan());
-            for commit in &recent_commits {
-                println!("  {}", commit.dimmed());
+        // フォーマット検出用に直近のコミットを取得（Autoモードの場合のみ表示）
+        let recent_commits = self.git.get_recent_commits(5)?;
+
+        // Autoモードの場合のみ参照用に直近のコミットを表示
+        if matches!(prefix_mode, PrefixMode::Auto) {
+            if recent_commits.is_empty() {
+                println!(
+                    "{} {}",
+                    "No recent commits found.".cyan(),
+                    "Using Conventional Commits format.".yellow()
+                );
+            } else {
+                println!("{}", "Recent commits (for format reference):".cyan());
+                for commit in &recent_commits {
+                    println!("  {}", commit.dimmed());
+                }
             }
         }
 
-        // コミットメッセージを生成（AIがフォーマットを決定）
+        // コミットメッセージを生成
         println!("{}", "Generating commit message...".cyan());
-        let mut message = self.ai.generate_commit_message(&diff, &recent_commits)?;
+        let mut message = match &prefix_mode {
+            PrefixMode::Script(_) => {
+                // スクリプトモード: 自動判定で生成
+                self.ai
+                    .generate_commit_message(&diff, &recent_commits, None)?
+            }
+            PrefixMode::Rule(prefix_type) => {
+                // ルールモード: 指定されたprefix_typeで生成
+                self.ai
+                    .generate_commit_message(&diff, &recent_commits, Some(prefix_type))?
+            }
+            PrefixMode::Auto => {
+                // 自動判定モード: 過去コミットから推論
+                self.ai
+                    .generate_commit_message(&diff, &recent_commits, None)?
+            }
+        };
 
-        // プレフィックススクリプトがあれば実行
-        if let Some(result) = self.get_prefix() {
+        // スクリプトモードの場合はメッセージを加工
+        if let PrefixMode::Script(result) = prefix_mode {
             match result {
                 ScriptResult::Prefix(prefix) => {
                     message = self.apply_prefix(&message, &prefix);
@@ -199,30 +252,47 @@ impl App {
             return Err(AppError::NoChanges);
         }
 
+        // プレフィックスモードを判定
+        let prefix_mode = self.get_prefix_mode();
+
         // フォーマット検出用に直近のコミットを取得（amendするコミットはスキップ）
-        let recent_commits = self.git.get_recent_commits(3)?;
+        let recent_commits = self.git.get_recent_commits(6)?;
         let recent_commits: Vec<String> = recent_commits.into_iter().skip(1).collect();
 
-        // 参照用に直近のコミットを表示
-        if recent_commits.is_empty() {
-            println!(
-                "{} {}",
-                "No recent commits found.".cyan(),
-                "Using Conventional Commits format.".yellow()
-            );
-        } else {
-            println!("{}", "Recent commits (for format reference):".cyan());
-            for commit in &recent_commits {
-                println!("  {}", commit.dimmed());
+        // Autoモードの場合のみ参照用に直近のコミットを表示
+        if matches!(prefix_mode, PrefixMode::Auto) {
+            if recent_commits.is_empty() {
+                println!(
+                    "{} {}",
+                    "No recent commits found.".cyan(),
+                    "Using Conventional Commits format.".yellow()
+                );
+            } else {
+                println!("{}", "Recent commits (for format reference):".cyan());
+                for commit in &recent_commits {
+                    println!("  {}", commit.dimmed());
+                }
             }
         }
 
         // コミットメッセージを生成
         println!("{}", "Generating commit message...".cyan());
-        let mut message = self.ai.generate_commit_message(&diff, &recent_commits)?;
+        let mut message = match &prefix_mode {
+            PrefixMode::Script(_) => {
+                self.ai
+                    .generate_commit_message(&diff, &recent_commits, None)?
+            }
+            PrefixMode::Rule(prefix_type) => {
+                self.ai
+                    .generate_commit_message(&diff, &recent_commits, Some(prefix_type))?
+            }
+            PrefixMode::Auto => self
+                .ai
+                .generate_commit_message(&diff, &recent_commits, None)?,
+        };
 
-        // プレフィックススクリプトがあれば実行
-        if let Some(result) = self.get_prefix() {
+        // スクリプトモードの場合はメッセージを加工
+        if let PrefixMode::Script(result) = prefix_mode {
             match result {
                 ScriptResult::Prefix(prefix) => {
                     message = self.apply_prefix(&message, &prefix);

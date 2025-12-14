@@ -32,6 +32,15 @@ pub struct PrefixScriptConfig {
     pub script: String,
 }
 
+/// プレフィックスルール設定（URLベース）
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PrefixRuleConfig {
+    /// リモートURLの前方一致パターン
+    pub url_pattern: String,
+    /// プレフィックスの種類（conventional, none, etc.）
+    pub prefix_type: String,
+}
+
 /// アプリケーション設定
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
@@ -45,6 +54,9 @@ pub struct Config {
     /// プレフィックス生成スクリプト設定（オプション）
     #[serde(default)]
     pub prefix_scripts: Vec<PrefixScriptConfig>,
+    /// プレフィックスルール設定（URLベース、オプション）
+    #[serde(default)]
+    pub prefix_rules: Vec<PrefixRuleConfig>,
 }
 
 impl Default for Config {
@@ -58,6 +70,7 @@ impl Default for Config {
             language: "Japanese".to_string(),
             models: ModelsConfig::default(),
             prefix_scripts: Vec::new(),
+            prefix_rules: Vec::new(),
         }
     }
 }
