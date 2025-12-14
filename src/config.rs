@@ -26,7 +26,7 @@ impl Default for ModelsConfig {
 /// プレフィックススクリプト設定
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PrefixScriptConfig {
-    /// リモートURLの前方一致パターン
+    /// リモートURLにマッチさせる正規表現パターン
     pub url_pattern: String,
     /// 実行するスクリプトのパス
     pub script: String,
@@ -35,7 +35,7 @@ pub struct PrefixScriptConfig {
 /// プレフィックスルール設定（URLベース）
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PrefixRuleConfig {
-    /// リモートURLの前方一致パターン
+    /// リモートURLにマッチさせる正規表現パターン
     pub url_pattern: String,
     /// プレフィックスの種類（conventional, none, etc.）
     pub prefix_type: String,

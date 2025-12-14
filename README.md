@@ -94,23 +94,21 @@ claude = "haiku"
 
 # Prefix script configuration (optional)
 # Execute external scripts to generate commit message prefix based on remote URL
+# url_pattern is a regular expression
 [[prefix_scripts]]
-url_pattern = "https://gitlab.example.com/"
+url_pattern = "^https://gitlab\\.example\\.com/"
 script = "/path/to/prefix-generate.py"
 
 [[prefix_scripts]]
-url_pattern = "git@gitlab.example.com:"
+url_pattern = "^git@gitlab\\.example\\.com:"
 script = "/path/to/prefix-generate.py"
 
 # Prefix rules configuration (optional)
 # Specify prefix format based on remote URL
+# url_pattern is a regular expression
 [[prefix_rules]]
-url_pattern = "https://github.com/myorg/"
+url_pattern = "github\\.com[:/]myorg/"  # matches both HTTPS and SSH
 prefix_type = "conventional"  # conventional, bracket, colon, emoji, plain, none, or custom format
-
-[[prefix_rules]]
-url_pattern = "git@github.com:myorg/"
-prefix_type = "conventional"
 ```
 
 ### Configuration Options
@@ -127,8 +125,8 @@ prefix_type = "conventional"
 
 ### Prefix Priority Order
 
-1. **prefix_scripts** (highest priority): Execute script if `url_pattern` matches (prefix match)
-2. **prefix_rules**: Use specified `prefix_type` if `url_pattern` matches (prefix match)
+1. **prefix_scripts** (highest priority): Execute script if `url_pattern` matches (regex match)
+2. **prefix_rules**: Use specified `prefix_type` if `url_pattern` matches (regex match)
 3. **Auto** (default): Auto-detect format from last 5 commits
 
 ### Prefix Rules
@@ -147,7 +145,7 @@ You can specify prefix format based on the remote URL.
 
 ### Prefix Scripts
 
-You can configure external scripts to generate commit message prefixes based on the remote URL. When the remote URL starts with the specified `url_pattern`, the script is executed with the remote URL and branch name as arguments.
+You can configure external scripts to generate commit message prefixes based on the remote URL. When the remote URL matches the `url_pattern` regular expression, the script is executed with the remote URL and branch name as arguments.
 
 **Script Exit Code Behavior:**
 

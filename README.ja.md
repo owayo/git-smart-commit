@@ -94,23 +94,21 @@ claude = "haiku"
 
 # プレフィックススクリプト設定（オプション）
 # リモートURLに基づいて外部スクリプトを実行し、コミットメッセージのプレフィックスを生成
+# url_pattern は正規表現
 [[prefix_scripts]]
-url_pattern = "https://gitlab.example.com/"
+url_pattern = "^https://gitlab\\.example\\.com/"
 script = "/path/to/prefix-generate.py"
 
 [[prefix_scripts]]
-url_pattern = "git@gitlab.example.com:"
+url_pattern = "^git@gitlab\\.example\\.com:"
 script = "/path/to/prefix-generate.py"
 
 # プレフィックスルール設定（オプション）
 # リモートURLに基づいてプレフィックス形式を指定
+# url_pattern は正規表現
 [[prefix_rules]]
-url_pattern = "https://github.com/myorg/"
+url_pattern = "github\\.com[:/]myorg/"  # HTTPSとSSHの両方にマッチ
 prefix_type = "conventional"  # conventional, bracket, colon, emoji, plain, none, またはカスタム形式
-
-[[prefix_rules]]
-url_pattern = "git@github.com:myorg/"
-prefix_type = "conventional"
 ```
 
 ### 設定オプション
@@ -127,8 +125,8 @@ prefix_type = "conventional"
 
 ### プレフィックス判定の優先順位
 
-1. **prefix_scripts**（最優先）: `url_pattern` に前方一致すればスクリプトを実行
-2. **prefix_rules**: `url_pattern` に前方一致すれば指定された `prefix_type` を使用
+1. **prefix_scripts**（最優先）: `url_pattern` の正規表現にマッチすればスクリプトを実行
+2. **prefix_rules**: `url_pattern` の正規表現にマッチすれば指定された `prefix_type` を使用
 3. **Auto**（デフォルト）: 過去5件のコミットから形式を自動判定
 
 ### プレフィックスルール
@@ -147,7 +145,7 @@ URLベースでプレフィックス形式を指定できます。
 
 ### プレフィックススクリプト
 
-リモートURLに基づいてコミットメッセージのプレフィックスを生成する外部スクリプトを設定できます。リモートURLが指定した `url_pattern` で始まる場合、スクリプトがリモートURLとブランチ名を引数として実行されます。
+リモートURLに基づいてコミットメッセージのプレフィックスを生成する外部スクリプトを設定できます。リモートURLが `url_pattern` の正規表現にマッチする場合、スクリプトがリモートURLとブランチ名を引数として実行されます。
 
 **スクリプトの終了コードによる動作：**
 

@@ -1,6 +1,7 @@
 use std::io::{self, Write};
 
 use colored::Colorize;
+use regex::Regex;
 
 use crate::ai::AiService;
 use crate::cli::Cli;
@@ -48,8 +49,8 @@ impl App {
     /// プレフィックスモードを判定
     ///
     /// 優先順位:
-    /// 1. prefix_scripts: host_patternにマッチすればスクリプト実行
-    /// 2. prefix_rules: url_patternに前方一致すればそのprefix_typeを使用
+    /// 1. prefix_scripts: url_patternの正規表現にマッチすればスクリプト実行
+    /// 2. prefix_rules: url_patternの正規表現にマッチすればそのprefix_typeを使用
     /// 3. Auto: 上記に該当しなければ過去コミットから自動判定
     fn get_prefix_mode(&self) -> PrefixMode {
         // リモートURLとブランチ名を取得
@@ -59,36 +60,42 @@ impl App {
         };
         let branch = self.git.get_current_branch();
 
-        // 1. プレフィックススクリプトをチェック（最優先、URL前方一致）
+        // 1. プレフィックススクリプトをチェック（最優先、正規表現マッチ）
         for script_config in &self.prefix_scripts {
-            if remote_url.starts_with(&script_config.url_pattern) {
-                println!(
-                    "{}",
-                    format!("Running prefix script for {}...", script_config.url_pattern).cyan()
-                );
-                if let Some(branch_name) = &branch {
-                    if let Some(result) =
-                        self.git
-                            .run_prefix_script(&script_config.script, &remote_url, branch_name)
-                    {
-                        return PrefixMode::Script(result);
+            if let Ok(re) = Regex::new(&script_config.url_pattern) {
+                if re.is_match(&remote_url) {
+                    println!(
+                        "{}",
+                        format!("Running prefix script for {}...", script_config.url_pattern)
+                            .cyan()
+                    );
+                    if let Some(branch_name) = &branch {
+                        if let Some(result) = self.git.run_prefix_script(
+                            &script_config.script,
+                            &remote_url,
+                            branch_name,
+                        ) {
+                            return PrefixMode::Script(result);
+                        }
                     }
                 }
             }
         }
 
-        // 2. プレフィックスルールをチェック（URL前方一致）
+        // 2. プレフィックスルールをチェック（正規表現マッチ）
         for rule_config in &self.prefix_rules {
-            if remote_url.starts_with(&rule_config.url_pattern) {
-                println!(
-                    "{}",
-                    format!(
-                        "Using prefix rule for {}: {}",
-                        rule_config.url_pattern, rule_config.prefix_type
-                    )
-                    .cyan()
-                );
-                return PrefixMode::Rule(rule_config.prefix_type.clone());
+            if let Ok(re) = Regex::new(&rule_config.url_pattern) {
+                if re.is_match(&remote_url) {
+                    println!(
+                        "{}",
+                        format!(
+                            "Using prefix rule for {}: {}",
+                            rule_config.url_pattern, rule_config.prefix_type
+                        )
+                        .cyan()
+                    );
+                    return PrefixMode::Rule(rule_config.prefix_type.clone());
+                }
             }
         }
 
