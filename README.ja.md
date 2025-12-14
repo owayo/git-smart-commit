@@ -133,6 +133,31 @@ prefix_type = "emoji"
 2. **prefix_rules**: `url_pattern` の正規表現にマッチすれば指定された `prefix_type` を使用
 3. **Auto**（デフォルト）: 過去5件のコミットから形式を自動判定
 
+```mermaid
+flowchart TD
+    START([開始]) --> GET_URL[リモートURL取得]
+    GET_URL --> CHECK_SCRIPTS{prefix_scripts<br/>url_pattern<br/>マッチ?}
+
+    CHECK_SCRIPTS -->|Yes| RUN_SCRIPT[スクリプト実行]
+    CHECK_SCRIPTS -->|No| CHECK_RULES{prefix_rules<br/>url_pattern<br/>マッチ?}
+
+    RUN_SCRIPT --> SCRIPT_EXIT{終了コード}
+
+    SCRIPT_EXIT -->|Exit 0<br/>内容あり| USE_SCRIPT_PREFIX[スクリプト出力を<br/>プレフィックスとして使用]
+    SCRIPT_EXIT -->|Exit 0<br/>空| NO_PREFIX[プレフィックスなし<br/>本文のみ]
+    SCRIPT_EXIT -->|Exit 1| CHECK_RULES
+
+    CHECK_RULES -->|Yes| USE_RULE[指定された<br/>prefix_type を使用]
+    CHECK_RULES -->|No| AUTO_DETECT[過去5件のコミットから<br/>自動判定]
+
+    USE_SCRIPT_PREFIX --> GEN_MSG[AIでコミットメッセージ生成]
+    NO_PREFIX --> GEN_MSG
+    USE_RULE --> GEN_MSG
+    AUTO_DETECT --> GEN_MSG
+
+    GEN_MSG --> END([終了])
+```
+
 ### プレフィックスルール
 
 URLベースでプレフィックス形式を指定できます。

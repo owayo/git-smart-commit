@@ -133,6 +133,31 @@ prefix_type = "emoji"
 2. **prefix_rules**: Use specified `prefix_type` if `url_pattern` matches (regex match)
 3. **Auto** (default): Auto-detect format from last 5 commits
 
+```mermaid
+flowchart TD
+    START([Start]) --> GET_URL[Get remote URL]
+    GET_URL --> CHECK_SCRIPTS{prefix_scripts<br/>url_pattern matches?}
+
+    CHECK_SCRIPTS -->|Yes| RUN_SCRIPT[Run script]
+    CHECK_SCRIPTS -->|No| CHECK_RULES{prefix_rules<br/>url_pattern matches?}
+
+    RUN_SCRIPT --> SCRIPT_EXIT{Exit code?}
+
+    SCRIPT_EXIT -->|Exit 0<br/>with content| USE_SCRIPT_PREFIX[Use script output as prefix]
+    SCRIPT_EXIT -->|Exit 0<br/>empty| NO_PREFIX[No prefix<br/>message body only]
+    SCRIPT_EXIT -->|Exit 1| CHECK_RULES
+
+    CHECK_RULES -->|Yes| USE_RULE[Use specified prefix_type]
+    CHECK_RULES -->|No| AUTO_DETECT[Auto-detect from<br/>last 5 commits]
+
+    USE_SCRIPT_PREFIX --> GEN_MSG[Generate commit message<br/>with AI]
+    NO_PREFIX --> GEN_MSG
+    USE_RULE --> GEN_MSG
+    AUTO_DETECT --> GEN_MSG
+
+    GEN_MSG --> END([End])
+```
+
 ### Prefix Rules
 
 You can specify prefix format based on the remote URL.
