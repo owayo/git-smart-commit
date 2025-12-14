@@ -98,6 +98,10 @@ claude = "haiku"
 url_pattern = "https://gitlab.example.com/"
 script = "/path/to/prefix-generate.py"
 
+[[prefix_scripts]]
+url_pattern = "git@gitlab.example.com:"
+script = "/path/to/prefix-generate.py"
+
 # プレフィックスルール設定（オプション）
 # リモートURLに基づいてプレフィックス形式を指定
 [[prefix_rules]]
