@@ -113,7 +113,11 @@ impl Config {
 
         Ok(())
     }
+}
 
+/// テスト用ヘルパー関数
+#[cfg(test)]
+impl Config {
     /// 文字列から設定を読み込み（テスト用）
     pub fn from_str(content: &str) -> Result<Self, AppError> {
         toml::from_str(content)
