@@ -28,11 +28,43 @@ At least one of the following AI CLI tools must be installed:
 
 ## Installation
 
+### From GitHub Releases (Recommended)
+
+Download the latest binary for your platform from [Releases](https://github.com/owa/git-smart-commit/releases).
+
+#### macOS (Apple Silicon)
+```bash
+curl -L https://github.com/owa/git-smart-commit/releases/latest/download/git-sc-aarch64-apple-darwin.tar.gz | tar xz
+sudo mv git-sc /usr/local/bin/
+```
+
+#### macOS (Intel)
+```bash
+curl -L https://github.com/owa/git-smart-commit/releases/latest/download/git-sc-x86_64-apple-darwin.tar.gz | tar xz
+sudo mv git-sc /usr/local/bin/
+```
+
+#### Linux (x86_64)
+```bash
+curl -L https://github.com/owa/git-smart-commit/releases/latest/download/git-sc-x86_64-unknown-linux-gnu.tar.gz | tar xz
+sudo mv git-sc /usr/local/bin/
+```
+
+#### Linux (ARM64)
+```bash
+curl -L https://github.com/owa/git-smart-commit/releases/latest/download/git-sc-aarch64-unknown-linux-gnu.tar.gz | tar xz
+sudo mv git-sc /usr/local/bin/
+```
+
+#### Windows
+
+Download `git-sc-x86_64-pc-windows-msvc.zip` from [Releases](https://github.com/owa/git-smart-commit/releases), extract, and add to PATH.
+
 ### From Source
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/git-smart-commit.git
+git clone https://github.com/owa/git-smart-commit.git
 cd git-smart-commit
 
 # Build and install
@@ -82,6 +114,8 @@ claude = "haiku"
 | `make release-major` | Bump major version and build (0.1.0 → 1.0.0) |
 | `make install` | Build release and install to /usr/local/bin |
 | `make install-release` | Bump patch, build, and install |
+| `make tag-release` | Create a git tag for GitHub Actions release |
+| `make tag-release-push` | Create and push tag to trigger release |
 | `make test` | Run tests |
 | `make fmt` | Format code |
 | `make check` | Run clippy and check |

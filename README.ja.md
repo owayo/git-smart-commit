@@ -28,11 +28,43 @@ AI CLI（Gemini、Codex、Claude）を使用したスマートコミットメッ
 
 ## インストール
 
+### GitHub Releases から（推奨）
+
+[Releases](https://github.com/owa/git-smart-commit/releases) からお使いのプラットフォーム用のバイナリをダウンロードしてください。
+
+#### macOS (Apple Silicon)
+```bash
+curl -L https://github.com/owa/git-smart-commit/releases/latest/download/git-sc-aarch64-apple-darwin.tar.gz | tar xz
+sudo mv git-sc /usr/local/bin/
+```
+
+#### macOS (Intel)
+```bash
+curl -L https://github.com/owa/git-smart-commit/releases/latest/download/git-sc-x86_64-apple-darwin.tar.gz | tar xz
+sudo mv git-sc /usr/local/bin/
+```
+
+#### Linux (x86_64)
+```bash
+curl -L https://github.com/owa/git-smart-commit/releases/latest/download/git-sc-x86_64-unknown-linux-gnu.tar.gz | tar xz
+sudo mv git-sc /usr/local/bin/
+```
+
+#### Linux (ARM64)
+```bash
+curl -L https://github.com/owa/git-smart-commit/releases/latest/download/git-sc-aarch64-unknown-linux-gnu.tar.gz | tar xz
+sudo mv git-sc /usr/local/bin/
+```
+
+#### Windows
+
+[Releases](https://github.com/owa/git-smart-commit/releases) から `git-sc-x86_64-pc-windows-msvc.zip` をダウンロードし、展開して PATH に追加してください。
+
 ### ソースから
 
 ```bash
 # リポジトリをクローン
-git clone https://github.com/yourusername/git-smart-commit.git
+git clone https://github.com/owa/git-smart-commit.git
 cd git-smart-commit
 
 # ビルドしてインストール
@@ -82,6 +114,8 @@ claude = "haiku"
 | `make release-major` | メジャーバージョン更新してビルド (0.1.0 → 1.0.0) |
 | `make install` | リリースビルドして /usr/local/bin にインストール |
 | `make install-release` | バージョン更新、ビルド、インストール |
+| `make tag-release` | GitHub Actions リリース用の git タグを作成 |
+| `make tag-release-push` | タグを作成してプッシュしリリースをトリガー |
 | `make test` | テスト実行 |
 | `make fmt` | コードフォーマット |
 | `make check` | clippy と check を実行 |
