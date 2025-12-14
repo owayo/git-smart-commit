@@ -3,6 +3,17 @@ use std::process::Command;
 
 use crate::error::AppError;
 
+/// プレフィックススクリプトの実行結果
+#[derive(Debug, Clone, PartialEq)]
+pub enum ScriptResult {
+    /// プレフィックスが返された（exit 0 + 内容あり）
+    Prefix(String),
+    /// 空が返された（exit 0 + 内容なし）→ プレフィックスなし
+    Empty,
+    /// スクリプトが失敗（exit 1）→ AI生成のメッセージをそのまま使用
+    Failed,
+}
+
 /// Git操作サービス
 pub struct GitService {
     repo_path: PathBuf,
@@ -261,12 +272,18 @@ impl GitService {
     }
 
     /// プレフィックススクリプトを実行してプレフィックスを取得
+    ///
+    /// 戻り値:
+    /// - `Some(ScriptResult::Prefix(s))`: スクリプトがプレフィックスを返した（exit 0 + 内容あり）
+    /// - `Some(ScriptResult::Empty)`: スクリプトが空を返した（exit 0 + 内容なし）→ プレフィックスなし
+    /// - `Some(ScriptResult::Failed)`: スクリプトが失敗した（exit 1）→ AI生成メッセージを使用
+    /// - `None`: スクリプトの実行自体に失敗
     pub fn run_prefix_script(
         &self,
         script: &str,
         remote_url: &str,
         branch: &str,
-    ) -> Option<String> {
+    ) -> Option<ScriptResult> {
         let output = Command::new(script)
             .args([remote_url, branch])
             .current_dir(&self.repo_path)
@@ -275,18 +292,14 @@ impl GitService {
 
         if output.status.success() {
             let prefix = String::from_utf8_lossy(&output.stdout).to_string();
-            if prefix.is_empty() {
-                None
+            if prefix.trim().is_empty() {
+                Some(ScriptResult::Empty)
             } else {
-                Some(prefix)
+                Some(ScriptResult::Prefix(prefix))
             }
         } else {
-            // スクリプトが失敗しても警告を出すだけで続行
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if !stderr.is_empty() {
-                eprintln!("⚠ プレフィックススクリプト警告: {}", stderr.trim());
-            }
-            None
+            // exit 1: AI生成のメッセージをそのまま使用
+            Some(ScriptResult::Failed)
         }
     }
 }

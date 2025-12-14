@@ -6,7 +6,7 @@ use crate::ai::AiService;
 use crate::cli::Cli;
 use crate::config::{Config, PrefixScriptConfig};
 use crate::error::AppError;
-use crate::git::GitService;
+use crate::git::{GitService, ScriptResult};
 
 /// アプリケーションのメインオーケストレーター
 pub struct App {
@@ -34,7 +34,13 @@ impl App {
     }
 
     /// プレフィックススクリプトを実行してプレフィックスを取得
-    fn get_prefix(&self) -> Option<String> {
+    ///
+    /// 戻り値:
+    /// - `Some(ScriptResult::Prefix(s))`: カスタムプレフィックスを使用
+    /// - `Some(ScriptResult::Empty)`: プレフィックスなし（本文のみ）
+    /// - `Some(ScriptResult::Failed)`: AI生成メッセージをそのまま使用
+    /// - `None`: スクリプト未設定または実行失敗
+    fn get_prefix(&self) -> Option<ScriptResult> {
         // リモートURLとブランチ名を取得
         let remote_url = self.git.get_remote_url()?;
         let branch = self.git.get_current_branch()?;
@@ -50,11 +56,11 @@ impl App {
                     )
                     .cyan()
                 );
-                if let Some(prefix) =
+                if let Some(result) =
                     self.git
                         .run_prefix_script(&script_config.script, &remote_url, &branch)
                 {
-                    return Some(prefix);
+                    return Some(result);
                 }
             }
         }
@@ -71,6 +77,15 @@ impl App {
         } else {
             // コロンがない場合はそのまま結合
             format!("{}{}", prefix, message)
+        }
+    }
+
+    /// コミットメッセージから型プレフィックスを削除（本文のみ取得）
+    fn strip_type_prefix(&self, message: &str) -> String {
+        if let Some(colon_pos) = message.find(':') {
+            message[colon_pos + 1..].trim_start().to_string()
+        } else {
+            message.to_string()
         }
     }
 
@@ -135,9 +150,21 @@ impl App {
         let mut message = self.ai.generate_commit_message(&diff, &recent_commits)?;
 
         // プレフィックススクリプトがあれば実行
-        if let Some(prefix) = self.get_prefix() {
-            message = self.apply_prefix(&message, &prefix);
-            println!("{}", format!("Applied prefix: {}", prefix.trim()).cyan());
+        if let Some(result) = self.get_prefix() {
+            match result {
+                ScriptResult::Prefix(prefix) => {
+                    message = self.apply_prefix(&message, &prefix);
+                    println!("{}", format!("Applied prefix: {}", prefix.trim()).cyan());
+                }
+                ScriptResult::Empty => {
+                    message = self.strip_type_prefix(&message);
+                    println!("{}", "No prefix applied (script returned empty).".cyan());
+                }
+                ScriptResult::Failed => {
+                    // AI生成のメッセージをそのまま使用
+                    println!("{}", "Using AI-generated format.".cyan());
+                }
+            }
         }
 
         // 生成されたメッセージを表示
@@ -207,9 +234,21 @@ impl App {
         let mut message = self.ai.generate_commit_message(&diff, &recent_commits)?;
 
         // プレフィックススクリプトがあれば実行
-        if let Some(prefix) = self.get_prefix() {
-            message = self.apply_prefix(&message, &prefix);
-            println!("{}", format!("Applied prefix: {}", prefix.trim()).cyan());
+        if let Some(result) = self.get_prefix() {
+            match result {
+                ScriptResult::Prefix(prefix) => {
+                    message = self.apply_prefix(&message, &prefix);
+                    println!("{}", format!("Applied prefix: {}", prefix.trim()).cyan());
+                }
+                ScriptResult::Empty => {
+                    message = self.strip_type_prefix(&message);
+                    println!("{}", "No prefix applied (script returned empty).".cyan());
+                }
+                ScriptResult::Failed => {
+                    // AI生成のメッセージをそのまま使用
+                    println!("{}", "Using AI-generated format.".cyan());
+                }
+            }
         }
 
         // 生成されたメッセージを表示
