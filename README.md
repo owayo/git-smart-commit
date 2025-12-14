@@ -114,11 +114,30 @@ script = "/path/to/prefix-generate.py"
 
 You can configure external scripts to generate commit message prefixes based on the remote URL. When the remote URL contains the specified `host_pattern`, the script is executed with the remote URL and branch name as arguments.
 
-The script should output the prefix to stdout. If no prefix is generated, the original commit message format is preserved.
+**Script Exit Code Behavior:**
+
+| Exit Code | Output | Behavior |
+|-----------|--------|----------|
+| `0` | Has content | Use the output as custom prefix |
+| `0` | Empty | No prefix (message body only) |
+| `1` | - | Use AI-generated message as-is |
 
 Example script call:
 ```bash
 /path/to/prefix-generate.py "git@example.com:org/repo.git" "feature/my-branch"
+```
+
+Example script (pseudo-code):
+```bash
+#!/bin/bash
+# Generate prefix based on branch name or external API
+PREFIX=$(generate_prefix "$1" "$2")
+if [ -n "$PREFIX" ]; then
+    echo -n "$PREFIX"
+    exit 0
+else
+    exit 1  # Use AI-generated format
+fi
 ```
 
 ## Build Commands
