@@ -1,12 +1,12 @@
 # git-sc
 
-Smart commit message generator using AI CLI (Gemini, Codex, or Claude).
+Smart commit message generator using AI coding agents (Gemini CLI, Codex CLI, or Claude Code).
 
-`git-sc` analyzes your staged changes and past commit history to generate contextually appropriate commit messages using AI CLI tools with automatic fallback support.
+`git-sc` analyzes your staged changes and past commit history to generate contextually appropriate commit messages using AI coding agents with automatic fallback support.
 
 ## Features
 
-- **Multi-Provider Support**: Supports Gemini, Codex, and Claude CLI with automatic fallback
+- **Multi-Provider Support**: Supports Gemini CLI, Codex CLI, and Claude Code with automatic fallback
 - **Configurable**: Customize provider priority, language, and models via `~/.git-sc`
 - **Format Detection**: Automatically detects your commit message format from recent commits:
   - Conventional Commits (`feat:`, `fix:`, `docs:`, etc.)
@@ -20,11 +20,11 @@ Smart commit message generator using AI CLI (Gemini, Codex, or Claude).
 
 ## Prerequisites
 
-At least one of the following AI CLI tools must be installed:
+At least one of the following AI coding agents must be installed:
 
 - **Gemini CLI**: `npm install -g @google/gemini-cli`
 - **Codex CLI**: `npm install -g @openai/codex`
-- **Claude CLI**: `npm install -g @anthropic-ai/claude-code`
+- **Claude Code**: `npm install -g @anthropic-ai/claude-code`
 
 ## Installation
 
@@ -123,7 +123,7 @@ prefix_type = "emoji"
 | `language` | Language for commit messages | `"Japanese"` |
 | `models.gemini` | Model for Gemini CLI | `"flash"` |
 | `models.codex` | Model for Codex CLI | `"gpt-5.1-codex-mini"` |
-| `models.claude` | Model for Claude CLI | `"haiku"` |
+| `models.claude` | Model for Claude Code | `"haiku"` |
 | `prefix_scripts` | External scripts for prefix generation | `[]` |
 | `prefix_rules` | URL-based prefix format configuration | `[]` |
 
@@ -262,12 +262,12 @@ git-sc --amend -y      # Amend last commit without confirmation
 
 ## How It Works
 
-1. **Verify Environment**: Checks for git repository and AI CLI installation
+1. **Verify Environment**: Checks for git repository and AI coding agent installation
 2. **Load Config**: Reads settings from `~/.git-sc` (creates default if not exists)
 3. **Stage Changes**: Optionally stages all changes with `-a` flag
 4. **Get Diff**: Retrieves the staged diff content
 5. **Detect Format**: Analyzes recent commits to detect your preferred format
-6. **Generate Message**: Sends diff and format instructions to AI CLI (with fallback)
+6. **Generate Message**: Sends diff and format instructions to AI coding agent (with fallback)
 7. **Confirm & Commit**: Shows the message and prompts for confirmation
 
 ## Examples

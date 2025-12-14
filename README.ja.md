@@ -1,12 +1,12 @@
 # git-sc
 
-AI CLI（Gemini、Codex、Claude）を使用したスマートコミットメッセージ生成ツール
+CLI AIエージェント（Gemini CLI、Codex CLI、Claude Code）を使用したスマートコミットメッセージ生成ツール
 
-`git-sc` はステージされた変更と過去のコミット履歴を分析し、AI CLI ツールを使って文脈に適したコミットメッセージを自動フォールバック付きで生成します。
+`git-sc` はステージされた変更と過去のコミット履歴を分析し、CLI AIエージェントを使って文脈に適したコミットメッセージを自動フォールバック付きで生成します。
 
 ## 特徴
 
-- **マルチプロバイダー対応**: Gemini、Codex、Claude CLI を自動フォールバック付きでサポート
+- **マルチプロバイダー対応**: Gemini CLI、Codex CLI、Claude Code を自動フォールバック付きでサポート
 - **設定可能**: `~/.git-sc` でプロバイダー優先度、言語、モデルをカスタマイズ
 - **フォーマット自動検出**: 過去のコミットメッセージから形式を自動判断
   - Conventional Commits (`feat:`, `fix:`, `docs:` など)
@@ -20,11 +20,11 @@ AI CLI（Gemini、Codex、Claude）を使用したスマートコミットメッ
 
 ## 前提条件
 
-以下の AI CLI ツールのうち、少なくとも1つがインストールされている必要があります：
+以下の CLI AIエージェントのうち、少なくとも1つがインストールされている必要があります：
 
 - **Gemini CLI**: `npm install -g @google/gemini-cli`
 - **Codex CLI**: `npm install -g @openai/codex`
-- **Claude CLI**: `npm install -g @anthropic-ai/claude-code`
+- **Claude Code**: `npm install -g @anthropic-ai/claude-code`
 
 ## インストール
 
@@ -123,7 +123,7 @@ prefix_type = "emoji"
 | `language` | コミットメッセージの言語 | `"Japanese"` |
 | `models.gemini` | Gemini CLI のモデル | `"flash"` |
 | `models.codex` | Codex CLI のモデル | `"gpt-5.1-codex-mini"` |
-| `models.claude` | Claude CLI のモデル | `"haiku"` |
+| `models.claude` | Claude Code のモデル | `"haiku"` |
 | `prefix_scripts` | プレフィックス生成用外部スクリプト | `[]` |
 | `prefix_rules` | URLベースのプレフィックス形式設定 | `[]` |
 
@@ -262,12 +262,12 @@ git-sc --amend -y      # 確認なしで直前のコミットを修正
 
 ## 動作の仕組み
 
-1. **環境確認**: git リポジトリと AI CLI のインストールを確認
+1. **環境確認**: git リポジトリと CLI AIエージェントのインストールを確認
 2. **設定読み込み**: `~/.git-sc` から設定を読み込み（存在しなければデフォルトを作成）
 3. **変更をステージ**: `-a` フラグで任意で全変更をステージ
 4. **差分取得**: ステージされた差分内容を取得
 5. **フォーマット検出**: 過去のコミットを分析して形式を検出
-6. **メッセージ生成**: 差分とフォーマット情報を AI CLI に送信（フォールバック付き）
+6. **メッセージ生成**: 差分とフォーマット情報を CLI AIエージェントに送信（フォールバック付き）
 7. **確認してコミット**: メッセージを表示して確認を求める
 
 ## 使用例
