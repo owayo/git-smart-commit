@@ -16,6 +16,58 @@ impl GitService {
         }
     }
 
+    /// git diffの出力からバイナリファイルの差分を除外
+    fn filter_binary_diff(diff_text: &str) -> String {
+        if diff_text.is_empty() {
+            return String::new();
+        }
+
+        let lines: Vec<&str> = diff_text.lines().collect();
+        let mut filtered_lines = Vec::new();
+        let mut i = 0;
+
+        while i < lines.len() {
+            let line = lines[i];
+
+            if line.starts_with("diff --git") {
+                // 新しいdiffブロックの開始
+                let block_start = i;
+                i += 1;
+
+                // このブロックがバイナリかどうかをチェック
+                let mut is_binary = false;
+                while i < lines.len() && !lines[i].starts_with("diff --git") {
+                    if lines[i].contains("Binary files") && lines[i].contains("differ") {
+                        is_binary = true;
+                        break;
+                    }
+                    i += 1;
+                }
+
+                // バイナリでなければブロックを追加
+                if !is_binary {
+                    for line in lines.iter().take(i).skip(block_start) {
+                        filtered_lines.push(*line);
+                    }
+                } else {
+                    // バイナリブロックをスキップ（次のdiff --gitまで進む）
+                    while i < lines.len() && !lines[i].starts_with("diff --git") {
+                        i += 1;
+                    }
+                    // ループでインクリメントされるのでデクリメント
+                    if i < lines.len() {
+                        i -= 1;
+                    }
+                }
+            } else {
+                filtered_lines.push(line);
+            }
+            i += 1;
+        }
+
+        filtered_lines.join("\n")
+    }
+
     /// 現在のディレクトリがGitリポジトリであることを確認
     pub fn verify_repository(&self) -> Result<(), AppError> {
         let git_dir = self.repo_path.join(".git");
@@ -37,7 +89,7 @@ impl GitService {
         }
     }
 
-    /// ステージ済みのdiffを取得
+    /// ステージ済みのdiffを取得（バイナリファイルを除外）
     pub fn get_staged_diff(&self) -> Result<String, AppError> {
         let output = Command::new("git")
             .args(["diff", "--cached"])
@@ -51,10 +103,11 @@ impl GitService {
             ));
         }
 
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        let diff = String::from_utf8_lossy(&output.stdout).to_string();
+        Ok(Self::filter_binary_diff(&diff))
     }
 
-    /// アンステージのdiffを取得
+    /// アンステージのdiffを取得（バイナリファイルを除外）
     pub fn get_unstaged_diff(&self) -> Result<String, AppError> {
         let output = Command::new("git")
             .args(["diff"])
@@ -68,7 +121,8 @@ impl GitService {
             ));
         }
 
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        let diff = String::from_utf8_lossy(&output.stdout).to_string();
+        Ok(Self::filter_binary_diff(&diff))
     }
 
     /// 直近のコミットメッセージを取得
@@ -131,7 +185,7 @@ impl GitService {
         Ok(())
     }
 
-    /// 直前のコミットのdiffを取得
+    /// 直前のコミットのdiffを取得（バイナリファイルを除外）
     pub fn get_last_commit_diff(&self) -> Result<String, AppError> {
         let output = Command::new("git")
             .args(["diff", "HEAD~1", "HEAD"])
@@ -145,7 +199,8 @@ impl GitService {
             ));
         }
 
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        let diff = String::from_utf8_lossy(&output.stdout).to_string();
+        Ok(Self::filter_binary_diff(&diff))
     }
 
     /// 直前のコミットを新しいメッセージで修正

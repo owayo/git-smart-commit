@@ -10,6 +10,7 @@ use colored::Colorize;
 
 use app::App;
 use cli::Cli;
+use error::AppError;
 
 fn main() {
     let cli = Cli::parse();
@@ -23,6 +24,10 @@ fn main() {
     };
 
     if let Err(e) = app.run(&cli) {
+        // Gitリポジトリでない場合は何も表示せず正常終了
+        if matches!(e, AppError::NotGitRepository) {
+            std::process::exit(0);
+        }
         eprintln!("{} {}", "Error:".red().bold(), e);
         std::process::exit(1);
     }
