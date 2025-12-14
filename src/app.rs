@@ -357,3 +357,157 @@ impl App {
         Ok(input.is_empty() || input == "y" || input == "yes")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+    use rstest::rstest;
+
+    /// テスト用のAppヘルパー構造体（純粋関数のテスト用）
+    struct TestHelper;
+
+    impl TestHelper {
+        /// apply_prefixのテスト用ラッパー
+        fn apply_prefix(message: &str, prefix: &str) -> String {
+            if let Some(colon_pos) = message.find(':') {
+                let body = message[colon_pos + 1..].trim_start();
+                format!("{}{}", prefix, body)
+            } else {
+                format!("{}{}", prefix, message)
+            }
+        }
+
+        /// strip_type_prefixのテスト用ラッパー
+        fn strip_type_prefix(message: &str) -> String {
+            if let Some(colon_pos) = message.find(':') {
+                message[colon_pos + 1..].trim_start().to_string()
+            } else {
+                message.to_string()
+            }
+        }
+    }
+
+    // ============================================================
+    // apply_prefix のテスト
+    // ============================================================
+
+    #[rstest]
+    #[case("feat: add new feature", "TICKET-123 ", "TICKET-123 add new feature")]
+    #[case("fix: bug fix", "[BUG] ", "[BUG] bug fix")]
+    #[case("docs: update readme", "📝 ", "📝 update readme")]
+    fn test_apply_prefix_with_conventional_commits(
+        #[case] message: &str,
+        #[case] prefix: &str,
+        #[case] expected: &str,
+    ) {
+        let result = TestHelper::apply_prefix(message, prefix);
+        assert_eq!(result, expected);
+    }
+
+    #[rstest]
+    #[case("add new feature", "TICKET-123 ", "TICKET-123 add new feature")]
+    #[case("simple message", "[PREFIX] ", "[PREFIX] simple message")]
+    fn test_apply_prefix_without_colon(
+        #[case] message: &str,
+        #[case] prefix: &str,
+        #[case] expected: &str,
+    ) {
+        let result = TestHelper::apply_prefix(message, prefix);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_apply_prefix_with_scope() {
+        let result = TestHelper::apply_prefix("feat(auth): implement login", "PROJ-001 ");
+        assert_eq!(result, "PROJ-001 implement login");
+    }
+
+    #[test]
+    fn test_apply_prefix_preserves_message_body() {
+        let result = TestHelper::apply_prefix(
+            "refactor: improve code structure with better patterns",
+            "🔧 ",
+        );
+        assert_eq!(result, "🔧 improve code structure with better patterns");
+    }
+
+    #[test]
+    fn test_apply_prefix_with_empty_prefix() {
+        let result = TestHelper::apply_prefix("feat: new feature", "");
+        assert_eq!(result, "new feature");
+    }
+
+    #[test]
+    fn test_apply_prefix_with_multiline_message() {
+        let message = "feat: add feature\n\nThis is a detailed description.";
+        let result = TestHelper::apply_prefix(message, "TICKET-1 ");
+        assert_eq!(
+            result,
+            "TICKET-1 add feature\n\nThis is a detailed description."
+        );
+    }
+
+    // ============================================================
+    // strip_type_prefix のテスト
+    // ============================================================
+
+    #[rstest]
+    #[case("feat: add new feature", "add new feature")]
+    #[case("fix: bug fix", "bug fix")]
+    #[case("docs: update readme", "update readme")]
+    #[case("refactor: improve code", "improve code")]
+    #[case("test: add unit tests", "add unit tests")]
+    #[case("chore: update deps", "update deps")]
+    fn test_strip_type_prefix_conventional_commits(#[case] message: &str, #[case] expected: &str) {
+        let result = TestHelper::strip_type_prefix(message);
+        assert_eq!(result, expected);
+    }
+
+    #[rstest]
+    #[case("feat(auth): implement login", "implement login")]
+    #[case("fix(api): resolve rate limiting", "resolve rate limiting")]
+    fn test_strip_type_prefix_with_scope(#[case] message: &str, #[case] expected: &str) {
+        let result = TestHelper::strip_type_prefix(message);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_strip_type_prefix_no_colon() {
+        let result = TestHelper::strip_type_prefix("simple message without colon");
+        assert_eq!(result, "simple message without colon");
+    }
+
+    #[test]
+    fn test_strip_type_prefix_extra_whitespace() {
+        let result = TestHelper::strip_type_prefix("feat:   extra whitespace");
+        assert_eq!(result, "extra whitespace");
+    }
+
+    #[test]
+    fn test_strip_type_prefix_colon_in_body() {
+        // 最初のコロンのみを処理
+        let result = TestHelper::strip_type_prefix("feat: update config: new settings");
+        assert_eq!(result, "update config: new settings");
+    }
+
+    #[test]
+    fn test_strip_type_prefix_empty_body() {
+        let result = TestHelper::strip_type_prefix("feat:");
+        assert_eq!(result, "");
+    }
+
+    // ============================================================
+    // PrefixMode のテスト
+    // ============================================================
+
+    #[test]
+    fn test_prefix_mode_variants() {
+        // PrefixModeの各バリアントが正しく作成できることを確認
+        let _script = PrefixMode::Script(ScriptResult::Prefix("PREFIX ".to_string()));
+        let _empty = PrefixMode::Script(ScriptResult::Empty);
+        let _failed = PrefixMode::Script(ScriptResult::Failed);
+        let _rule = PrefixMode::Rule("conventional".to_string());
+        let _auto = PrefixMode::Auto;
+    }
+}

@@ -65,11 +65,9 @@ impl GitService {
                     while i < lines.len() && !lines[i].starts_with("diff --git") {
                         i += 1;
                     }
-                    // ループでインクリメントされるのでデクリメント
-                    if i < lines.len() {
-                        i -= 1;
-                    }
                 }
+                // diffブロック処理後は次のdiff --gitから継続（i += 1をスキップ）
+                continue;
             } else {
                 filtered_lines.push(line);
             }
@@ -289,5 +287,184 @@ impl GitService {
 impl Default for GitService {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    // ============================================================
+    // filter_binary_diff のテスト
+    // ============================================================
+
+    #[test]
+    fn test_filter_binary_diff_empty_input() {
+        let result = GitService::filter_binary_diff("");
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_filter_binary_diff_no_binary() {
+        let diff = r#"diff --git a/src/main.rs b/src/main.rs
+index 1234567..abcdefg 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,3 +1,4 @@
+ fn main() {
++    println!("Hello");
+ }"#;
+        let result = GitService::filter_binary_diff(diff);
+        assert_eq!(result, diff);
+    }
+
+    #[test]
+    fn test_filter_binary_diff_removes_binary() {
+        let diff = r#"diff --git a/src/main.rs b/src/main.rs
+index 1234567..abcdefg 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,3 +1,4 @@
+ fn main() {
++    println!("Hello");
+ }
+diff --git a/image.png b/image.png
+Binary files a/image.png and b/image.png differ"#;
+
+        let expected = r#"diff --git a/src/main.rs b/src/main.rs
+index 1234567..abcdefg 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,3 +1,4 @@
+ fn main() {
++    println!("Hello");
+ }"#;
+
+        let result = GitService::filter_binary_diff(diff);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_filter_binary_diff_only_binary() {
+        let diff = r#"diff --git a/image.png b/image.png
+Binary files a/image.png and b/image.png differ"#;
+
+        let result = GitService::filter_binary_diff(diff);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_filter_binary_diff_multiple_binaries() {
+        let diff = r#"diff --git a/src/lib.rs b/src/lib.rs
+index 1234567..abcdefg 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1 +1,2 @@
++// new comment
+diff --git a/image1.png b/image1.png
+Binary files a/image1.png and b/image1.png differ
+diff --git a/image2.jpg b/image2.jpg
+Binary files a/image2.jpg and b/image2.jpg differ
+diff --git a/config.toml b/config.toml
+index 1111111..2222222 100644
+--- a/config.toml
++++ b/config.toml
+@@ -1 +1,2 @@
++key = "value""#;
+
+        let result = GitService::filter_binary_diff(diff);
+
+        // テキストファイルの変更のみが含まれることを確認
+        assert!(result.contains("src/lib.rs"));
+        assert!(result.contains("config.toml"));
+        assert!(!result.contains("image1.png"));
+        assert!(!result.contains("image2.jpg"));
+        assert!(!result.contains("Binary files"));
+    }
+
+    #[test]
+    fn test_filter_binary_diff_binary_at_start() {
+        let diff = r#"diff --git a/logo.svg b/logo.svg
+Binary files a/logo.svg and b/logo.svg differ
+diff --git a/README.md b/README.md
+index aaa..bbb 100644
+--- a/README.md
++++ b/README.md
+@@ -1 +1,2 @@
++# Title"#;
+
+        let result = GitService::filter_binary_diff(diff);
+
+        assert!(!result.contains("logo.svg"));
+        assert!(result.contains("README.md"));
+        assert!(result.contains("# Title"));
+    }
+
+    #[test]
+    fn test_filter_binary_diff_preserves_content_with_binary_keyword() {
+        // "Binary"という文字列がコード内にある場合でも正しく処理
+        let diff = r#"diff --git a/src/parser.rs b/src/parser.rs
+index 1234567..abcdefg 100644
+--- a/src/parser.rs
++++ b/src/parser.rs
+@@ -1,3 +1,4 @@
++// Binary search implementation
+ fn search() {}"#;
+
+        let result = GitService::filter_binary_diff(diff);
+        assert!(result.contains("Binary search implementation"));
+    }
+
+    // ============================================================
+    // ScriptResult のテスト
+    // ============================================================
+
+    #[test]
+    fn test_script_result_prefix() {
+        let result = ScriptResult::Prefix("TICKET-123 ".to_string());
+        assert_eq!(result, ScriptResult::Prefix("TICKET-123 ".to_string()));
+    }
+
+    #[test]
+    fn test_script_result_empty() {
+        let result = ScriptResult::Empty;
+        assert_eq!(result, ScriptResult::Empty);
+    }
+
+    #[test]
+    fn test_script_result_failed() {
+        let result = ScriptResult::Failed;
+        assert_eq!(result, ScriptResult::Failed);
+    }
+
+    #[test]
+    fn test_script_result_equality() {
+        assert_eq!(
+            ScriptResult::Prefix("A".to_string()),
+            ScriptResult::Prefix("A".to_string())
+        );
+        assert_ne!(
+            ScriptResult::Prefix("A".to_string()),
+            ScriptResult::Prefix("B".to_string())
+        );
+        assert_ne!(ScriptResult::Empty, ScriptResult::Failed);
+    }
+
+    // ============================================================
+    // GitService 構造体のテスト
+    // ============================================================
+
+    #[test]
+    fn test_git_service_new() {
+        let service = GitService::new();
+        // repo_pathが設定されていることを確認
+        assert!(!service.repo_path.as_os_str().is_empty());
+    }
+
+    #[test]
+    fn test_git_service_default() {
+        let service = GitService::default();
+        assert!(!service.repo_path.as_os_str().is_empty());
     }
 }

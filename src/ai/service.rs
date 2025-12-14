@@ -497,4 +497,138 @@ mod tests {
         let error = AiService::extract_error(stderr, &AiProvider::Codex);
         assert_eq!(error, "API request failed");
     }
+
+    // ============================================================
+    // AiService::from_config のテスト
+    // ============================================================
+
+    #[test]
+    fn test_ai_service_from_config_default() {
+        let config = Config::default();
+        let service = AiService::from_config(&config);
+
+        assert_eq!(service.language, "Japanese");
+        assert_eq!(service.providers.len(), 3);
+        assert_eq!(service.models.gemini, "flash");
+        assert_eq!(service.models.codex, "gpt-5.1-codex-mini");
+        assert_eq!(service.models.claude, "haiku");
+    }
+
+    #[test]
+    fn test_ai_service_from_config_custom_providers() {
+        let mut config = Config::default();
+        config.providers = vec!["claude".to_string(), "gemini".to_string()];
+        let service = AiService::from_config(&config);
+
+        assert_eq!(service.providers.len(), 2);
+        assert_eq!(service.providers[0].name(), "Claude");
+        assert_eq!(service.providers[1].name(), "Gemini");
+    }
+
+    #[test]
+    fn test_ai_service_from_config_invalid_providers_fallback() {
+        let mut config = Config::default();
+        config.providers = vec!["invalid".to_string(), "unknown".to_string()];
+        let service = AiService::from_config(&config);
+
+        // 無効なプロバイダーのみの場合はデフォルトにフォールバック
+        assert_eq!(service.providers.len(), 3);
+    }
+
+    #[test]
+    fn test_ai_service_from_config_custom_language() {
+        let mut config = Config::default();
+        config.language = "English".to_string();
+        let service = AiService::from_config(&config);
+
+        assert_eq!(service.language, "English");
+    }
+
+    #[test]
+    fn test_ai_service_from_config_custom_models() {
+        let mut config = Config::default();
+        config.models.gemini = "pro".to_string();
+        config.models.codex = "gpt-4".to_string();
+        config.models.claude = "opus".to_string();
+        let service = AiService::from_config(&config);
+
+        assert_eq!(service.models.gemini, "pro");
+        assert_eq!(service.models.codex, "gpt-4");
+        assert_eq!(service.models.claude, "opus");
+    }
+
+    // ============================================================
+    // AiService::default のテスト
+    // ============================================================
+
+    #[test]
+    fn test_ai_service_default() {
+        let service = AiService::default();
+
+        assert_eq!(service.language, "Japanese");
+        assert_eq!(service.providers.len(), 3);
+        assert_eq!(service.providers[0].name(), "Gemini");
+        assert_eq!(service.providers[1].name(), "Codex");
+        assert_eq!(service.providers[2].name(), "Claude");
+    }
+
+    // ============================================================
+    // clean_message 追加テスト
+    // ============================================================
+
+    #[test]
+    fn test_clean_message_nested_quotes() {
+        let message = "\"'feat: message'\"";
+        // 外側の引用符のみ削除される
+        let result = AiService::clean_message(message);
+        assert!(result.contains("feat: message"));
+    }
+
+    #[test]
+    fn test_clean_message_empty() {
+        let message = "";
+        assert_eq!(AiService::clean_message(message), "");
+    }
+
+    #[test]
+    fn test_clean_message_only_whitespace() {
+        let message = "   \n\t  ";
+        assert_eq!(AiService::clean_message(message), "");
+    }
+
+    #[test]
+    fn test_clean_message_multiline() {
+        let message = "feat: add feature\n\nThis is a longer description.";
+        assert_eq!(
+            AiService::clean_message(message),
+            "feat: add feature\n\nThis is a longer description."
+        );
+    }
+
+    #[test]
+    fn test_clean_message_code_block_multiline() {
+        let message = "```\nfeat: add feature\n\nDescription here\n```";
+        let result = AiService::clean_message(message);
+        assert!(result.contains("feat: add feature"));
+        assert!(result.contains("Description here"));
+    }
+
+    // ============================================================
+    // extract_error 追加テスト
+    // ============================================================
+
+    #[test]
+    fn test_extract_error_whitespace_only() {
+        let stderr = "   \n\t  ";
+        let error = AiService::extract_error(stderr, &AiProvider::Claude);
+        assert_eq!(error, "API request failed");
+    }
+
+    #[test]
+    fn test_extract_error_gemini_multiple_api_errors() {
+        // 最初のAPI Errorを返す
+        let stderr = "[API Error: First error]\n[API Error: Second error]";
+        let error = AiService::extract_error(stderr, &AiProvider::Gemini);
+        assert_eq!(error, "[API Error: First error]");
+    }
 }
