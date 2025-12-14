@@ -1,4 +1,4 @@
-.PHONY: build release release-major release-minor install clean test fmt check help
+.PHONY: build release release-major release-minor install clean test fmt check help tag-release
 
 # Default target
 .DEFAULT_GOAL := help
@@ -34,6 +34,20 @@ install: release ## Build release and install to /usr/local/bin
 
 install-release: release-patch install ## Bump version, build, and install
 
+## Release (GitHub Actions)
+
+tag-release: ## Create a git tag for release (triggers GitHub Actions build)
+	@VERSION=$$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/'); \
+	echo "Creating tag v$$VERSION..."; \
+	git tag -a "v$$VERSION" -m "Release v$$VERSION"; \
+	echo "Tag created. Push with: git push origin v$$VERSION"
+
+tag-release-push: ## Create and push a git tag for release
+	@VERSION=$$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/'); \
+	echo "Creating and pushing tag v$$VERSION..."; \
+	git tag -a "v$$VERSION" -m "Release v$$VERSION"; \
+	git push origin "v$$VERSION"
+
 ## Development
 
 test: ## Run tests
@@ -57,4 +71,4 @@ help: ## Show this help message
 	@echo "Usage: make [target]"
 	@echo ""
 	@echo "Targets:"
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
