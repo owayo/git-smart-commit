@@ -4,7 +4,7 @@ use colored::Colorize;
 
 use crate::ai::AiService;
 use crate::cli::Cli;
-use crate::config::Config;
+use crate::config::{Config, PrefixScriptConfig};
 use crate::error::AppError;
 use crate::git::GitService;
 
@@ -12,6 +12,7 @@ use crate::git::GitService;
 pub struct App {
     git: GitService,
     ai: AiService,
+    prefix_scripts: Vec<PrefixScriptConfig>,
 }
 
 impl App {
@@ -28,7 +29,49 @@ impl App {
         Ok(Self {
             git: GitService::new(),
             ai,
+            prefix_scripts: config.prefix_scripts,
         })
+    }
+
+    /// プレフィックススクリプトを実行してプレフィックスを取得
+    fn get_prefix(&self) -> Option<String> {
+        // リモートURLとブランチ名を取得
+        let remote_url = self.git.get_remote_url()?;
+        let branch = self.git.get_current_branch()?;
+
+        // 設定されたプレフィックススクリプトをチェック
+        for script_config in &self.prefix_scripts {
+            if remote_url.contains(&script_config.host_pattern) {
+                println!(
+                    "{}",
+                    format!(
+                        "Running prefix script for {}...",
+                        script_config.host_pattern
+                    )
+                    .cyan()
+                );
+                if let Some(prefix) =
+                    self.git
+                        .run_prefix_script(&script_config.script, &remote_url, &branch)
+                {
+                    return Some(prefix);
+                }
+            }
+        }
+
+        None
+    }
+
+    /// コミットメッセージにプレフィックスを適用
+    fn apply_prefix(&self, message: &str, prefix: &str) -> String {
+        // Conventional Commits形式（type: message）の場合、typeを削除してprefixに置き換え
+        if let Some(colon_pos) = message.find(':') {
+            let body = message[colon_pos + 1..].trim_start();
+            format!("{}{}", prefix, body)
+        } else {
+            // コロンがない場合はそのまま結合
+            format!("{}{}", prefix, message)
+        }
     }
 
     /// メインワークフローを実行
@@ -89,7 +132,13 @@ impl App {
 
         // コミットメッセージを生成（AIがフォーマットを決定）
         println!("{}", "Generating commit message...".cyan());
-        let message = self.ai.generate_commit_message(&diff, &recent_commits)?;
+        let mut message = self.ai.generate_commit_message(&diff, &recent_commits)?;
+
+        // プレフィックススクリプトがあれば実行
+        if let Some(prefix) = self.get_prefix() {
+            message = self.apply_prefix(&message, &prefix);
+            println!("{}", format!("Applied prefix: {}", prefix.trim()).cyan());
+        }
 
         // 生成されたメッセージを表示
         println!();
@@ -155,7 +204,13 @@ impl App {
 
         // コミットメッセージを生成
         println!("{}", "Generating commit message...".cyan());
-        let message = self.ai.generate_commit_message(&diff, &recent_commits)?;
+        let mut message = self.ai.generate_commit_message(&diff, &recent_commits)?;
+
+        // プレフィックススクリプトがあれば実行
+        if let Some(prefix) = self.get_prefix() {
+            message = self.apply_prefix(&message, &prefix);
+            println!("{}", format!("Applied prefix: {}", prefix.trim()).cyan());
+        }
 
         // 生成されたメッセージを表示
         println!();

@@ -91,6 +91,12 @@ language = "Japanese"
 gemini = "flash"
 codex = "gpt-5.1-codex-mini"
 claude = "haiku"
+
+# プレフィックススクリプト設定（オプション）
+# リモートURLに基づいて外部スクリプトを実行し、コミットメッセージのプレフィックスを生成
+[[prefix_scripts]]
+host_pattern = "gitlab.example.com"
+script = "/path/to/prefix-generate.py"
 ```
 
 ### 設定オプション
@@ -102,6 +108,18 @@ claude = "haiku"
 | `models.gemini` | Gemini CLI のモデル | `"flash"` |
 | `models.codex` | Codex CLI のモデル | `"gpt-5.1-codex-mini"` |
 | `models.claude` | Claude CLI のモデル | `"haiku"` |
+| `prefix_scripts` | プレフィックス生成用外部スクリプト | `[]` |
+
+### プレフィックススクリプト
+
+リモートURLに基づいてコミットメッセージのプレフィックスを生成する外部スクリプトを設定できます。リモートURLに指定した `host_pattern` が含まれている場合、スクリプトがリモートURLとブランチ名を引数として実行されます。
+
+スクリプトはプレフィックスを標準出力に出力する必要があります。プレフィックスが生成されない場合は、元のコミットメッセージ形式が維持されます。
+
+スクリプト呼び出し例：
+```bash
+/path/to/prefix-generate.py "git@example.com:org/repo.git" "feature/my-branch"
+```
 
 ## ビルドコマンド
 

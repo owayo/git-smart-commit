@@ -219,6 +219,76 @@ impl GitService {
 
         Ok(())
     }
+
+    /// リモートURLを取得（origin）
+    pub fn get_remote_url(&self) -> Option<String> {
+        let output = Command::new("git")
+            .args(["config", "--get", "remote.origin.url"])
+            .current_dir(&self.repo_path)
+            .output()
+            .ok()?;
+
+        if output.status.success() {
+            let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if url.is_empty() {
+                None
+            } else {
+                Some(url)
+            }
+        } else {
+            None
+        }
+    }
+
+    /// 現在のブランチ名を取得
+    pub fn get_current_branch(&self) -> Option<String> {
+        let output = Command::new("git")
+            .args(["branch", "--show-current"])
+            .current_dir(&self.repo_path)
+            .output()
+            .ok()?;
+
+        if output.status.success() {
+            let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if branch.is_empty() {
+                None
+            } else {
+                Some(branch)
+            }
+        } else {
+            None
+        }
+    }
+
+    /// プレフィックススクリプトを実行してプレフィックスを取得
+    pub fn run_prefix_script(
+        &self,
+        script: &str,
+        remote_url: &str,
+        branch: &str,
+    ) -> Option<String> {
+        let output = Command::new(script)
+            .args([remote_url, branch])
+            .current_dir(&self.repo_path)
+            .output()
+            .ok()?;
+
+        if output.status.success() {
+            let prefix = String::from_utf8_lossy(&output.stdout).to_string();
+            if prefix.is_empty() {
+                None
+            } else {
+                Some(prefix)
+            }
+        } else {
+            // スクリプトが失敗しても警告を出すだけで続行
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !stderr.is_empty() {
+                eprintln!("⚠ プレフィックススクリプト警告: {}", stderr.trim());
+            }
+            None
+        }
+    }
 }
 
 impl Default for GitService {

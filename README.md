@@ -91,6 +91,12 @@ language = "Japanese"
 gemini = "flash"
 codex = "gpt-5.1-codex-mini"
 claude = "haiku"
+
+# Prefix script configuration (optional)
+# Execute external scripts to generate commit message prefix based on remote URL
+[[prefix_scripts]]
+host_pattern = "gitlab.example.com"
+script = "/path/to/prefix-generate.py"
 ```
 
 ### Configuration Options
@@ -102,6 +108,18 @@ claude = "haiku"
 | `models.gemini` | Model for Gemini CLI | `"flash"` |
 | `models.codex` | Model for Codex CLI | `"gpt-5.1-codex-mini"` |
 | `models.claude` | Model for Claude CLI | `"haiku"` |
+| `prefix_scripts` | External scripts for prefix generation | `[]` |
+
+### Prefix Scripts
+
+You can configure external scripts to generate commit message prefixes based on the remote URL. When the remote URL contains the specified `host_pattern`, the script is executed with the remote URL and branch name as arguments.
+
+The script should output the prefix to stdout. If no prefix is generated, the original commit message format is preserved.
+
+Example script call:
+```bash
+/path/to/prefix-generate.py "git@example.com:org/repo.git" "feature/my-branch"
+```
 
 ## Build Commands
 

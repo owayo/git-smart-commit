@@ -23,6 +23,15 @@ impl Default for ModelsConfig {
     }
 }
 
+/// プレフィックススクリプト設定
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PrefixScriptConfig {
+    /// リモートURLに含まれるべきホスト名パターン
+    pub host_pattern: String,
+    /// 実行するスクリプトのパス
+    pub script: String,
+}
+
 /// アプリケーション設定
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
@@ -33,6 +42,9 @@ pub struct Config {
     /// 各プロバイダーのモデル
     #[serde(default)]
     pub models: ModelsConfig,
+    /// プレフィックス生成スクリプト設定（オプション）
+    #[serde(default)]
+    pub prefix_scripts: Vec<PrefixScriptConfig>,
 }
 
 impl Default for Config {
@@ -45,6 +57,7 @@ impl Default for Config {
             ],
             language: "Japanese".to_string(),
             models: ModelsConfig::default(),
+            prefix_scripts: Vec::new(),
         }
     }
 }
