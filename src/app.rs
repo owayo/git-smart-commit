@@ -123,6 +123,10 @@ impl App {
                 "No staged changes. Using unstaged changes for message generation.".yellow()
             );
             (unstaged_diff, true)
+        } else if cli.stage_all {
+            // --allフラグ指定時で変更がない場合は正常終了
+            println!("{}", "変更がありません。".cyan());
+            return Ok(());
         } else {
             // デフォルト: ステージ済みのみ
             return Err(AppError::NoStagedChanges);
