@@ -160,7 +160,8 @@ Instructions:
 - Write the commit message in {language}
 
 Rules:
-- First line: max 50 characters
+- Write only a single line (no multi-line message)
+- Max 50 characters
 - Be specific about what changed
 - Use imperative mood (Add, Fix, Update, not Added, Fixed, Updated)
 - Output ONLY the commit message, no explanation
