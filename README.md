@@ -331,6 +331,87 @@ git-sc --squash origin/main
 # Squash 4 commits? [Y/n]
 ```
 
+### Basic Usage
+
+In a repository matching a prefix rule, stage all changes and commit without confirmation:
+```bash
+$ git-sc -a -y
+Staging all changes...
+Using prefix rule for git@github\.com:myorg/: conventional
+Generating commit message...
+  Using Gemini...
+
+Generated commit message:
+──────────────────────────────────────────────────
+docs: add spec-driven development documentation
+──────────────────────────────────────────────────
+
+✓ Commit created successfully!
+```
+
+### Amend (Regenerate Commit Message)
+
+Auto-detect prefix format from recent commits and regenerate the message for the last commit:
+```bash
+$ git-sc --amend -y
+Amend mode: regenerating message for last commit...
+Recent commits (for format reference):
+  docs: remove default values from README
+  feat: implement version-based filtering
+  fix: add URL
+  feat: add wait procedure
+  fix: fix variable name
+Generating commit message...
+  Using Gemini...
+
+Generated commit message:
+──────────────────────────────────────────────────
+fix: update execution notes
+──────────────────────────────────────────────────
+
+✓ Commit amended successfully!
+```
+
+### With Prefix Scripts
+
+When prefix scripts are configured, custom prefixes are automatically applied:
+```bash
+$ git-sc --amend -y
+Amend mode: regenerating message for last commit...
+Running prefix script for ^https://gitlab\.example\.com/myorg/...
+Generating commit message...
+  Using Gemini...
+Applied prefix: myorg/PROJECT!1234
+
+Generated commit message:
+──────────────────────────────────────────────────
+myorg/PROJECT!1234 add migration version check
+──────────────────────────────────────────────────
+
+✓ Commit amended successfully!
+```
+
+### Squash Example
+
+Combine multiple commits in a feature branch into one:
+```bash
+$ git-sc --squash origin/develop -y
+Squash mode: combining commits into one...
+Base branch: origin/develop → Current branch: feature/add-validation
+Commits to squash: 13
+Running prefix script for ^https://gitlab\.example\.com/myorg/...
+Generating commit message...
+  Using Gemini...
+Applied prefix: myorg/PROJECT!1500
+
+Generated commit message:
+──────────────────────────────────────────────────
+myorg/PROJECT!1500 add validation and adjust CI
+──────────────────────────────────────────────────
+
+✓ 13 commits squashed successfully!
+```
+
 ### Provider Fallback
 
 If Gemini CLI fails or is not installed, `git-sc` automatically tries the next provider:

@@ -331,6 +331,87 @@ git-sc --squash origin/main
 # Squash 4 commits? [Y/n]
 ```
 
+### 基本的な使い方
+
+prefix ruleに一致するリポジトリで、全ての変更をステージして確認なしでコミット：
+```bash
+$ git-sc -a -y
+Staging all changes...
+Using prefix rule for git@github\.com:myorg/: conventional
+Generating commit message...
+  Using Gemini...
+
+Generated commit message:
+──────────────────────────────────────────────────
+docs: 仕様駆動開発のドキュメントを追加
+──────────────────────────────────────────────────
+
+✓ Commit created successfully!
+```
+
+### Amend（コミットメッセージ再生成）
+
+プレフィックスを自動判定させ、直前のコミットメッセージを再生成する場合：
+```bash
+$ git-sc --amend -y
+Amend mode: regenerating message for last commit...
+Recent commits (for format reference):
+  docs: READMEからデフォルト値を削除
+  feat: バージョンに基づくフィルタリングを実装
+  fix: URLを追記
+  feat: 待機手順を追加
+  fix: 変数名修正
+Generating commit message...
+  Using Gemini...
+
+Generated commit message:
+──────────────────────────────────────────────────
+fix: 実行時の注意書きを修正
+──────────────────────────────────────────────────
+
+✓ Commit amended successfully!
+```
+
+### プレフィックススクリプトとの連携
+
+プレフィックススクリプトが設定されている場合、カスタムプレフィックスが自動付与されます：
+```bash
+$ git-sc --amend -y
+Amend mode: regenerating message for last commit...
+Running prefix script for ^https://gitlab\.example\.com/myorg/...
+Generating commit message...
+  Using Gemini...
+Applied prefix: myorg/PROJECT!1234
+
+Generated commit message:
+──────────────────────────────────────────────────
+myorg/PROJECT!1234 マイグレーションバージョンチェック処理追加
+──────────────────────────────────────────────────
+
+✓ Commit amended successfully!
+```
+
+### Squash の実行例
+
+フィーチャーブランチで複数のコミットを1つにまとめる場合：
+```bash
+$ git-sc --squash origin/develop -y
+Squash mode: combining commits into one...
+Base branch: origin/develop → Current branch: feature/add-validation
+Commits to squash: 13
+Running prefix script for ^https://gitlab\.example\.com/myorg/...
+Generating commit message...
+  Using Gemini...
+Applied prefix: myorg/PROJECT!1500
+
+Generated commit message:
+──────────────────────────────────────────────────
+myorg/PROJECT!1500 バリデーション機能を追加しCI調整
+──────────────────────────────────────────────────
+
+✓ 13 commits squashed successfully!
+```
+
 ### プロバイダーフォールバック
 
 Gemini CLI が失敗またはインストールされていない場合、`git-sc` は自動的に次のプロバイダーを試行:
