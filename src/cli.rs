@@ -30,3 +30,119 @@ pub struct Cli {
     #[arg(short = 'l', long = "lang")]
     pub language: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ============================================================
+    // CLI 引数パースのテスト
+    // ============================================================
+
+    #[test]
+    fn test_cli_default_values() {
+        let cli = Cli::parse_from(["git-sc"]);
+        assert!(!cli.auto_confirm);
+        assert!(!cli.dry_run);
+        assert!(!cli.stage_all);
+        assert!(!cli.amend);
+        assert!(cli.squash.is_none());
+        assert!(cli.language.is_none());
+    }
+
+    #[test]
+    fn test_cli_auto_confirm_short() {
+        let cli = Cli::parse_from(["git-sc", "-y"]);
+        assert!(cli.auto_confirm);
+    }
+
+    #[test]
+    fn test_cli_auto_confirm_long() {
+        let cli = Cli::parse_from(["git-sc", "--yes"]);
+        assert!(cli.auto_confirm);
+    }
+
+    #[test]
+    fn test_cli_dry_run_short() {
+        let cli = Cli::parse_from(["git-sc", "-n"]);
+        assert!(cli.dry_run);
+    }
+
+    #[test]
+    fn test_cli_dry_run_long() {
+        let cli = Cli::parse_from(["git-sc", "--dry-run"]);
+        assert!(cli.dry_run);
+    }
+
+    #[test]
+    fn test_cli_stage_all_short() {
+        let cli = Cli::parse_from(["git-sc", "-a"]);
+        assert!(cli.stage_all);
+    }
+
+    #[test]
+    fn test_cli_stage_all_long() {
+        let cli = Cli::parse_from(["git-sc", "--all"]);
+        assert!(cli.stage_all);
+    }
+
+    #[test]
+    fn test_cli_amend() {
+        let cli = Cli::parse_from(["git-sc", "--amend"]);
+        assert!(cli.amend);
+    }
+
+    #[test]
+    fn test_cli_squash_with_base() {
+        let cli = Cli::parse_from(["git-sc", "--squash", "origin/main"]);
+        assert_eq!(cli.squash, Some("origin/main".to_string()));
+    }
+
+    #[test]
+    fn test_cli_squash_with_feature_branch() {
+        let cli = Cli::parse_from(["git-sc", "--squash", "origin/feature/test"]);
+        assert_eq!(cli.squash, Some("origin/feature/test".to_string()));
+    }
+
+    #[test]
+    fn test_cli_language_short() {
+        let cli = Cli::parse_from(["git-sc", "-l", "English"]);
+        assert_eq!(cli.language, Some("English".to_string()));
+    }
+
+    #[test]
+    fn test_cli_language_long() {
+        let cli = Cli::parse_from(["git-sc", "--lang", "Japanese"]);
+        assert_eq!(cli.language, Some("Japanese".to_string()));
+    }
+
+    #[test]
+    fn test_cli_combined_options() {
+        let cli = Cli::parse_from(["git-sc", "-a", "-y", "-l", "English"]);
+        assert!(cli.auto_confirm);
+        assert!(cli.stage_all);
+        assert_eq!(cli.language, Some("English".to_string()));
+    }
+
+    #[test]
+    fn test_cli_squash_with_confirm() {
+        let cli = Cli::parse_from(["git-sc", "--squash", "main", "-y"]);
+        assert_eq!(cli.squash, Some("main".to_string()));
+        assert!(cli.auto_confirm);
+    }
+
+    #[test]
+    fn test_cli_squash_with_dry_run() {
+        let cli = Cli::parse_from(["git-sc", "--squash", "develop", "-n"]);
+        assert_eq!(cli.squash, Some("develop".to_string()));
+        assert!(cli.dry_run);
+    }
+
+    #[test]
+    fn test_cli_amend_with_options() {
+        let cli = Cli::parse_from(["git-sc", "--amend", "-y", "-l", "English"]);
+        assert!(cli.amend);
+        assert!(cli.auto_confirm);
+        assert_eq!(cli.language, Some("English".to_string()));
+    }
+}

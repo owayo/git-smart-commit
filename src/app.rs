@@ -378,7 +378,7 @@ impl App {
         );
 
         // merge-baseを取得
-        let merge_base = self.git.get_merge_base(&base_branch, "HEAD")?;
+        let merge_base = self.git.get_merge_base(base_branch, "HEAD")?;
 
         // コミット数を確認
         let commit_count = self.git.count_commits_from_base(&merge_base)?;

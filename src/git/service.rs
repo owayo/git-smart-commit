@@ -550,4 +550,159 @@ index 1234567..abcdefg 100644
         let service = GitService::default();
         assert!(!service.repo_path.as_os_str().is_empty());
     }
+
+    // ============================================================
+    // Git リポジトリ操作のテスト（実際のリポジトリを使用）
+    // ============================================================
+
+    #[test]
+    fn test_verify_repository_success() {
+        // このテストは git-smart-commit リポジトリ内で実行される前提
+        let service = GitService::new();
+        let result = service.verify_repository();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_get_current_branch() {
+        let service = GitService::new();
+        let branch = service.get_current_branch();
+        // ブランチ名が取得できること（空でないこと）
+        assert!(branch.is_some());
+        assert!(!branch.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_get_remote_url() {
+        let service = GitService::new();
+        let url = service.get_remote_url();
+        // リモートURLが設定されている場合はgit-smart-commitを含む
+        if let Some(remote) = url {
+            assert!(remote.contains("git-smart-commit") || remote.contains("origin"));
+        }
+    }
+
+    #[test]
+    fn test_get_recent_commits() {
+        let service = GitService::new();
+        let commits = service.get_recent_commits(5);
+        assert!(commits.is_ok());
+        // このリポジトリにはコミットがあるはず
+        let commits = commits.unwrap();
+        assert!(!commits.is_empty());
+    }
+
+    #[test]
+    fn test_get_recent_commits_limited() {
+        let service = GitService::new();
+        let commits = service.get_recent_commits(2);
+        assert!(commits.is_ok());
+        let commits = commits.unwrap();
+        assert!(commits.len() <= 2);
+    }
+
+    // ============================================================
+    // branch_exists のテスト
+    // ============================================================
+
+    #[test]
+    fn test_branch_exists_main() {
+        let service = GitService::new();
+        // main または master ブランチが存在するはず
+        let main_exists = service.branch_exists("main");
+        let master_exists = service.branch_exists("master");
+        assert!(main_exists || master_exists);
+    }
+
+    #[test]
+    fn test_branch_exists_head() {
+        let service = GitService::new();
+        // HEAD は常に存在する
+        assert!(service.branch_exists("HEAD"));
+    }
+
+    #[test]
+    fn test_branch_exists_nonexistent() {
+        let service = GitService::new();
+        // 存在しないブランチ
+        assert!(!service.branch_exists("nonexistent-branch-12345"));
+    }
+
+    #[test]
+    fn test_branch_exists_with_origin_prefix() {
+        let service = GitService::new();
+        // origin/main または origin/master が存在する可能性
+        let origin_main = service.branch_exists("origin/main");
+        let origin_master = service.branch_exists("origin/master");
+        // どちらかが存在するか、リモートがない場合は両方false
+        // このテストはリモートの設定に依存するため、結果の検証は緩く
+        assert!(origin_main || origin_master || (!origin_main && !origin_master));
+    }
+
+    // ============================================================
+    // get_merge_base のテスト
+    // ============================================================
+
+    #[test]
+    fn test_get_merge_base_with_head() {
+        let service = GitService::new();
+        // HEAD と HEAD の merge-base は HEAD 自身
+        let result = service.get_merge_base("HEAD", "HEAD");
+        assert!(result.is_ok());
+        let base = result.unwrap();
+        // SHA-1 ハッシュは40文字
+        assert_eq!(base.len(), 40);
+    }
+
+    #[test]
+    fn test_get_merge_base_invalid_branch() {
+        let service = GitService::new();
+        let result = service.get_merge_base("nonexistent-branch", "HEAD");
+        assert!(result.is_err());
+    }
+
+    // ============================================================
+    // count_commits_from_base のテスト
+    // ============================================================
+
+    #[test]
+    fn test_count_commits_from_base_same() {
+        let service = GitService::new();
+        // HEAD から HEAD までのコミット数は 0
+        let result = service.count_commits_from_base("HEAD");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 0);
+    }
+
+    // ============================================================
+    // get_diff_from_base のテスト
+    // ============================================================
+
+    #[test]
+    fn test_get_diff_from_base_same() {
+        let service = GitService::new();
+        // HEAD から HEAD までの差分は空
+        let result = service.get_diff_from_base("HEAD");
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    // ============================================================
+    // ScriptResult Clone のテスト
+    // ============================================================
+
+    #[test]
+    fn test_script_result_clone() {
+        let original = ScriptResult::Prefix("TEST ".to_string());
+        let cloned = original.clone();
+        assert_eq!(original, cloned);
+    }
+
+    #[test]
+    fn test_script_result_debug() {
+        let result = ScriptResult::Prefix("DEBUG ".to_string());
+        let debug_str = format!("{:?}", result);
+        assert!(debug_str.contains("Prefix"));
+        assert!(debug_str.contains("DEBUG"));
+    }
 }

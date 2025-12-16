@@ -36,3 +36,109 @@ pub enum AppError {
     #[error("ベースブランチ上では squash できません。フィーチャーブランチに切り替えてください。")]
     OnBaseBranch,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ============================================================
+    // AppError メッセージのテスト
+    // ============================================================
+
+    #[test]
+    fn test_error_not_git_repository() {
+        let err = AppError::NotGitRepository;
+        assert_eq!(
+            err.to_string(),
+            "Gitリポジトリではありません。Gitリポジトリ内でこのコマンドを実行してください。"
+        );
+    }
+
+    #[test]
+    fn test_error_no_changes() {
+        let err = AppError::NoChanges;
+        assert_eq!(
+            err.to_string(),
+            "変更が見つかりません。コミットメッセージを生成するには変更を加えてください。"
+        );
+    }
+
+    #[test]
+    fn test_error_no_staged_changes() {
+        let err = AppError::NoStagedChanges;
+        assert_eq!(
+            err.to_string(),
+            "ステージ済みの変更がありません。'git add'でファイルをステージするか、-sフラグなしで実行してください。"
+        );
+    }
+
+    #[test]
+    fn test_error_no_ai_provider_installed() {
+        let err = AppError::NoAiProviderInstalled;
+        assert_eq!(
+            err.to_string(),
+            "AI CLIがインストールされていません。gemini、codex、またはclaudeのいずれかをインストールしてください。"
+        );
+    }
+
+    #[test]
+    fn test_error_ai_provider_error() {
+        let err = AppError::AiProviderError("API rate limit exceeded".to_string());
+        assert_eq!(err.to_string(), "API rate limit exceeded");
+    }
+
+    #[test]
+    fn test_error_git_error() {
+        let err = AppError::GitError("fatal: not a git repository".to_string());
+        assert_eq!(
+            err.to_string(),
+            "Gitコマンドが失敗しました: fatal: not a git repository"
+        );
+    }
+
+    #[test]
+    fn test_error_user_cancelled() {
+        let err = AppError::UserCancelled;
+        assert_eq!(err.to_string(), "ユーザーが操作をキャンセルしました");
+    }
+
+    #[test]
+    fn test_error_config_error() {
+        let err = AppError::ConfigError("Invalid TOML format".to_string());
+        assert_eq!(err.to_string(), "設定エラー: Invalid TOML format");
+    }
+
+    #[test]
+    fn test_error_no_base_branch() {
+        let err = AppError::NoBaseBranch;
+        assert_eq!(
+            err.to_string(),
+            "ベースブランチが見つかりません。--base オプションで指定してください。"
+        );
+    }
+
+    #[test]
+    fn test_error_no_commits_to_squash() {
+        let err = AppError::NoCommitsToSquash;
+        assert_eq!(
+            err.to_string(),
+            "squash対象のコミットがありません。現在のブランチにベースからの変更がないか確認してください。"
+        );
+    }
+
+    #[test]
+    fn test_error_on_base_branch() {
+        let err = AppError::OnBaseBranch;
+        assert_eq!(
+            err.to_string(),
+            "ベースブランチ上では squash できません。フィーチャーブランチに切り替えてください。"
+        );
+    }
+
+    #[test]
+    fn test_error_debug_format() {
+        let err = AppError::NoBaseBranch;
+        let debug_str = format!("{:?}", err);
+        assert!(debug_str.contains("NoBaseBranch"));
+    }
+}
