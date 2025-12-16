@@ -17,6 +17,7 @@ CLI AIエージェント（Gemini CLI、Codex CLI、Claude Code）を使用し�
 - **インタラクティブ**: コミット前に確認プロンプト表示（`-y` でスキップ可能）
 - **ドライラン**: コミットせずに生成メッセージをプレビュー
 - **Amend サポート**: `--amend` で直前のコミットメッセージを再生成
+- **Squash サポート**: `--squash <BASE>` でブランチ内の全コミットを1つにまとめる
 
 ## 前提条件
 
@@ -239,6 +240,9 @@ git-sc -n
 # 直前のコミットメッセージを再生成（amend）
 git-sc --amend
 
+# ブランチ内の全コミットを1つにまとめる（ベースブランチを指定）
+git-sc --squash origin/main
+
 # 言語設定を上書き
 git-sc -l English
 
@@ -246,6 +250,7 @@ git-sc -l English
 git-sc -a -y           # 全ステージして確認なしでコミット
 git-sc -a -n           # 全ステージしてメッセージをプレビュー
 git-sc --amend -y      # 確認なしで直前のコミットを修正
+git-sc --squash origin/main -y  # 確認なしで全コミットをまとめる
 ```
 
 ## オプション
@@ -256,6 +261,7 @@ git-sc --amend -y      # 確認なしで直前のコミットを修正
 | `--dry-run` | `-n` | 実際にコミットせず生成メッセージを表示 |
 | `--all` | `-a` | アンステージの変更も含めて全てをステージしてコミット |
 | `--amend` | | 直前のコミットメッセージを再生成 |
+| `--squash <BASE>` | | ブランチ内の全コミットを1つにまとめる（ベースブランチを指定） |
 | `--lang` | `-l` | 設定ファイルの言語設定を上書き |
 | `--help` | `-h` | ヘルプ情報を表示 |
 | `--version` | `-V` | バージョン情報を表示 |
@@ -296,6 +302,33 @@ feat(auth): implement password reset flow
 `git-sc` は以下のようなメッセージを生成:
 ```
 [Update] refactor user service
+```
+
+### Squash（コミットまとめ）
+
+フィーチャーブランチで複数のコミットがある場合：
+```
+git log --oneline
+a1b2c3d feat: 最終調整
+d4e5f6g fix: タイポ修正
+g7h8i9j feat: バリデーション追加
+j0k1l2m feat: 初期実装
+```
+
+`--squash` で1つのコミットにまとめ、AIがメッセージを生成：
+```bash
+git-sc --squash origin/main
+# Squash mode: combining commits into one...
+# Base branch: origin/main → Current branch: feature/my-feature
+# Commits to squash: 4
+# Generating commit message...
+#
+# Generated commit message:
+# ──────────────────────────────────────────────────
+# feat: ユーザーバリデーション機能を実装
+# ──────────────────────────────────────────────────
+#
+# Squash 4 commits? [Y/n]
 ```
 
 ### プロバイダーフォールバック

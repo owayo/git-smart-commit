@@ -17,6 +17,7 @@ Smart commit message generator using AI coding agents (Gemini CLI, Codex CLI, or
 - **Interactive**: Prompts for confirmation before committing (can be skipped with `-y`)
 - **Dry Run**: Preview generated messages without committing
 - **Amend Support**: Regenerate message for the last commit with `--amend`
+- **Squash Support**: Combine all commits in a branch into one with `--squash <BASE>`
 
 ## Prerequisites
 
@@ -239,6 +240,9 @@ git-sc -n
 # Regenerate message for the last commit (amend)
 git-sc --amend
 
+# Squash all commits in current branch into one (specify base branch)
+git-sc --squash origin/main
+
 # Override language setting
 git-sc -l English
 
@@ -246,6 +250,7 @@ git-sc -l English
 git-sc -a -y           # Stage all and commit without confirmation
 git-sc -a -n           # Stage all and preview message
 git-sc --amend -y      # Amend last commit without confirmation
+git-sc --squash origin/main -y  # Squash all commits without confirmation
 ```
 
 ## Options
@@ -256,6 +261,7 @@ git-sc --amend -y      # Amend last commit without confirmation
 | `--dry-run` | `-n` | Show generated message without actually committing |
 | `--all` | `-a` | Stage all changes (including unstaged) and commit |
 | `--amend` | | Regenerate message for the last commit |
+| `--squash <BASE>` | | Combine all commits in current branch into one (specify base branch) |
 | `--lang` | `-l` | Override language setting from config |
 | `--help` | `-h` | Print help information |
 | `--version` | `-V` | Print version information |
@@ -296,6 +302,33 @@ If your recent commits are:
 `git-sc` will generate messages like:
 ```
 [Update] refactor user service
+```
+
+### Squash Commits
+
+When working on a feature branch with multiple commits:
+```
+git log --oneline
+a1b2c3d feat: final adjustment
+d4e5f6g fix: typo
+g7h8i9j feat: add validation
+j0k1l2m feat: initial implementation
+```
+
+Use `--squash` to combine them into a single commit with an AI-generated message:
+```bash
+git-sc --squash origin/main
+# Squash mode: combining commits into one...
+# Base branch: origin/main → Current branch: feature/my-feature
+# Commits to squash: 4
+# Generating commit message...
+#
+# Generated commit message:
+# ──────────────────────────────────────────────────
+# feat: implement user validation feature
+# ──────────────────────────────────────────────────
+#
+# Squash 4 commits? [Y/n]
 ```
 
 ### Provider Fallback
