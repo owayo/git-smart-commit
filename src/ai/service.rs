@@ -1,4 +1,5 @@
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 use colored::Colorize;
 
@@ -217,25 +218,51 @@ Changes:
 
     /// 特定のAIプロバイダーを呼び出し
     fn call_provider(&self, provider: &AiProvider, prompt: &str) -> Result<String, AppError> {
-        let output = match provider {
-            AiProvider::Gemini => Command::new("gemini")
-                .args(["-m", &self.models.gemini, prompt])
-                .output(),
-            AiProvider::Codex => Command::new("codex")
-                .args(["exec", "--model", &self.models.codex, prompt])
-                .output(),
-            AiProvider::Claude => Command::new("claude")
-                .args(["--model", &self.models.claude, "-p", prompt])
-                .output(),
+        // Build command with stdin support to avoid command line length limits on Windows
+        let mut cmd = if cfg!(windows) {
+            let mut c = Command::new("cmd");
+            c.args(["/C", provider.command()]);
+            c
+        } else {
+            Command::new(provider.command())
         };
 
-        let output = output.map_err(|e| {
+        // Add provider-specific arguments (without the prompt)
+        match provider {
+            AiProvider::Gemini => {
+                cmd.args(["-m", &self.models.gemini]);
+            }
+            AiProvider::Codex => {
+                cmd.args(["exec", "--model", &self.models.codex]);
+            }
+            AiProvider::Claude => {
+                cmd.args(["--model", &self.models.claude, "-p"]);
+            }
+        };
+
+        // Pass prompt via stdin to avoid OS error 206 (filename too long) on Windows
+        cmd.stdin(Stdio::piped());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+
+        let mut child = cmd.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 AppError::AiProviderError(format!("{} not found", provider.name()))
             } else {
                 AppError::AiProviderError(e.to_string())
             }
         })?;
+
+        // Write prompt to stdin
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(prompt.as_bytes())
+                .map_err(|e| AppError::AiProviderError(format!("Failed to write prompt: {}", e)))?;
+        }
+
+        let output = child
+            .wait_with_output()
+            .map_err(|e| AppError::AiProviderError(format!("Failed to wait for process: {}", e)))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
