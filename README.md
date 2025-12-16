@@ -1,5 +1,7 @@
 # git-sc
 
+[![CI](https://github.com/owa/git-smart-commit/actions/workflows/ci.yml/badge.svg)](https://github.com/owa/git-smart-commit/actions/workflows/ci.yml)
+
 Smart commit message generator using AI coding agents (Gemini CLI, Codex CLI, or Claude Code).
 
 `git-sc` analyzes your staged changes and past commit history to generate contextually appropriate commit messages using AI coding agents with automatic fallback support.
