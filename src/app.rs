@@ -182,9 +182,8 @@ impl App {
         println!("{}", "Generating commit message...".cyan());
         let mut message = match &prefix_mode {
             PrefixMode::Script(_) => {
-                // スクリプトモード: 自動判定で生成
-                self.ai
-                    .generate_commit_message(&diff, &recent_commits, None)?
+                // スクリプトモード: プレフィックスなしで生成（後でスクリプトのプレフィックスを適用）
+                self.ai.generate_commit_message(&diff, &[], Some("plain"))?
             }
             PrefixMode::Rule(prefix_type) => {
                 // ルールモード: 指定されたprefix_typeで生成
@@ -282,8 +281,8 @@ impl App {
         println!("{}", "Generating commit message...".cyan());
         let mut message = match &prefix_mode {
             PrefixMode::Script(_) => {
-                self.ai
-                    .generate_commit_message(&diff, &recent_commits, None)?
+                // スクリプトモード: プレフィックスなしで生成（後でスクリプトのプレフィックスを適用）
+                self.ai.generate_commit_message(&diff, &[], Some("plain"))?
             }
             PrefixMode::Rule(prefix_type) => {
                 self.ai
