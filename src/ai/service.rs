@@ -97,7 +97,9 @@ impl AiService {
 
     /// プロバイダーがインストールされているかチェック
     fn is_installed(provider: &AiProvider) -> bool {
-        Command::new("which")
+        // Windows uses "where", Unix uses "which"
+        let check_cmd = if cfg!(windows) { "where" } else { "which" };
+        Command::new(check_cmd)
             .arg(provider.command())
             .output()
             .map(|o| o.status.success())
