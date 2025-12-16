@@ -1,6 +1,6 @@
 # git-sc
 
-[![CI](https://github.com/owa/git-smart-commit/actions/workflows/ci.yml/badge.svg)](https://github.com/owa/git-smart-commit/actions/workflows/ci.yml)
+[![CI](https://github.com/owayo/git-smart-commit/actions/workflows/ci.yml/badge.svg)](https://github.com/owayo/git-smart-commit/actions/workflows/ci.yml)
 
 Smart commit message generator using AI coding agents (Gemini CLI, Codex CLI, or Claude Code).
 
@@ -33,41 +33,41 @@ At least one of the following AI coding agents must be installed:
 
 ### From GitHub Releases (Recommended)
 
-Download the latest binary for your platform from [Releases](https://github.com/owa/git-smart-commit/releases).
+Download the latest binary for your platform from [Releases](https://github.com/owayo/git-smart-commit/releases).
 
 #### macOS (Apple Silicon)
 ```bash
-curl -L https://github.com/owa/git-smart-commit/releases/latest/download/git-sc-aarch64-apple-darwin.tar.gz | tar xz
+curl -L https://github.com/owayo/git-smart-commit/releases/latest/download/git-sc-aarch64-apple-darwin.tar.gz | tar xz
 sudo mv git-sc /usr/local/bin/
 ```
 
 #### macOS (Intel)
 ```bash
-curl -L https://github.com/owa/git-smart-commit/releases/latest/download/git-sc-x86_64-apple-darwin.tar.gz | tar xz
+curl -L https://github.com/owayo/git-smart-commit/releases/latest/download/git-sc-x86_64-apple-darwin.tar.gz | tar xz
 sudo mv git-sc /usr/local/bin/
 ```
 
 #### Linux (x86_64)
 ```bash
-curl -L https://github.com/owa/git-smart-commit/releases/latest/download/git-sc-x86_64-unknown-linux-gnu.tar.gz | tar xz
+curl -L https://github.com/owayo/git-smart-commit/releases/latest/download/git-sc-x86_64-unknown-linux-gnu.tar.gz | tar xz
 sudo mv git-sc /usr/local/bin/
 ```
 
 #### Linux (ARM64)
 ```bash
-curl -L https://github.com/owa/git-smart-commit/releases/latest/download/git-sc-aarch64-unknown-linux-gnu.tar.gz | tar xz
+curl -L https://github.com/owayo/git-smart-commit/releases/latest/download/git-sc-aarch64-unknown-linux-gnu.tar.gz | tar xz
 sudo mv git-sc /usr/local/bin/
 ```
 
 #### Windows
 
-Download `git-sc-x86_64-pc-windows-msvc.zip` from [Releases](https://github.com/owa/git-smart-commit/releases), extract, and add to PATH.
+Download `git-sc-x86_64-pc-windows-msvc.zip` from [Releases](https://github.com/owayo/git-smart-commit/releases), extract, and add to PATH.
 
 ### From Source
 
 ```bash
 # Clone the repository
-git clone https://github.com/owa/git-smart-commit.git
+git clone https://github.com/owayo/git-smart-commit.git
 cd git-smart-commit
 
 # Build and install

@@ -1,6 +1,6 @@
 # git-sc
 
-[![CI](https://github.com/owa/git-smart-commit/actions/workflows/ci.yml/badge.svg)](https://github.com/owa/git-smart-commit/actions/workflows/ci.yml)
+[![CI](https://github.com/owayo/git-smart-commit/actions/workflows/ci.yml/badge.svg)](https://github.com/owayo/git-smart-commit/actions/workflows/ci.yml)
 
 CLI AIエージェント（Gemini CLI、Codex CLI、Claude Code）を使用したスマートコミットメッセージ生成ツール
 
@@ -33,41 +33,41 @@ CLI AIエージェント（Gemini CLI、Codex CLI、Claude Code）を使用し�
 
 ### GitHub Releases から（推奨）
 
-[Releases](https://github.com/owa/git-smart-commit/releases) からお使いのプラットフォーム用のバイナリをダウンロードしてください。
+[Releases](https://github.com/owayo/git-smart-commit/releases) からお使いのプラットフォーム用のバイナリをダウンロードしてください。
 
 #### macOS (Apple Silicon)
 ```bash
-curl -L https://github.com/owa/git-smart-commit/releases/latest/download/git-sc-aarch64-apple-darwin.tar.gz | tar xz
+curl -L https://github.com/owayo/git-smart-commit/releases/latest/download/git-sc-aarch64-apple-darwin.tar.gz | tar xz
 sudo mv git-sc /usr/local/bin/
 ```
 
 #### macOS (Intel)
 ```bash
-curl -L https://github.com/owa/git-smart-commit/releases/latest/download/git-sc-x86_64-apple-darwin.tar.gz | tar xz
+curl -L https://github.com/owayo/git-smart-commit/releases/latest/download/git-sc-x86_64-apple-darwin.tar.gz | tar xz
 sudo mv git-sc /usr/local/bin/
 ```
 
 #### Linux (x86_64)
 ```bash
-curl -L https://github.com/owa/git-smart-commit/releases/latest/download/git-sc-x86_64-unknown-linux-gnu.tar.gz | tar xz
+curl -L https://github.com/owayo/git-smart-commit/releases/latest/download/git-sc-x86_64-unknown-linux-gnu.tar.gz | tar xz
 sudo mv git-sc /usr/local/bin/
 ```
 
 #### Linux (ARM64)
 ```bash
-curl -L https://github.com/owa/git-smart-commit/releases/latest/download/git-sc-aarch64-unknown-linux-gnu.tar.gz | tar xz
+curl -L https://github.com/owayo/git-smart-commit/releases/latest/download/git-sc-aarch64-unknown-linux-gnu.tar.gz | tar xz
 sudo mv git-sc /usr/local/bin/
 ```
 
 #### Windows
 
-[Releases](https://github.com/owa/git-smart-commit/releases) から `git-sc-x86_64-pc-windows-msvc.zip` をダウンロードし、展開して PATH に追加してください。
+[Releases](https://github.com/owayo/git-smart-commit/releases) から `git-sc-x86_64-pc-windows-msvc.zip` をダウンロードし、展開して PATH に追加してください。
 
 ### ソースから
 
 ```bash
 # リポジトリをクローン
-git clone https://github.com/owa/git-smart-commit.git
+git clone https://github.com/owayo/git-smart-commit.git
 cd git-smart-commit
 
 # ビルドしてインストール
