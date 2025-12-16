@@ -1,8 +1,8 @@
-# git-sc
+# git-sc (Git Smart Commit) 🪄
 
 [![CI](https://github.com/owayo/git-smart-commit/actions/workflows/ci.yml/badge.svg)](https://github.com/owayo/git-smart-commit/actions/workflows/ci.yml)
 
-CLI AIエージェント（Gemini CLI、Codex CLI、Claude Code）を使用したスマートコミットメッセージ生成ツール
+AIコーディングエージェント（Gemini CLI、Codex CLI、Claude Code）を活用したスマートコミットメッセージ生成CLI
 
 `git-sc` はステージされた変更と過去のコミット履歴を分析し、CLI AIエージェントを使って文脈に適したコミットメッセージを自動フォールバック付きで生成します。
 
