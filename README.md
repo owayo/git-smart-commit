@@ -367,6 +367,15 @@ Add the following to `~/.claude/settings.json`:
 
 This will automatically commit changes when a Claude Code session ends. If there are no changes, it exits gracefully.
 
+If you are using [cchook](https://github.com/syou6162/cchook), add the following to `~/.claude/cchook/config.yaml`:
+
+```yaml
+Stop:
+  - actions:
+      - type: command
+        command: 'git-sc --all --yes'
+```
+
 ## License
 
 MIT

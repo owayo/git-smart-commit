@@ -367,6 +367,15 @@ Claude Code の Hooks 機能を使用して、セッション終了時に自動�
 
 これにより、Claude Code のセッション終了時に変更があれば自動的にコミットされます。変更がない場合は正常終了します。
 
+[cchook](https://github.com/syou6162/cchook) を利用している場合は `~/.claude/cchook/config.yaml` に以下を追加：
+
+```yaml
+Stop:
+  - actions:
+      - type: command
+        command: 'git-sc --all --yes'
+```
+
 ## ライセンス
 
 MIT
