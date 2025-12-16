@@ -417,7 +417,7 @@ myorg/PROJECT!1500 バリデーション機能を追加しCI調整
 Gemini CLI が失敗またはインストールされていない場合、`git-sc` は自動的に次のプロバイダーを試行:
 ```
 Using Gemini...
-⚠ Gemini failed: API Error
+⚠ Gemini failed: [API Error: You have exhausted your daily quota on this model.]
 Using Codex...
 ✓ Commit created successfully!
 ```

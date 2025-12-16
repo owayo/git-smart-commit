@@ -417,7 +417,7 @@ myorg/PROJECT!1500 add validation and adjust CI
 If Gemini CLI fails or is not installed, `git-sc` automatically tries the next provider:
 ```
 Using Gemini...
-⚠ Gemini failed: API Error
+⚠ Gemini failed: [API Error: You have exhausted your daily quota on this model.]
 Using Codex...
 ✓ Commit created successfully!
 ```
