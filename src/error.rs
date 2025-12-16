@@ -9,7 +9,7 @@ pub enum AppError {
     #[error("変更が見つかりません。コミットメッセージを生成するには変更を加えてください。")]
     NoChanges,
 
-    #[error("ステージ済みの変更がありません。'git add'でファイルをステージするか、-sフラグなしで実行してください。")]
+    #[error("ステージ済みの変更がありません。'git add'でファイルをステージするか、-aフラグをつけて実行してください。")]
     NoStagedChanges,
 
     #[error("AI CLIがインストールされていません。gemini、codex、またはclaudeのいずれかをインストールしてください。")]
@@ -68,7 +68,7 @@ mod tests {
         let err = AppError::NoStagedChanges;
         assert_eq!(
             err.to_string(),
-            "ステージ済みの変更がありません。'git add'でファイルをステージするか、-sフラグなしで実行してください。"
+            "ステージ済みの変更がありません。'git add'でファイルをステージするか、-aフラグをつけて実行してください。"
         );
     }
 
