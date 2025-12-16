@@ -26,4 +26,13 @@ pub enum AppError {
 
     #[error("設定エラー: {0}")]
     ConfigError(String),
+
+    #[error("ベースブランチが見つかりません。--base オプションで指定してください。")]
+    NoBaseBranch,
+
+    #[error("squash対象のコミットがありません。現在のブランチにベースからの変更がないか確認してください。")]
+    NoCommitsToSquash,
+
+    #[error("ベースブランチ上では squash できません。フィーチャーブランチに切り替えてください。")]
+    OnBaseBranch,
 }

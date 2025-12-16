@@ -22,6 +22,10 @@ pub struct Cli {
     #[arg(long = "amend")]
     pub amend: bool,
 
+    /// ブランチ内の全コミットを1つにまとめて新しいメッセージを生成（ベースブランチを指定）
+    #[arg(long = "squash", value_name = "BASE")]
+    pub squash: Option<String>,
+
     /// コミットメッセージの言語（設定ファイルを上書き）
     #[arg(short = 'l', long = "lang")]
     pub language: Option<String>,

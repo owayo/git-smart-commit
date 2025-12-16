@@ -137,6 +137,11 @@ impl App {
             return self.run_amend(cli);
         }
 
+        // --squashモードは別処理
+        if cli.squash.is_some() {
+            return self.run_squash(cli);
+        }
+
         // --allフラグがあれば全変更をステージング
         if cli.stage_all {
             println!("{}", "Staging all changes...".cyan());
@@ -337,6 +342,130 @@ impl App {
         Ok(())
     }
 
+    /// squashワークフローを実行
+    fn run_squash(&self, cli: &Cli) -> Result<(), AppError> {
+        // ベースブランチを取得（必須）
+        let base_branch = cli.squash.as_ref().ok_or(AppError::NoBaseBranch)?;
+
+        // ベースブランチの存在確認
+        if !self.git.branch_exists(base_branch) {
+            return Err(AppError::GitError(format!(
+                "Base branch '{}' does not exist",
+                base_branch
+            )));
+        }
+
+        println!("{}", "Squash mode: combining commits into one...".cyan());
+
+        // 現在のブランチを取得
+        let current_branch = self
+            .git
+            .get_current_branch()
+            .ok_or_else(|| AppError::GitError("Failed to get current branch".to_string()))?;
+
+        // ベースブランチ上にいる場合はエラー
+        if current_branch == *base_branch {
+            return Err(AppError::OnBaseBranch);
+        }
+
+        println!(
+            "{}",
+            format!(
+                "Base branch: {} → Current branch: {}",
+                base_branch, current_branch
+            )
+            .cyan()
+        );
+
+        // merge-baseを取得
+        let merge_base = self.git.get_merge_base(&base_branch, "HEAD")?;
+
+        // コミット数を確認
+        let commit_count = self.git.count_commits_from_base(&merge_base)?;
+        if commit_count == 0 {
+            return Err(AppError::NoCommitsToSquash);
+        }
+
+        println!("{}", format!("Commits to squash: {}", commit_count).cyan());
+
+        // ベースからの差分を取得
+        let diff = self.git.get_diff_from_base(&merge_base)?;
+        if diff.trim().is_empty() {
+            return Err(AppError::NoChanges);
+        }
+
+        // プレフィックスモードを判定
+        let prefix_mode = self.get_prefix_mode();
+
+        // コミットメッセージを生成（差分のみから、過去コミットは参照しない）
+        println!("{}", "Generating commit message...".cyan());
+        let mut message = match &prefix_mode {
+            PrefixMode::Script(_) => {
+                // スクリプトモード: プレフィックスなしで生成
+                self.ai.generate_commit_message(&diff, &[], Some("plain"))?
+            }
+            PrefixMode::Rule(prefix_type) => {
+                // ルールモード: 指定されたprefix_typeで生成
+                self.ai
+                    .generate_commit_message(&diff, &[], Some(prefix_type))?
+            }
+            PrefixMode::Auto => {
+                // 自動判定モード: Conventional Commits形式で生成
+                self.ai
+                    .generate_commit_message(&diff, &[], Some("conventional"))?
+            }
+        };
+
+        // スクリプトモードの場合はメッセージを加工
+        if let PrefixMode::Script(result) = prefix_mode {
+            match result {
+                ScriptResult::Prefix(prefix) => {
+                    message = self.apply_prefix(&message, &prefix);
+                    println!("{}", format!("Applied prefix: {}", prefix.trim()).cyan());
+                }
+                ScriptResult::Empty => {
+                    message = self.strip_type_prefix(&message);
+                    println!("{}", "No prefix applied (script returned empty).".cyan());
+                }
+                ScriptResult::Failed => {
+                    println!("{}", "Using AI-generated format.".cyan());
+                }
+            }
+        }
+
+        // 生成されたメッセージを表示
+        println!();
+        println!("{}", "Generated commit message:".green().bold());
+        println!("{}", "─".repeat(50).dimmed());
+        println!("{}", message);
+        println!("{}", "─".repeat(50).dimmed());
+        println!();
+
+        // ドライランモードの処理
+        if cli.dry_run {
+            println!("{}", "Dry run mode - no squash was performed.".yellow());
+            return Ok(());
+        }
+
+        // 確認してsquash実行
+        if cli.auto_confirm || self.confirm_squash(commit_count)? {
+            // soft resetしてコミット
+            self.git.soft_reset_to(&merge_base)?;
+            self.git.commit(&message)?;
+            println!(
+                "{}",
+                format!("✓ {} commits squashed successfully!", commit_count)
+                    .green()
+                    .bold()
+            );
+        } else {
+            println!("{}", "Squash cancelled.".yellow());
+            return Err(AppError::UserCancelled);
+        }
+
+        Ok(())
+    }
+
     /// コミット確認プロンプトを表示
     fn confirm_commit(&self) -> Result<bool, AppError> {
         self.confirm_prompt("Create this commit? [Y/n] ")
@@ -345,6 +474,11 @@ impl App {
     /// amend確認プロンプトを表示
     fn confirm_amend(&self) -> Result<bool, AppError> {
         self.confirm_prompt("Amend this commit? [Y/n] ")
+    }
+
+    /// squash確認プロンプトを表示
+    fn confirm_squash(&self, count: usize) -> Result<bool, AppError> {
+        self.confirm_prompt(&format!("Squash {} commits? [Y/n] ", count))
     }
 
     /// 汎用確認プロンプト

@@ -282,6 +282,89 @@ impl GitService {
             Some(ScriptResult::Failed)
         }
     }
+
+    /// ブランチが存在するか確認
+    pub fn branch_exists(&self, branch: &str) -> bool {
+        let output = Command::new("git")
+            .args(["rev-parse", "--verify", branch])
+            .current_dir(&self.repo_path)
+            .output();
+
+        output.map(|o| o.status.success()).unwrap_or(false)
+    }
+
+    /// 2つのブランチのmerge-baseを取得
+    pub fn get_merge_base(&self, base: &str, head: &str) -> Result<String, AppError> {
+        let output = Command::new("git")
+            .args(["merge-base", base, head])
+            .current_dir(&self.repo_path)
+            .output()
+            .map_err(|e| AppError::GitError(e.to_string()))?;
+
+        if !output.status.success() {
+            return Err(AppError::GitError(format!(
+                "Failed to find merge-base between {} and {}",
+                base, head
+            )));
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    /// ベースからHEADまでのコミット数を取得
+    pub fn count_commits_from_base(&self, base: &str) -> Result<usize, AppError> {
+        let output = Command::new("git")
+            .args(["rev-list", "--count", &format!("{}..HEAD", base)])
+            .current_dir(&self.repo_path)
+            .output()
+            .map_err(|e| AppError::GitError(e.to_string()))?;
+
+        if !output.status.success() {
+            return Err(AppError::GitError(
+                String::from_utf8_lossy(&output.stderr).to_string(),
+            ));
+        }
+
+        let count_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        count_str
+            .parse()
+            .map_err(|_| AppError::GitError("Failed to parse commit count".to_string()))
+    }
+
+    /// ベースからHEADまでの差分を取得（バイナリファイルを除外）
+    pub fn get_diff_from_base(&self, base: &str) -> Result<String, AppError> {
+        let output = Command::new("git")
+            .args(["diff", base, "HEAD"])
+            .current_dir(&self.repo_path)
+            .output()
+            .map_err(|e| AppError::GitError(e.to_string()))?;
+
+        if !output.status.success() {
+            return Err(AppError::GitError(
+                String::from_utf8_lossy(&output.stderr).to_string(),
+            ));
+        }
+
+        let diff = String::from_utf8_lossy(&output.stdout).to_string();
+        Ok(Self::filter_binary_diff(&diff))
+    }
+
+    /// 指定したコミットにsoft resetする
+    pub fn soft_reset_to(&self, commit: &str) -> Result<(), AppError> {
+        let output = Command::new("git")
+            .args(["reset", "--soft", commit])
+            .current_dir(&self.repo_path)
+            .output()
+            .map_err(|e| AppError::GitError(e.to_string()))?;
+
+        if !output.status.success() {
+            return Err(AppError::GitError(
+                String::from_utf8_lossy(&output.stderr).to_string(),
+            ));
+        }
+
+        Ok(())
+    }
 }
 
 impl Default for GitService {
