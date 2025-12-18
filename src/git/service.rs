@@ -1,7 +1,12 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
+
 use crate::error::AppError;
+
+/// 差分の最大文字数
+const MAX_DIFF_CHARS: usize = 10000;
 
 /// プレフィックススクリプトの実行結果
 #[derive(Debug, Clone, PartialEq)]
@@ -25,6 +30,139 @@ impl GitService {
         Self {
             repo_path: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         }
+    }
+
+    /// Gitリポジトリのルートディレクトリを取得
+    fn get_git_root(&self) -> Option<PathBuf> {
+        let output = Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .current_dir(&self.repo_path)
+            .output()
+            .ok()?;
+
+        if output.status.success() {
+            let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            Some(PathBuf::from(root))
+        } else {
+            None
+        }
+    }
+
+    /// .git-sc-ignoreファイルを読み込んでGitignoreを構築
+    fn load_ignore_patterns(&self) -> Option<Gitignore> {
+        let git_root = self.get_git_root()?;
+        let ignore_path = git_root.join(".git-sc-ignore");
+
+        if !ignore_path.exists() {
+            return None;
+        }
+
+        let mut builder = GitignoreBuilder::new(&git_root);
+        if builder.add(&ignore_path).is_some() {
+            // エラーがあった場合はNoneを返す
+            return None;
+        }
+
+        builder.build().ok()
+    }
+
+    /// diffからignoreパターンにマッチするファイルを除外
+    fn filter_ignored_files(diff_text: &str, ignore: &Gitignore) -> String {
+        if diff_text.is_empty() {
+            return String::new();
+        }
+
+        let lines: Vec<&str> = diff_text.lines().collect();
+        let mut filtered_lines = Vec::new();
+        let mut i = 0;
+
+        while i < lines.len() {
+            let line = lines[i];
+
+            if line.starts_with("diff --git") {
+                // ファイルパスを抽出 (例: "diff --git a/path/to/file b/path/to/file")
+                let block_start = i;
+                let file_path = Self::extract_file_path_from_diff_header(line);
+
+                // ignoreパターンにマッチするかチェック
+                let should_ignore = file_path
+                    .map(|p| ignore.matched_path_or_any_parents(p, false).is_ignore())
+                    .unwrap_or(false);
+
+                // このブロックの終端を見つける
+                i += 1;
+                while i < lines.len() && !lines[i].starts_with("diff --git") {
+                    i += 1;
+                }
+
+                // ignoreにマッチしなければブロックを追加
+                if !should_ignore {
+                    for line in lines.iter().take(i).skip(block_start) {
+                        filtered_lines.push(*line);
+                    }
+                }
+                continue;
+            } else {
+                filtered_lines.push(line);
+            }
+            i += 1;
+        }
+
+        filtered_lines.join("\n")
+    }
+
+    /// diffヘッダーからファイルパスを抽出
+    fn extract_file_path_from_diff_header(header: &str) -> Option<&str> {
+        // "diff --git a/path/to/file b/path/to/file" から "path/to/file" を抽出
+        let parts: Vec<&str> = header.split_whitespace().collect();
+        if parts.len() >= 4 {
+            // "a/path/to/file" から先頭の "a/" を除去
+            let a_path = parts[2];
+            if a_path.starts_with("a/") {
+                return Some(&a_path[2..]);
+            }
+        }
+        None
+    }
+
+    /// diffを最大文字数に切り詰める
+    pub fn truncate_diff(diff: &str) -> String {
+        if diff.chars().count() <= MAX_DIFF_CHARS {
+            return diff.to_string();
+        }
+
+        // 文字数でカット
+        let truncated: String = diff.chars().take(MAX_DIFF_CHARS).collect();
+
+        // 最後の完全な行まで切り詰める（中途半端な行を避ける）
+        if let Some(last_newline) = truncated.rfind('\n') {
+            format!(
+                "{}\n\n... (diff truncated: exceeded {} characters)",
+                &truncated[..last_newline],
+                MAX_DIFF_CHARS
+            )
+        } else {
+            format!(
+                "{}\n\n... (diff truncated: exceeded {} characters)",
+                truncated, MAX_DIFF_CHARS
+            )
+        }
+    }
+
+    /// diffに対して全てのフィルタリングを適用
+    fn apply_all_filters(&self, diff: &str) -> String {
+        // 1. バイナリファイルを除外
+        let filtered = Self::filter_binary_diff(diff);
+
+        // 2. .git-sc-ignore パターンにマッチするファイルを除外
+        let filtered = if let Some(ignore) = self.load_ignore_patterns() {
+            Self::filter_ignored_files(&filtered, &ignore)
+        } else {
+            filtered
+        };
+
+        // 3. 文字数制限を適用
+        Self::truncate_diff(&filtered)
     }
 
     /// git diffの出力からバイナリファイルの差分を除外
@@ -98,10 +236,10 @@ impl GitService {
         }
     }
 
-    /// ステージ済みのdiffを取得（バイナリファイルを除外）
+    /// ステージ済みのdiffを取得（バイナリファイル、.git-sc-ignore対象、空白のみの変更を除外）
     pub fn get_staged_diff(&self) -> Result<String, AppError> {
         let output = Command::new("git")
-            .args(["diff", "--cached"])
+            .args(["diff", "--cached", "-w"])
             .current_dir(&self.repo_path)
             .output()
             .map_err(|e| AppError::GitError(e.to_string()))?;
@@ -113,7 +251,7 @@ impl GitService {
         }
 
         let diff = String::from_utf8_lossy(&output.stdout).to_string();
-        Ok(Self::filter_binary_diff(&diff))
+        Ok(self.apply_all_filters(&diff))
     }
 
     /// 直近のコミットメッセージを取得
@@ -176,10 +314,10 @@ impl GitService {
         Ok(())
     }
 
-    /// 直前のコミットのdiffを取得（バイナリファイルを除外）
+    /// 直前のコミットのdiffを取得（バイナリファイル、.git-sc-ignore対象、空白のみの変更を除外）
     pub fn get_last_commit_diff(&self) -> Result<String, AppError> {
         let output = Command::new("git")
-            .args(["diff", "HEAD~1", "HEAD"])
+            .args(["diff", "-w", "HEAD~1", "HEAD"])
             .current_dir(&self.repo_path)
             .output()
             .map_err(|e| AppError::GitError(e.to_string()))?;
@@ -191,7 +329,7 @@ impl GitService {
         }
 
         let diff = String::from_utf8_lossy(&output.stdout).to_string();
-        Ok(Self::filter_binary_diff(&diff))
+        Ok(self.apply_all_filters(&diff))
     }
 
     /// 直前のコミットを新しいメッセージで修正
@@ -331,10 +469,10 @@ impl GitService {
             .map_err(|_| AppError::GitError("Failed to parse commit count".to_string()))
     }
 
-    /// ベースからHEADまでの差分を取得（バイナリファイルを除外）
+    /// ベースからHEADまでの差分を取得（バイナリファイル、.git-sc-ignore対象、空白のみの変更を除外）
     pub fn get_diff_from_base(&self, base: &str) -> Result<String, AppError> {
         let output = Command::new("git")
-            .args(["diff", base, "HEAD"])
+            .args(["diff", "-w", base, "HEAD"])
             .current_dir(&self.repo_path)
             .output()
             .map_err(|e| AppError::GitError(e.to_string()))?;
@@ -346,7 +484,7 @@ impl GitService {
         }
 
         let diff = String::from_utf8_lossy(&output.stdout).to_string();
-        Ok(Self::filter_binary_diff(&diff))
+        Ok(self.apply_all_filters(&diff))
     }
 
     /// 指定したコミットにsoft resetする
@@ -704,5 +842,131 @@ index 1234567..abcdefg 100644
         let debug_str = format!("{:?}", result);
         assert!(debug_str.contains("Prefix"));
         assert!(debug_str.contains("DEBUG"));
+    }
+
+    // ============================================================
+    // truncate_diff のテスト
+    // ============================================================
+
+    #[test]
+    fn test_truncate_diff_short_content() {
+        let diff = "short content";
+        let result = GitService::truncate_diff(diff);
+        assert_eq!(result, diff);
+    }
+
+    #[test]
+    fn test_truncate_diff_exactly_at_limit() {
+        // 10000文字ちょうどの場合は切り詰めない
+        let diff: String = "a".repeat(10000);
+        let result = GitService::truncate_diff(&diff);
+        assert_eq!(result, diff);
+    }
+
+    #[test]
+    fn test_truncate_diff_exceeds_limit() {
+        // 10001文字以上の場合は切り詰める（改行を含む現実的なdiff）
+        let line = "This is a line of diff content\n";
+        let diff: String = line.repeat(400); // 12000文字以上
+        assert!(diff.chars().count() > MAX_DIFF_CHARS);
+
+        let result = GitService::truncate_diff(&diff);
+        // 切り詰めメッセージが含まれることを確認
+        assert!(result.contains("... (diff truncated: exceeded 10000 characters)"));
+    }
+
+    #[test]
+    fn test_truncate_diff_preserves_last_complete_line() {
+        // 改行を含む長いテキスト
+        let line = "This is a line of text\n";
+        let diff: String = line.repeat(500); // 10500文字以上
+        let result = GitService::truncate_diff(&diff);
+
+        // 切り詰めメッセージが含まれる
+        assert!(result.contains("... (diff truncated: exceeded 10000 characters)"));
+
+        // 最後の改行で切れている（中途半端な行がない）
+        let lines: Vec<&str> = result.lines().collect();
+        let last_content_line = lines
+            .iter()
+            .rev()
+            .find(|l| !l.starts_with("...") && !l.is_empty());
+        if let Some(line) = last_content_line {
+            assert!(line.starts_with("This is a line"));
+        }
+    }
+
+    // ============================================================
+    // extract_file_path_from_diff_header のテスト
+    // ============================================================
+
+    #[test]
+    fn test_extract_file_path_simple() {
+        let header = "diff --git a/src/main.rs b/src/main.rs";
+        let result = GitService::extract_file_path_from_diff_header(header);
+        assert_eq!(result, Some("src/main.rs"));
+    }
+
+    #[test]
+    fn test_extract_file_path_nested() {
+        let header = "diff --git a/path/to/nested/file.txt b/path/to/nested/file.txt";
+        let result = GitService::extract_file_path_from_diff_header(header);
+        assert_eq!(result, Some("path/to/nested/file.txt"));
+    }
+
+    #[test]
+    fn test_extract_file_path_invalid_header() {
+        let header = "not a diff header";
+        let result = GitService::extract_file_path_from_diff_header(header);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_file_path_no_a_prefix() {
+        let header = "diff --git src/main.rs b/src/main.rs";
+        let result = GitService::extract_file_path_from_diff_header(header);
+        assert_eq!(result, None);
+    }
+
+    // ============================================================
+    // get_git_root のテスト
+    // ============================================================
+
+    #[test]
+    fn test_get_git_root() {
+        let service = GitService::new();
+        let root = service.get_git_root();
+        assert!(root.is_some());
+        let root_path = root.unwrap();
+        // .git ディレクトリが存在することを確認
+        assert!(root_path.join(".git").exists());
+    }
+
+    // ============================================================
+    // filter_ignored_files のテスト
+    // ============================================================
+
+    #[test]
+    fn test_filter_ignored_files_no_ignore() {
+        // ignoreパターンがない場合（実際にはGitignore構築が必要なので
+        // filter_binary_diffと同様の動作を確認）
+        let diff = r#"diff --git a/src/main.rs b/src/main.rs
+index 1234567..abcdefg 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,3 +1,4 @@
+ fn main() {
++    println!("Hello");
+ }"#;
+
+        // GitServiceでload_ignore_patternsがNoneを返す場合、
+        // apply_all_filtersはfilter_ignored_filesをスキップする
+        let service = GitService::new();
+
+        // .git-sc-ignoreがない状態でテスト
+        // この場合、apply_all_filtersはfilter_binary_diff + truncate_diffのみ適用
+        let result = service.apply_all_filters(diff);
+        assert!(result.contains("src/main.rs"));
+        assert!(result.contains("println"));
     }
 }

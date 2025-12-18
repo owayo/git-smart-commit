@@ -265,6 +265,7 @@ git-sc --squash origin/main -y  # Squash all commits without confirmation
 | `--amend` | | Regenerate message for the last commit |
 | `--squash <BASE>` | | Combine all commits in current branch into one (specify base branch) |
 | `--lang` | `-l` | Override language setting from config |
+| `--debug` | `-d` | Debug mode (show prompts sent to AI) |
 | `--help` | `-h` | Print help information |
 | `--version` | `-V` | Print version information |
 
@@ -277,6 +278,37 @@ git-sc --squash origin/main -y  # Squash all commits without confirmation
 5. **Detect Format**: Analyzes recent commits to detect your preferred format
 6. **Generate Message**: Sends diff and format instructions to AI coding agent (with fallback)
 7. **Confirm & Commit**: Shows the message and prompts for confirmation
+
+## Excluding Files from Diff (`.git-sc-ignore`)
+
+You can exclude specific files or patterns from the diff analysis by creating a `.git-sc-ignore` file in your repository root. This file uses the same syntax as `.gitignore`.
+
+### Example `.git-sc-ignore`
+
+```gitignore
+# Exclude lock files
+package-lock.json
+yarn.lock
+Cargo.lock
+
+# Exclude generated files
+*.generated.ts
+dist/
+
+# Exclude test fixtures
+tests/fixtures/
+```
+
+### Diff Processing
+
+When generating commit messages, `git-sc` processes the diff as follows:
+
+1. **Whitespace changes excluded**: Changes that only affect whitespace or newlines are not included in the diff
+2. **Binary files excluded**: Binary file changes are automatically filtered out
+3. **`.git-sc-ignore` patterns applied**: Files matching patterns in `.git-sc-ignore` are excluded
+4. **Character limit**: If the diff exceeds 10,000 characters, it is truncated to prevent overly long prompts
+
+This helps generate more focused commit messages by excluding noisy or irrelevant changes.
 
 ## Examples
 
