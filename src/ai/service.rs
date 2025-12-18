@@ -86,6 +86,11 @@ impl AiService {
         self.language = language;
     }
 
+    /// 言語設定を取得
+    pub fn language(&self) -> &str {
+        &self.language
+    }
+
     /// 少なくとも1つのAI CLIがインストールされていることを確認
     pub fn verify_installation(&self) -> Result<(), AppError> {
         for provider in &self.providers {
@@ -108,7 +113,7 @@ impl AiService {
     }
 
     /// AI用のプロンプトを構築
-    fn build_prompt(
+    pub fn build_prompt(
         diff: &str,
         recent_commits: &[String],
         language: &str,

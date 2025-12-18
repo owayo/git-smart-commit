@@ -29,6 +29,10 @@ pub struct Cli {
     /// コミットメッセージの言語（設定ファイルを上書き）
     #[arg(short = 'l', long = "lang")]
     pub language: Option<String>,
+
+    /// デバッグモード（AIに渡すプロンプトを表示）
+    #[arg(short = 'd', long = "debug")]
+    pub debug: bool,
 }
 
 #[cfg(test)]
@@ -48,6 +52,7 @@ mod tests {
         assert!(!cli.amend);
         assert!(cli.squash.is_none());
         assert!(cli.language.is_none());
+        assert!(!cli.debug);
     }
 
     #[test]
@@ -144,5 +149,24 @@ mod tests {
         assert!(cli.amend);
         assert!(cli.auto_confirm);
         assert_eq!(cli.language, Some("English".to_string()));
+    }
+
+    #[test]
+    fn test_cli_debug_short() {
+        let cli = Cli::parse_from(["git-sc", "-d"]);
+        assert!(cli.debug);
+    }
+
+    #[test]
+    fn test_cli_debug_long() {
+        let cli = Cli::parse_from(["git-sc", "--debug"]);
+        assert!(cli.debug);
+    }
+
+    #[test]
+    fn test_cli_debug_with_dry_run() {
+        let cli = Cli::parse_from(["git-sc", "-d", "-n"]);
+        assert!(cli.debug);
+        assert!(cli.dry_run);
     }
 }

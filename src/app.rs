@@ -124,6 +124,61 @@ impl App {
         }
     }
 
+    /// PrefixModeからデバッグ用のパラメータを抽出
+    fn get_debug_params_for_prefix_mode<'a>(
+        prefix_mode: &'a PrefixMode,
+        recent_commits: &'a [String],
+        is_squash: bool,
+    ) -> (Option<&'a str>, &'a [String]) {
+        let prefix_type = match prefix_mode {
+            PrefixMode::Script(_) => Some("plain"),
+            PrefixMode::Rule(pt) => Some(pt.as_str()),
+            PrefixMode::Auto => {
+                if is_squash {
+                    Some("conventional")
+                } else {
+                    None
+                }
+            }
+        };
+        let commits = match prefix_mode {
+            PrefixMode::Script(_) => &[][..],
+            _ => {
+                if is_squash {
+                    &[][..]
+                } else {
+                    recent_commits
+                }
+            }
+        };
+        (prefix_type, commits)
+    }
+
+    /// デバッグモード時にプロンプトを表示
+    fn print_debug_prompt(&self, diff: &str, recent_commits: &[String], prefix_type: Option<&str>) {
+        let prompt = AiService::build_prompt(diff, recent_commits, self.ai.language(), prefix_type);
+        println!();
+        println!("{}", "=== DEBUG: AI Prompt ===".yellow().bold());
+        println!("{}", "─".repeat(50).dimmed());
+        println!("{}", prompt);
+        println!("{}", "─".repeat(50).dimmed());
+        println!("{}", "=== END DEBUG ===".yellow().bold());
+        println!();
+    }
+
+    /// デバッグモード時にPrefixModeに基づいてプロンプトを表示
+    fn debug_print_for_prefix_mode(
+        &self,
+        diff: &str,
+        recent_commits: &[String],
+        prefix_mode: &PrefixMode,
+        is_squash: bool,
+    ) {
+        let (prefix_type, commits) =
+            Self::get_debug_params_for_prefix_mode(prefix_mode, recent_commits, is_squash);
+        self.print_debug_prompt(diff, commits, prefix_type);
+    }
+
     /// メインワークフローを実行
     pub fn run(&self, cli: &Cli) -> Result<(), AppError> {
         // Gitリポジトリかどうかを確認
@@ -185,6 +240,12 @@ impl App {
 
         // コミットメッセージを生成
         println!("{}", "Generating commit message...".cyan());
+
+        // デバッグモード: プロンプトを表示
+        if cli.debug {
+            self.debug_print_for_prefix_mode(&diff, &recent_commits, &prefix_mode, false);
+        }
+
         let mut message = match &prefix_mode {
             PrefixMode::Script(_) => {
                 // スクリプトモード: プレフィックスなしで生成（後でスクリプトのプレフィックスを適用）
@@ -284,6 +345,12 @@ impl App {
 
         // コミットメッセージを生成
         println!("{}", "Generating commit message...".cyan());
+
+        // デバッグモード: プロンプトを表示
+        if cli.debug {
+            self.debug_print_for_prefix_mode(&diff, &recent_commits, &prefix_mode, false);
+        }
+
         let mut message = match &prefix_mode {
             PrefixMode::Script(_) => {
                 // スクリプトモード: プレフィックスなしで生成（後でスクリプトのプレフィックスを適用）
@@ -399,6 +466,12 @@ impl App {
 
         // コミットメッセージを生成（差分のみから、過去コミットは参照しない）
         println!("{}", "Generating commit message...".cyan());
+
+        // デバッグモード: プロンプトを表示
+        if cli.debug {
+            self.debug_print_for_prefix_mode(&diff, &[], &prefix_mode, true);
+        }
+
         let mut message = match &prefix_mode {
             PrefixMode::Script(_) => {
                 // スクリプトモード: プレフィックスなしで生成
