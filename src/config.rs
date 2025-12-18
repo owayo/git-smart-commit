@@ -155,6 +155,7 @@ mod tests {
         assert_eq!(config.language, "Japanese");
         assert!(config.prefix_scripts.is_empty());
         assert!(config.prefix_rules.is_empty());
+        assert_eq!(config.provider_cooldown_minutes, 60);
     }
 
     #[test]
@@ -181,6 +182,34 @@ language = "English"
         assert_eq!(config.models.gemini, "flash");
         assert!(config.prefix_scripts.is_empty());
         assert!(config.prefix_rules.is_empty());
+        assert_eq!(config.provider_cooldown_minutes, 60);
+    }
+
+    #[test]
+    fn test_parse_config_with_custom_cooldown() {
+        let toml = r#"
+providers = ["gemini"]
+language = "Japanese"
+provider_cooldown_minutes = 30
+"#;
+
+        let config = Config::from_str(toml).unwrap();
+
+        assert_eq!(config.provider_cooldown_minutes, 30);
+    }
+
+    #[test]
+    fn test_parse_config_with_zero_cooldown() {
+        let toml = r#"
+providers = ["gemini"]
+language = "Japanese"
+provider_cooldown_minutes = 0
+"#;
+
+        let config = Config::from_str(toml).unwrap();
+
+        // 0に設定するとクールダウン機能を無効化
+        assert_eq!(config.provider_cooldown_minutes, 0);
     }
 
     #[test]
