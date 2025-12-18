@@ -363,18 +363,19 @@ j0k1l2m feat: 初期実装
 
 `--squash` で1つのコミットにまとめ、AIがメッセージを生成：
 ```bash
-git-sc --squash origin/main
-# Squash mode: combining commits into one...
-# Base branch: origin/main → Current branch: feature/my-feature
-# Commits to squash: 4
-# Generating commit message...
-#
-# Generated commit message:
-# ──────────────────────────────────────────────────
-# feat: ユーザーバリデーション機能を実装
-# ──────────────────────────────────────────────────
-#
-# Squash 4 commits? [Y/n]
+$ git-sc --squash origin/main
+Squash mode: combining commits into one...
+Base branch: origin/main → Current branch: feature/my-feature
+Commits to squash: 4
+Generating commit message...
+  Using Gemini CLI...
+
+Generated commit message:
+──────────────────────────────────────────────────
+feat: ユーザーバリデーション機能を実装
+──────────────────────────────────────────────────
+
+Squash 4 commits? [Y/n]
 ```
 
 ### 基本的な使い方

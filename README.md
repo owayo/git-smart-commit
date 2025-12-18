@@ -363,18 +363,19 @@ j0k1l2m feat: initial implementation
 
 Use `--squash` to combine them into a single commit with an AI-generated message:
 ```bash
-git-sc --squash origin/main
-# Squash mode: combining commits into one...
-# Base branch: origin/main → Current branch: feature/my-feature
-# Commits to squash: 4
-# Generating commit message...
-#
-# Generated commit message:
-# ──────────────────────────────────────────────────
-# feat: implement user validation feature
-# ──────────────────────────────────────────────────
-#
-# Squash 4 commits? [Y/n]
+$ git-sc --squash origin/main
+Squash mode: combining commits into one...
+Base branch: origin/main → Current branch: feature/my-feature
+Commits to squash: 4
+Generating commit message...
+  Using Gemini CLI...
+
+Generated commit message:
+──────────────────────────────────────────────────
+feat: implement user validation feature
+──────────────────────────────────────────────────
+
+Squash 4 commits? [Y/n]
 ```
 
 ### Basic Usage
