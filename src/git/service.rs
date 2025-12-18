@@ -593,12 +593,15 @@ impl GitService {
             .map_err(|e| AppError::GitError(format!("Failed to create temp file: {}", e)))?;
 
         // GIT_SEQUENCE_EDITOR: 最初のpickをrewordに変更
+        // シェル経由で実行するために sh -c でラップする
         let sequence_editor = if cfg!(windows) {
             // Windows: PowerShellを使用
             "powershell -Command \"(Get-Content $args[0]) -replace '^pick', 'reword' | Set-Content $args[0]\"".to_string()
         } else {
             // Unix: sedを使用（macOSとLinux両対応）
-            "sed -i.bak '1s/^pick/reword/' \"$1\" && rm -f \"$1.bak\"".to_string()
+            // sh -c でラップし、-- の後に $1 を渡す
+            "sh -c 'sed -i.bak '\"'\"'1s/^pick/reword/'\"'\"' \"$1\" && rm -f \"$1.bak\"' --"
+                .to_string()
         };
 
         // GIT_EDITOR: 一時ファイルの内容をコピー
@@ -608,7 +611,8 @@ impl GitService {
                 msg_file.display()
             )
         } else {
-            format!("cp '{}' ", msg_file.display())
+            // sh -c でラップ
+            format!("sh -c 'cp \"{}\" \"$1\"' --", msg_file.display())
         };
 
         // git rebase -i を実行
