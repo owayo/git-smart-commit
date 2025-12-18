@@ -5,6 +5,7 @@ use colored::Colorize;
 
 use crate::config::{Config, ModelsConfig};
 use crate::error::AppError;
+use crate::state::State;
 
 /// AIプロバイダーの種類
 #[derive(Debug, Clone, Copy)]
@@ -31,6 +32,11 @@ impl AiProvider {
         }
     }
 
+    /// 設定ファイルで使用するキー名（状態管理にも使用）
+    pub fn config_key(&self) -> &'static str {
+        self.command()
+    }
+
     /// 文字列からプロバイダーを解析
     fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
@@ -47,13 +53,22 @@ pub struct AiService {
     providers: Vec<AiProvider>,
     language: String,
     models: ModelsConfig,
+    cooldown_minutes: u64,
 }
 
 impl AiService {
     /// 設定からAiServiceを作成
     pub fn from_config(config: &Config) -> Self {
-        let providers: Vec<AiProvider> = config
-            .providers
+        let provider_strings: Vec<String> = config.providers.clone();
+
+        // 状態を読み込んで、クールダウン中のプロバイダーを降格
+        let reordered_strings = if let Ok(state) = State::load() {
+            state.reorder_providers(provider_strings, config.provider_cooldown_minutes)
+        } else {
+            provider_strings
+        };
+
+        let providers: Vec<AiProvider> = reordered_strings
             .iter()
             .filter_map(|s| AiProvider::from_str(s))
             .collect();
@@ -69,6 +84,7 @@ impl AiService {
             providers,
             language: config.language.clone(),
             models: config.models.clone(),
+            cooldown_minutes: config.provider_cooldown_minutes,
         }
     }
 
@@ -78,6 +94,18 @@ impl AiService {
             providers: vec![AiProvider::Gemini, AiProvider::Codex, AiProvider::Claude],
             language: "Japanese".to_string(),
             models: ModelsConfig::default(),
+            cooldown_minutes: 60, // デフォルト1時間
+        }
+    }
+
+    /// プロバイダーの失敗を記録
+    fn record_provider_failure(&self, provider: &AiProvider) {
+        if let Ok(mut state) = State::load() {
+            state.record_failure(provider.config_key());
+            // 期限切れのエントリをクリーンアップ
+            state.cleanup_expired(self.cooldown_minutes);
+            // 保存（エラーは無視）
+            let _ = state.save();
         }
     }
 
@@ -214,6 +242,8 @@ Changes:
                         provider.name(),
                         e.to_string().red()
                     );
+                    // 失敗を記録して次回の優先度を下げる
+                    self.record_provider_failure(provider);
                     last_error = Some(e);
                 }
             }

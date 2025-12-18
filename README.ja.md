@@ -9,6 +9,7 @@ AIコーディングエージェント（Gemini CLI、Codex CLI、Claude Code）
 ## 特徴
 
 - **マルチプロバイダー対応**: Gemini CLI、Codex CLI、Claude Code を自動フォールバック付きでサポート
+- **スマートクールダウン**: 失敗したプロバイダーを1時間（設定可能）優先度を下げて、連続失敗を回避
 - **設定可能**: `~/.git-sc` でプロバイダー優先度、言語、モデルをカスタマイズ
 - **フォーマット自動検出**: 過去のコミットメッセージから形式を自動判断
   - Conventional Commits (`feat:`, `fix:`, `docs:` など)
@@ -117,6 +118,10 @@ prefix_type = "conventional"  # conventional, bracket, colon, emoji, plain, none
 [[prefix_rules]]
 url_pattern = "^https://gitlab\\.example\\.com/"
 prefix_type = "emoji"
+
+# プロバイダークールダウン設定（オプション）
+# プロバイダーが失敗した場合、指定時間の間優先度を下げる
+provider_cooldown_minutes = 60  # デフォルト: 60分（1時間）
 ```
 
 ### 設定オプション
@@ -130,6 +135,7 @@ prefix_type = "emoji"
 | `models.claude` | Claude Code のモデル | `"haiku"` |
 | `prefix_scripts` | プレフィックス生成用外部スクリプト | `[]` |
 | `prefix_rules` | URLベースのプレフィックス形式設定 | `[]` |
+| `provider_cooldown_minutes` | 失敗したプロバイダーの優先度を下げる時間（分） | `60` |
 
 ### プレフィックス判定の優先順位
 
@@ -491,6 +497,23 @@ Using Gemini CLI...
 Using Codex CLI...
 ✓ Commit created successfully!
 ```
+
+### プロバイダークールダウン
+
+プロバイダーが失敗した場合（例：APIクォータ超過）、`git-sc` は自動的にそのプロバイダーの優先度を設定可能な時間（デフォルト：1時間）下げます。これにより、連続した失敗を防ぎ、ユーザー体験を向上させます。
+
+例えば、プロバイダーの順序が `gemini → codex → claude` で Gemini が失敗した場合：
+- 次の1時間は、実効的な順序が `codex → claude → gemini` になります
+- クールダウン期間が終了すると、元の順序に戻ります
+
+クールダウン状態は `~/.git-sc-state` に保存され、セッション間で維持されます。
+
+クールダウン時間をカスタマイズするには、`~/.git-sc` に追加：
+```toml
+provider_cooldown_minutes = 30  # デフォルトの60分ではなく30分
+```
+
+`0` に設定するとクールダウン機能を完全に無効にできます。
 
 ## Claude Code との連携
 

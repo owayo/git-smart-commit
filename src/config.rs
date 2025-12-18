@@ -57,6 +57,14 @@ pub struct Config {
     /// プレフィックスルール設定（URLベース、オプション）
     #[serde(default)]
     pub prefix_rules: Vec<PrefixRuleConfig>,
+    /// プロバイダーエラー時のクールダウン時間（分）
+    #[serde(default = "default_provider_cooldown_minutes")]
+    pub provider_cooldown_minutes: u64,
+}
+
+/// デフォルトのクールダウン時間（60分 = 1時間）
+fn default_provider_cooldown_minutes() -> u64 {
+    60
 }
 
 impl Default for Config {
@@ -71,6 +79,7 @@ impl Default for Config {
             models: ModelsConfig::default(),
             prefix_scripts: Vec::new(),
             prefix_rules: Vec::new(),
+            provider_cooldown_minutes: default_provider_cooldown_minutes(),
         }
     }
 }

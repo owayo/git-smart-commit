@@ -4,6 +4,7 @@ mod cli;
 mod config;
 mod error;
 mod git;
+mod state;
 
 use clap::Parser;
 use colored::Colorize;

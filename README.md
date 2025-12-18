@@ -9,6 +9,7 @@ AI-powered smart commit message generator using coding agents (Gemini CLI, Codex
 ## Features
 
 - **Multi-Provider Support**: Supports Gemini CLI, Codex CLI, and Claude Code with automatic fallback
+- **Smart Cooldown**: Automatically demotes failed providers for 1 hour (configurable) to avoid repeated failures
 - **Configurable**: Customize provider priority, language, and models via `~/.git-sc`
 - **Format Detection**: Automatically detects your commit message format from recent commits:
   - Conventional Commits (`feat:`, `fix:`, `docs:`, etc.)
@@ -117,6 +118,10 @@ prefix_type = "conventional"  # conventional, bracket, colon, emoji, plain, none
 [[prefix_rules]]
 url_pattern = "^https://gitlab\\.example\\.com/"
 prefix_type = "emoji"
+
+# Provider cooldown configuration (optional)
+# When a provider fails, it will be demoted in priority for this duration
+provider_cooldown_minutes = 60  # default: 60 minutes (1 hour)
 ```
 
 ### Configuration Options
@@ -130,6 +135,7 @@ prefix_type = "emoji"
 | `models.claude` | Model for Claude Code | `"haiku"` |
 | `prefix_scripts` | External scripts for prefix generation | `[]` |
 | `prefix_rules` | URL-based prefix format configuration | `[]` |
+| `provider_cooldown_minutes` | Duration to demote failed providers (minutes) | `60` |
 
 ### Prefix Priority Order
 
@@ -491,6 +497,23 @@ Using Gemini CLI...
 Using Codex CLI...
 ✓ Commit created successfully!
 ```
+
+### Provider Cooldown
+
+When a provider fails (e.g., API quota exceeded), `git-sc` automatically demotes it in priority for a configurable duration (default: 1 hour). This prevents repeated failures and improves the user experience.
+
+For example, if your provider order is `gemini → codex → claude` and Gemini fails:
+- For the next hour, the effective order becomes `codex → claude → gemini`
+- After the cooldown period expires, the original order is restored
+
+The cooldown state is stored in `~/.git-sc-state` and persists across sessions.
+
+To customize the cooldown duration, add to `~/.git-sc`:
+```toml
+provider_cooldown_minutes = 30  # 30 minutes instead of default 60
+```
+
+Set to `0` to disable the cooldown feature entirely.
 
 ## Integration with Claude Code
 
