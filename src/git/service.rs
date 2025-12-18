@@ -118,8 +118,8 @@ impl GitService {
         if parts.len() >= 4 {
             // "a/path/to/file" から先頭の "a/" を除去
             let a_path = parts[2];
-            if a_path.starts_with("a/") {
-                return Some(&a_path[2..]);
+            if let Some(stripped) = a_path.strip_prefix("a/") {
+                return Some(stripped);
             }
         }
         None
