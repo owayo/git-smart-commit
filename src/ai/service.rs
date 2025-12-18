@@ -169,7 +169,8 @@ Rules:
 - Write only a single line (no multi-line message)
 - Keep it concise (ideally under 72 characters)
 - Be specific about what changed
-- Output ONLY the commit message, nothing else
+- Output ONLY the commit message as plain text
+- Do NOT use any markdown formatting (no **, *, `, #, etc.)
 - Do NOT include any explanation, reasoning, or thinking process
 - Do NOT write phrases like "I will...", "Let me...", "Based on...", "Here is..."
 - Respond with the commit message immediately, no preamble
