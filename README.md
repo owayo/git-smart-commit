@@ -459,17 +459,17 @@ Regenerate commit message for a commit N commits back:
 $ git-sc --reword 2 -y
 Reword mode: regenerating message for commit 2 back...
 Current commit message:
-  fix typo
-Recent commits (for format reference):
-  feat: add user validation
-  fix: resolve API error
-  docs: update README
+  wip
+Running prefix script for ^https://gitlab\.example\.com/myorg/...
 Generating commit message...
   Using Gemini...
+  ⚠ Gemini failed: [API Error: You have exhausted your daily quota on this model.]
+  Using Codex...
+Applied prefix: myorg/PROJECT!1234
 
 Generated commit message:
 ──────────────────────────────────────────────────
-fix: correct typo in validation logic
+myorg/PROJECT!1234 add migration version check
 ──────────────────────────────────────────────────
 
 ✓ Commit 2 back reworded successfully!

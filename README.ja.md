@@ -459,17 +459,17 @@ N個前のコミットメッセージを再生成する場合：
 $ git-sc --reword 2 -y
 Reword mode: regenerating message for commit 2 back...
 Current commit message:
-  typo修正
-Recent commits (for format reference):
-  feat: ユーザーバリデーション追加
-  fix: APIエラー解消
-  docs: README更新
+  wip
+Running prefix script for ^https://gitlab\.example\.com/myorg/...
 Generating commit message...
   Using Gemini...
+  ⚠ Gemini failed: [API Error: You have exhausted your daily quota on this model.]
+  Using Codex...
+Applied prefix: myorg/PROJECT!1234
 
 Generated commit message:
 ──────────────────────────────────────────────────
-fix: バリデーションロジックのタイポを修正
+myorg/PROJECT!1234 add migration version check
 ──────────────────────────────────────────────────
 
 ✓ Commit 2 back reworded successfully!
