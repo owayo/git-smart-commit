@@ -19,6 +19,7 @@ AIコーディングエージェント（Gemini CLI、Codex CLI、Claude Code）
   - プレーン形式
 - **インタラクティブ**: コミット前に確認プロンプト表示（`-y` でスキップ可能）
 - **ドライラン**: コミットせずに生成メッセージをプレビュー
+- **本文サポート**: `-b` で箇条書き本文付きの詳細なコミットメッセージを生成
 - **Amend サポート**: `--amend` で直前のコミットメッセージを再生成
 - **Squash サポート**: `--squash <BASE>` でブランチ内の全コミットを1つにまとめる
 - **Reword サポート**: `--reword <N>` でN個前のコミットメッセージを再生成
@@ -255,6 +256,9 @@ git-sc --squash origin/main
 # N個前のコミットメッセージを再生成（git rebase を使用）
 git-sc --reword 3
 
+# 箇条書き本文付きの詳細なコミットメッセージを生成
+git-sc -b
+
 # 言語設定を上書き
 git-sc -l English
 
@@ -273,6 +277,7 @@ git-sc --reword 3 -y   # 確認なしで3つ前のコミットを再生成
 | `--yes` | `-y` | 確認プロンプトをスキップして直接コミット |
 | `--dry-run` | `-n` | 実際にコミットせず生成メッセージを表示 |
 | `--all` | `-a` | アンステージの変更も含めて全てをステージしてコミット |
+| `--body` | `-b` | 箇条書き本文付きの詳細なコミットメッセージを生成 |
 | `--amend` | | 直前のコミットメッセージを再生成 |
 | `--squash <BASE>` | | ブランチ内の全コミットを1つにまとめる（ベースブランチを指定） |
 | `--reword <N>` | | N個前のコミットメッセージを再生成（git rebase を使用） |
@@ -348,6 +353,24 @@ feat(auth): implement password reset flow
 `git-sc` は以下のようなメッセージを生成:
 ```
 [Update] refactor user service
+```
+
+### 本文オプションの使用例
+
+`-b` フラグを使用すると、箇条書き本文付きの詳細なコミットメッセージを生成できます：
+
+```bash
+$ git-sc -b
+```
+
+生成されるメッセージの例：
+```
+feat: add user authentication module
+
+- Implement JWT token generation and validation
+- Add password hashing with bcrypt
+- Create login and logout API endpoints
+- Add user session management
 ```
 
 ### Squash（コミットまとめ）

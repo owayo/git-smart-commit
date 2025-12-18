@@ -19,6 +19,7 @@ AI-powered smart commit message generator using coding agents (Gemini CLI, Codex
   - Plain format
 - **Interactive**: Prompts for confirmation before committing (can be skipped with `-y`)
 - **Dry Run**: Preview generated messages without committing
+- **Body Support**: Generate detailed commit messages with bullet point body (`-b`)
 - **Amend Support**: Regenerate message for the last commit with `--amend`
 - **Squash Support**: Combine all commits in a branch into one with `--squash <BASE>`
 - **Reword Support**: Regenerate message for a commit N commits back with `--reword <N>`
@@ -255,6 +256,9 @@ git-sc --squash origin/main
 # Reword a commit N commits back (regenerate message using git rebase)
 git-sc --reword 3
 
+# Generate commit message with body (detailed bullet points)
+git-sc -b
+
 # Override language setting
 git-sc -l English
 
@@ -273,6 +277,7 @@ git-sc --reword 3 -y   # Reword commit 3 back without confirmation
 | `--yes` | `-y` | Skip confirmation prompt and commit directly |
 | `--dry-run` | `-n` | Show generated message without actually committing |
 | `--all` | `-a` | Stage all changes (including unstaged) and commit |
+| `--body` | `-b` | Generate commit message with body (bullet points) |
 | `--amend` | | Regenerate message for the last commit |
 | `--squash <BASE>` | | Combine all commits in current branch into one (specify base branch) |
 | `--reword <N>` | | Regenerate message for a commit N commits back (uses git rebase) |
@@ -348,6 +353,27 @@ If your recent commits are:
 `git-sc` will generate messages like:
 ```
 [Update] refactor user service
+```
+
+### With Body Option
+
+Using `-b` flag generates a detailed commit message with bullet points:
+```bash
+$ git-sc -b
+Generating commit message...
+  Using Gemini CLI...
+
+Generated commit message:
+──────────────────────────────────────────────────
+feat: implement user authentication system
+
+- Add login and logout endpoints with JWT token generation
+- Create user model with password hashing using bcrypt
+- Implement middleware for protected routes
+- Add unit tests for authentication flow
+──────────────────────────────────────────────────
+
+Create this commit? [Y/n]
 ```
 
 ### Squash Commits

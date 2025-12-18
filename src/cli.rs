@@ -30,6 +30,10 @@ pub struct Cli {
     #[arg(long = "reword", value_name = "N")]
     pub reword: Option<usize>,
 
+    /// コミットメッセージに本文（body）も生成
+    #[arg(short = 'b', long = "body")]
+    pub with_body: bool,
+
     /// コミットメッセージの言語（設定ファイルを上書き）
     #[arg(short = 'l', long = "lang")]
     pub language: Option<String>,
@@ -56,6 +60,7 @@ mod tests {
         assert!(!cli.amend);
         assert!(cli.squash.is_none());
         assert!(cli.reword.is_none());
+        assert!(!cli.with_body);
         assert!(cli.language.is_none());
         assert!(!cli.debug);
     }
@@ -193,5 +198,25 @@ mod tests {
         let cli = Cli::parse_from(["git-sc", "--reword", "2", "-n"]);
         assert_eq!(cli.reword, Some(2));
         assert!(cli.dry_run);
+    }
+
+    #[test]
+    fn test_cli_body_short() {
+        let cli = Cli::parse_from(["git-sc", "-b"]);
+        assert!(cli.with_body);
+    }
+
+    #[test]
+    fn test_cli_body_long() {
+        let cli = Cli::parse_from(["git-sc", "--body"]);
+        assert!(cli.with_body);
+    }
+
+    #[test]
+    fn test_cli_body_with_stage_all() {
+        let cli = Cli::parse_from(["git-sc", "-a", "-b", "-y"]);
+        assert!(cli.stage_all);
+        assert!(cli.with_body);
+        assert!(cli.auto_confirm);
     }
 }

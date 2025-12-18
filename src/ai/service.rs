@@ -146,6 +146,7 @@ impl AiService {
         recent_commits: &[String],
         language: &str,
         prefix_type: Option<&str>,
+        with_body: bool,
     ) -> String {
         let format_section = match prefix_type {
             Some("conventional") => {
@@ -184,18 +185,34 @@ impl AiService {
             }
         };
 
+        let body_instructions = if with_body {
+            r#"
+Structure:
+- First line: Subject line (concise summary, ideally under 72 characters)
+- Second line: Empty (blank line)
+- Third line onwards: Body with bullet points describing key changes
+
+Body Guidelines:
+- Use bullet points starting with "- "
+- Each bullet point should describe a specific change
+- Include 2-5 bullet points based on the scope of changes
+- Be specific about what was added, changed, or removed"#
+        } else {
+            r#"
+Rules:
+- Write only a single line (no multi-line message)
+- Keep it concise (ideally under 72 characters)"#
+        };
+
         format!(
-            r#"Generate a concise git commit message for the following changes.
+            r#"Generate a git commit message for the following changes.
 
 {format_section}
 
 Instructions:
 - Match the commit message style shown above
 - Write the commit message in {language}
-
-Rules:
-- Write only a single line (no multi-line message)
-- Keep it concise (ideally under 72 characters)
+{body_instructions}
 - Be specific about what changed
 - Output ONLY the commit message as plain text
 - Do NOT use any markdown formatting (no **, *, `, #, etc.)
@@ -217,13 +234,17 @@ Changes:
     /// - Some("conventional"): Conventional Commits形式
     /// - Some("none"): プレフィックスなし
     /// - Some(other): カスタム形式
+    ///
+    /// with_body: true の場合、本文（body）付きのコミットメッセージを生成
     pub fn generate_commit_message(
         &self,
         diff: &str,
         recent_commits: &[String],
         prefix_type: Option<&str>,
+        with_body: bool,
     ) -> Result<String, AppError> {
-        let prompt = Self::build_prompt(diff, recent_commits, &self.language, prefix_type);
+        let prompt =
+            Self::build_prompt(diff, recent_commits, &self.language, prefix_type, with_body);
         let mut last_error = None;
 
         for provider in &self.providers {
@@ -432,7 +453,7 @@ mod tests {
     fn test_build_prompt_prefix_types(#[case] prefix_type: Option<&str>, #[case] expected: &str) {
         let diff = "test diff";
         let recent_commits: Vec<String> = vec![];
-        let prompt = AiService::build_prompt(diff, &recent_commits, "Japanese", prefix_type);
+        let prompt = AiService::build_prompt(diff, &recent_commits, "Japanese", prefix_type, false);
         assert!(
             prompt.contains(expected),
             "Prompt should contain '{}' for prefix_type {:?}",
@@ -445,7 +466,8 @@ mod tests {
     fn test_build_prompt_custom_prefix() {
         let diff = "test diff";
         let recent_commits: Vec<String> = vec![];
-        let prompt = AiService::build_prompt(diff, &recent_commits, "Japanese", Some("JIRA-123: "));
+        let prompt =
+            AiService::build_prompt(diff, &recent_commits, "Japanese", Some("JIRA-123: "), false);
         assert!(prompt.contains("Use the following prefix format: JIRA-123:"));
     }
 
@@ -453,7 +475,7 @@ mod tests {
     fn test_build_prompt_auto_mode_empty_commits() {
         let diff = "test diff";
         let recent_commits: Vec<String> = vec![];
-        let prompt = AiService::build_prompt(diff, &recent_commits, "Japanese", None);
+        let prompt = AiService::build_prompt(diff, &recent_commits, "Japanese", None, false);
         assert!(prompt.contains("No recent commits found"));
         assert!(prompt.contains("Conventional Commits format"));
     }
@@ -465,7 +487,7 @@ mod tests {
             "feat: add new feature".to_string(),
             "fix: resolve bug".to_string(),
         ];
-        let prompt = AiService::build_prompt(diff, &recent_commits, "Japanese", None);
+        let prompt = AiService::build_prompt(diff, &recent_commits, "Japanese", None, false);
         assert!(prompt.contains("Recent commit messages in this repository"));
         assert!(prompt.contains("1. feat: add new feature"));
         assert!(prompt.contains("2. fix: resolve bug"));
@@ -476,8 +498,13 @@ mod tests {
     fn test_build_prompt_contains_diff() {
         let diff = "--- a/file.rs\n+++ b/file.rs\n+new line";
         let recent_commits: Vec<String> = vec![];
-        let prompt =
-            AiService::build_prompt(diff, &recent_commits, "English", Some("conventional"));
+        let prompt = AiService::build_prompt(
+            diff,
+            &recent_commits,
+            "English",
+            Some("conventional"),
+            false,
+        );
         assert!(prompt.contains(diff));
         assert!(prompt.contains("```diff"));
     }
@@ -487,13 +514,67 @@ mod tests {
         let diff = "test diff";
         let recent_commits: Vec<String> = vec![];
 
-        let prompt_ja =
-            AiService::build_prompt(diff, &recent_commits, "Japanese", Some("conventional"));
+        let prompt_ja = AiService::build_prompt(
+            diff,
+            &recent_commits,
+            "Japanese",
+            Some("conventional"),
+            false,
+        );
         assert!(prompt_ja.contains("Japanese"));
 
-        let prompt_en =
-            AiService::build_prompt(diff, &recent_commits, "English", Some("conventional"));
+        let prompt_en = AiService::build_prompt(
+            diff,
+            &recent_commits,
+            "English",
+            Some("conventional"),
+            false,
+        );
         assert!(prompt_en.contains("English"));
+    }
+
+    #[test]
+    fn test_build_prompt_with_body_true() {
+        let diff = "test diff";
+        let recent_commits: Vec<String> = vec![];
+        let prompt = AiService::build_prompt(
+            diff,
+            &recent_commits,
+            "Japanese",
+            Some("conventional"),
+            true,
+        );
+        // Body モードでは body 関連の指示が含まれる
+        assert!(prompt.contains("Body"));
+        assert!(prompt.contains("bullet point"));
+        assert!(prompt.contains("Subject line"));
+        assert!(!prompt.contains("single line"));
+    }
+
+    #[test]
+    fn test_build_prompt_with_body_false() {
+        let diff = "test diff";
+        let recent_commits: Vec<String> = vec![];
+        let prompt = AiService::build_prompt(
+            diff,
+            &recent_commits,
+            "Japanese",
+            Some("conventional"),
+            false,
+        );
+        // 通常モードでは single line の指示が含まれる
+        assert!(prompt.contains("single line"));
+        assert!(!prompt.contains("bullet point"));
+    }
+
+    #[test]
+    fn test_build_prompt_body_with_auto_mode() {
+        let diff = "test diff";
+        let recent_commits = vec!["feat: previous commit".to_string()];
+        let prompt = AiService::build_prompt(diff, &recent_commits, "English", None, true);
+        // Auto モードでも body 指示が含まれる
+        assert!(prompt.contains("Body"));
+        assert!(prompt.contains("bullet point"));
     }
 
     #[test]
