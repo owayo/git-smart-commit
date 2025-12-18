@@ -35,6 +35,15 @@ pub enum AppError {
 
     #[error("ベースブランチ上では squash できません。フィーチャーブランチに切り替えてください。")]
     OnBaseBranch,
+
+    #[error("指定範囲にマージコミットが含まれています。rewordはマージコミットを含む範囲では使用できません。")]
+    HasMergeCommits,
+
+    #[error("rebase中にコンフリクトが発生しました。rebaseを中止しました。")]
+    RebaseConflict,
+
+    #[error("無効なreword対象です。1以上の数値を指定してください。")]
+    InvalidRewordTarget,
 }
 
 #[cfg(test)]
@@ -140,5 +149,32 @@ mod tests {
         let err = AppError::NoBaseBranch;
         let debug_str = format!("{:?}", err);
         assert!(debug_str.contains("NoBaseBranch"));
+    }
+
+    #[test]
+    fn test_error_has_merge_commits() {
+        let err = AppError::HasMergeCommits;
+        assert_eq!(
+            err.to_string(),
+            "指定範囲にマージコミットが含まれています。rewordはマージコミットを含む範囲では使用できません。"
+        );
+    }
+
+    #[test]
+    fn test_error_rebase_conflict() {
+        let err = AppError::RebaseConflict;
+        assert_eq!(
+            err.to_string(),
+            "rebase中にコンフリクトが発生しました。rebaseを中止しました。"
+        );
+    }
+
+    #[test]
+    fn test_error_invalid_reword_target() {
+        let err = AppError::InvalidRewordTarget;
+        assert_eq!(
+            err.to_string(),
+            "無効なreword対象です。1以上の数値を指定してください。"
+        );
     }
 }

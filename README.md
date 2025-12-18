@@ -20,6 +20,7 @@ AI-powered smart commit message generator using coding agents (Gemini CLI, Codex
 - **Dry Run**: Preview generated messages without committing
 - **Amend Support**: Regenerate message for the last commit with `--amend`
 - **Squash Support**: Combine all commits in a branch into one with `--squash <BASE>`
+- **Reword Support**: Regenerate message for a commit N commits back with `--reword <N>`
 
 ## Prerequisites
 
@@ -245,6 +246,9 @@ git-sc --amend
 # Squash all commits in current branch into one (specify base branch)
 git-sc --squash origin/main
 
+# Reword a commit N commits back (regenerate message using git rebase)
+git-sc --reword 3
+
 # Override language setting
 git-sc -l English
 
@@ -253,6 +257,7 @@ git-sc -a -y           # Stage all and commit without confirmation
 git-sc -a -n           # Stage all and preview message
 git-sc --amend -y      # Amend last commit without confirmation
 git-sc --squash origin/main -y  # Squash all commits without confirmation
+git-sc --reword 3 -y   # Reword commit 3 back without confirmation
 ```
 
 ## Options
@@ -264,6 +269,7 @@ git-sc --squash origin/main -y  # Squash all commits without confirmation
 | `--all` | `-a` | Stage all changes (including unstaged) and commit |
 | `--amend` | | Regenerate message for the last commit |
 | `--squash <BASE>` | | Combine all commits in current branch into one (specify base branch) |
+| `--reword <N>` | | Regenerate message for a commit N commits back (uses git rebase) |
 | `--lang` | `-l` | Override language setting from config |
 | `--debug` | `-d` | Debug mode (show prompts sent to AI) |
 | `--help` | `-h` | Print help information |
@@ -445,6 +451,36 @@ myorg/PROJECT!1500 add validation and adjust CI
 
 ✓ 13 commits squashed successfully!
 ```
+
+### Reword Example
+
+Regenerate commit message for a commit N commits back:
+```bash
+$ git-sc --reword 2 -y
+Reword mode: regenerating message for commit 2 back...
+Current commit message:
+  fix typo
+Recent commits (for format reference):
+  feat: add user validation
+  fix: resolve API error
+  docs: update README
+Generating commit message...
+  Using Gemini...
+
+Generated commit message:
+──────────────────────────────────────────────────
+fix: correct typo in validation logic
+──────────────────────────────────────────────────
+
+✓ Commit 2 back reworded successfully!
+Note: You may need to force push (git push --force) if already pushed.
+```
+
+**Important Notes:**
+- The `--reword` option uses `git rebase` internally
+- If the commit has already been pushed, you will need to force push (`git push --force`)
+- If merge commits exist in the range, the operation will be aborted
+- If conflicts occur during rebase, the operation will be aborted automatically
 
 ### Provider Fallback
 

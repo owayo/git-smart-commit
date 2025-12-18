@@ -20,6 +20,7 @@ AIコーディングエージェント（Gemini CLI、Codex CLI、Claude Code）
 - **ドライラン**: コミットせずに生成メッセージをプレビュー
 - **Amend サポート**: `--amend` で直前のコミットメッセージを再生成
 - **Squash サポート**: `--squash <BASE>` でブランチ内の全コミットを1つにまとめる
+- **Reword サポート**: `--reword <N>` でN個前のコミットメッセージを再生成
 
 ## 前提条件
 
@@ -245,6 +246,9 @@ git-sc --amend
 # ブランチ内の全コミットを1つにまとめる（ベースブランチを指定）
 git-sc --squash origin/main
 
+# N個前のコミットメッセージを再生成（git rebase を使用）
+git-sc --reword 3
+
 # 言語設定を上書き
 git-sc -l English
 
@@ -253,6 +257,7 @@ git-sc -a -y           # 全ステージして確認なしでコミット
 git-sc -a -n           # 全ステージしてメッセージをプレビュー
 git-sc --amend -y      # 確認なしで直前のコミットを修正
 git-sc --squash origin/main -y  # 確認なしで全コミットをまとめる
+git-sc --reword 3 -y   # 確認なしで3つ前のコミットを再生成
 ```
 
 ## オプション
@@ -264,6 +269,7 @@ git-sc --squash origin/main -y  # 確認なしで全コミットをまとめる
 | `--all` | `-a` | アンステージの変更も含めて全てをステージしてコミット |
 | `--amend` | | 直前のコミットメッセージを再生成 |
 | `--squash <BASE>` | | ブランチ内の全コミットを1つにまとめる（ベースブランチを指定） |
+| `--reword <N>` | | N個前のコミットメッセージを再生成（git rebase を使用） |
 | `--lang` | `-l` | 設定ファイルの言語設定を上書き |
 | `--debug` | `-d` | デバッグモード（AIに渡すプロンプトを表示） |
 | `--help` | `-h` | ヘルプ情報を表示 |
@@ -445,6 +451,36 @@ myorg/PROJECT!1500 バリデーション機能を追加しCI調整
 
 ✓ 13 commits squashed successfully!
 ```
+
+### Reword の実行例
+
+N個前のコミットメッセージを再生成する場合：
+```bash
+$ git-sc --reword 2 -y
+Reword mode: regenerating message for commit 2 back...
+Current commit message:
+  typo修正
+Recent commits (for format reference):
+  feat: ユーザーバリデーション追加
+  fix: APIエラー解消
+  docs: README更新
+Generating commit message...
+  Using Gemini...
+
+Generated commit message:
+──────────────────────────────────────────────────
+fix: バリデーションロジックのタイポを修正
+──────────────────────────────────────────────────
+
+✓ Commit 2 back reworded successfully!
+Note: You may need to force push (git push --force) if already pushed.
+```
+
+**重要な注意点：**
+- `--reword` オプションは内部で `git rebase` を使用します
+- すでにプッシュ済みのコミットを変更した場合は、force push（`git push --force`）が必要です
+- 対象範囲にマージコミットが含まれている場合、処理は中止されます
+- rebase中にコンフリクトが発生した場合、自動的に処理が中止されます
 
 ### プロバイダーフォールバック
 

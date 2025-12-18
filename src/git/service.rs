@@ -503,6 +503,161 @@ impl GitService {
 
         Ok(())
     }
+
+    /// 指定範囲にマージコミットが含まれているかチェック
+    pub fn has_merge_commits_in_range(&self, n: usize) -> Result<bool, AppError> {
+        // マージコミットは親が2つ以上ある
+        let output = Command::new("git")
+            .args(["rev-list", "--merges", &format!("HEAD~{}..HEAD", n)])
+            .current_dir(&self.repo_path)
+            .output()
+            .map_err(|e| AppError::GitError(e.to_string()))?;
+
+        if !output.status.success() {
+            return Err(AppError::GitError(
+                String::from_utf8_lossy(&output.stderr).to_string(),
+            ));
+        }
+
+        let merges = String::from_utf8_lossy(&output.stdout);
+        Ok(!merges.trim().is_empty())
+    }
+
+    /// N個前のコミットの差分を取得
+    pub fn get_commit_diff_at(&self, n: usize) -> Result<String, AppError> {
+        let commit_ref = if n == 1 {
+            "HEAD".to_string()
+        } else {
+            format!("HEAD~{}", n - 1)
+        };
+
+        let output = Command::new("git")
+            .args(["diff", "-w", &format!("{}^", commit_ref), &commit_ref])
+            .current_dir(&self.repo_path)
+            .output()
+            .map_err(|e| AppError::GitError(e.to_string()))?;
+
+        if !output.status.success() {
+            return Err(AppError::GitError(
+                String::from_utf8_lossy(&output.stderr).to_string(),
+            ));
+        }
+
+        let diff = String::from_utf8_lossy(&output.stdout).to_string();
+        Ok(self.apply_all_filters(&diff))
+    }
+
+    /// N個前のコミットのメッセージを取得
+    pub fn get_commit_message_at(&self, n: usize) -> Result<String, AppError> {
+        let commit_ref = if n == 1 {
+            "HEAD".to_string()
+        } else {
+            format!("HEAD~{}", n - 1)
+        };
+
+        let output = Command::new("git")
+            .args(["log", "-1", "--format=%s", &commit_ref])
+            .current_dir(&self.repo_path)
+            .output()
+            .map_err(|e| AppError::GitError(e.to_string()))?;
+
+        if !output.status.success() {
+            return Err(AppError::GitError(
+                String::from_utf8_lossy(&output.stderr).to_string(),
+            ));
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    /// N個前のコミットのメッセージを変更（rebase使用）
+    pub fn reword_commit(&self, n: usize, new_message: &str) -> Result<(), AppError> {
+        if n == 0 {
+            return Err(AppError::InvalidRewordTarget);
+        }
+
+        // n=1 の場合は --amend を使用
+        if n == 1 {
+            return self.amend_commit_message(new_message);
+        }
+
+        // マージコミットをチェック
+        if self.has_merge_commits_in_range(n)? {
+            return Err(AppError::HasMergeCommits);
+        }
+
+        // 一時ファイルにメッセージを保存
+        let temp_dir = std::env::temp_dir();
+        let msg_file = temp_dir.join("git-sc-reword-message.txt");
+        std::fs::write(&msg_file, new_message)
+            .map_err(|e| AppError::GitError(format!("Failed to create temp file: {}", e)))?;
+
+        // GIT_SEQUENCE_EDITOR: 最初のpickをrewordに変更
+        let sequence_editor = if cfg!(windows) {
+            // Windows: PowerShellを使用
+            "powershell -Command \"(Get-Content $args[0]) -replace '^pick', 'reword' | Set-Content $args[0]\"".to_string()
+        } else {
+            // Unix: sedを使用（macOSとLinux両対応）
+            "sed -i.bak '1s/^pick/reword/' \"$1\" && rm -f \"$1.bak\"".to_string()
+        };
+
+        // GIT_EDITOR: 一時ファイルの内容をコピー
+        let editor = if cfg!(windows) {
+            format!(
+                "powershell -Command \"Copy-Item '{}' $args[0]\"",
+                msg_file.display()
+            )
+        } else {
+            format!("cp '{}' ", msg_file.display())
+        };
+
+        // git rebase -i を実行
+        let output = Command::new("git")
+            .args(["rebase", "-i", &format!("HEAD~{}", n)])
+            .env("GIT_SEQUENCE_EDITOR", &sequence_editor)
+            .env("GIT_EDITOR", &editor)
+            .env("EDITOR", &editor)
+            .current_dir(&self.repo_path)
+            .output()
+            .map_err(|e| AppError::GitError(e.to_string()))?;
+
+        // 一時ファイルを削除
+        let _ = std::fs::remove_file(&msg_file);
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+
+            // コンフリクトの場合はrebaseを中止
+            if stderr.contains("CONFLICT") || stderr.contains("could not apply") {
+                let _ = Command::new("git")
+                    .args(["rebase", "--abort"])
+                    .current_dir(&self.repo_path)
+                    .output();
+                return Err(AppError::RebaseConflict);
+            }
+
+            return Err(AppError::GitError(stderr.to_string()));
+        }
+
+        Ok(())
+    }
+
+    /// コミットメッセージを変更（amend）
+    fn amend_commit_message(&self, new_message: &str) -> Result<(), AppError> {
+        let output = Command::new("git")
+            .args(["commit", "--amend", "-m", new_message])
+            .current_dir(&self.repo_path)
+            .output()
+            .map_err(|e| AppError::GitError(e.to_string()))?;
+
+        if !output.status.success() {
+            return Err(AppError::GitError(
+                String::from_utf8_lossy(&output.stderr).to_string(),
+            ));
+        }
+
+        Ok(())
+    }
 }
 
 impl Default for GitService {

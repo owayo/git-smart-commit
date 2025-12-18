@@ -26,6 +26,10 @@ pub struct Cli {
     #[arg(long = "squash", value_name = "BASE")]
     pub squash: Option<String>,
 
+    /// N個前のコミットメッセージを再生成（git rebase を使用）
+    #[arg(long = "reword", value_name = "N")]
+    pub reword: Option<usize>,
+
     /// コミットメッセージの言語（設定ファイルを上書き）
     #[arg(short = 'l', long = "lang")]
     pub language: Option<String>,
@@ -51,6 +55,7 @@ mod tests {
         assert!(!cli.stage_all);
         assert!(!cli.amend);
         assert!(cli.squash.is_none());
+        assert!(cli.reword.is_none());
         assert!(cli.language.is_none());
         assert!(!cli.debug);
     }
@@ -167,6 +172,26 @@ mod tests {
     fn test_cli_debug_with_dry_run() {
         let cli = Cli::parse_from(["git-sc", "-d", "-n"]);
         assert!(cli.debug);
+        assert!(cli.dry_run);
+    }
+
+    #[test]
+    fn test_cli_reword() {
+        let cli = Cli::parse_from(["git-sc", "--reword", "3"]);
+        assert_eq!(cli.reword, Some(3));
+    }
+
+    #[test]
+    fn test_cli_reword_with_confirm() {
+        let cli = Cli::parse_from(["git-sc", "--reword", "5", "-y"]);
+        assert_eq!(cli.reword, Some(5));
+        assert!(cli.auto_confirm);
+    }
+
+    #[test]
+    fn test_cli_reword_with_dry_run() {
+        let cli = Cli::parse_from(["git-sc", "--reword", "2", "-n"]);
+        assert_eq!(cli.reword, Some(2));
         assert!(cli.dry_run);
     }
 }
