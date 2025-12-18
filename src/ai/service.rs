@@ -162,17 +162,17 @@ impl AiService {
 {format_section}
 
 Instructions:
-- If the commits use Conventional Commits (feat:, fix:, etc.), use that format
-- If the commits use bracket prefix ([Add], [Fix], etc.), use that format
-- If the commits use other prefix styles, match that style
+- Match the commit message style shown above
 - Write the commit message in {language}
 
 Rules:
 - Write only a single line (no multi-line message)
-- Max 50 characters
+- Keep it concise (ideally under 72 characters)
 - Be specific about what changed
-- Use imperative mood (Add, Fix, Update, not Added, Fixed, Updated)
-- Output ONLY the commit message, no explanation
+- Output ONLY the commit message, nothing else
+- Do NOT include any explanation, reasoning, or thinking process
+- Do NOT write phrases like "I will...", "Let me...", "Based on...", "Here is..."
+- Respond with the commit message immediately, no preamble
 
 Changes:
 ```diff
