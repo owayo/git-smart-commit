@@ -17,9 +17,9 @@ pub enum AiProvider {
 impl AiProvider {
     fn name(&self) -> &'static str {
         match self {
-            AiProvider::Gemini => "Gemini",
-            AiProvider::Codex => "Codex",
-            AiProvider::Claude => "Claude",
+            AiProvider::Gemini => "Gemini CLI",
+            AiProvider::Codex => "Codex CLI",
+            AiProvider::Claude => "Claude Code",
         }
     }
 
@@ -349,9 +349,9 @@ mod tests {
 
     #[test]
     fn test_ai_provider_name() {
-        assert_eq!(AiProvider::Gemini.name(), "Gemini");
-        assert_eq!(AiProvider::Codex.name(), "Codex");
-        assert_eq!(AiProvider::Claude.name(), "Claude");
+        assert_eq!(AiProvider::Gemini.name(), "Gemini CLI");
+        assert_eq!(AiProvider::Codex.name(), "Codex CLI");
+        assert_eq!(AiProvider::Claude.name(), "Claude Code");
     }
 
     #[test]
@@ -557,8 +557,8 @@ mod tests {
         let service = AiService::from_config(&config);
 
         assert_eq!(service.providers.len(), 2);
-        assert_eq!(service.providers[0].name(), "Claude");
-        assert_eq!(service.providers[1].name(), "Gemini");
+        assert_eq!(service.providers[0].name(), "Claude Code");
+        assert_eq!(service.providers[1].name(), "Gemini CLI");
     }
 
     #[test]
@@ -603,9 +603,9 @@ mod tests {
 
         assert_eq!(service.language, "Japanese");
         assert_eq!(service.providers.len(), 3);
-        assert_eq!(service.providers[0].name(), "Gemini");
-        assert_eq!(service.providers[1].name(), "Codex");
-        assert_eq!(service.providers[2].name(), "Claude");
+        assert_eq!(service.providers[0].name(), "Gemini CLI");
+        assert_eq!(service.providers[1].name(), "Codex CLI");
+        assert_eq!(service.providers[2].name(), "Claude Code");
     }
 
     // ============================================================
