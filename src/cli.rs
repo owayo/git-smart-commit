@@ -1,48 +1,50 @@
 use clap::Parser;
 
-/// AI CLI（Gemini、Codex、Claude）を使用したスマートコミットメッセージ生成ツール
+/// AI-powered smart commit message generator using coding agents (Gemini CLI, Codex CLI, or Claude Code)
 #[derive(Parser, Debug)]
 #[command(name = "git-sc")]
-#[command(about = "AI CLI（Gemini、Codex、Claude）を使用したスマートコミットメッセージ生成ツール")]
+#[command(
+    about = "AI-powered smart commit message generator using coding agents (Gemini CLI, Codex CLI, or Claude Code)"
+)]
 #[command(version)]
 pub struct Cli {
-    /// 確認プロンプトをスキップして直接コミット
+    /// Skip confirmation prompt and commit directly
     #[arg(short = 'y', long = "yes")]
     pub auto_confirm: bool,
 
-    /// 実際にコミットせずに生成されたメッセージを表示
+    /// Show generated message without committing
     #[arg(short = 'n', long = "dry-run")]
     pub dry_run: bool,
 
-    /// アンステージの変更も含めて全てをステージングしてコミット
+    /// Stage all changes including unstaged and commit
     #[arg(short = 'a', long = "all")]
     pub stage_all: bool,
 
-    /// 直前のコミットを新しく生成されたメッセージで修正
+    /// Amend the last commit with a newly generated message
     #[arg(long = "amend")]
     pub amend: bool,
 
-    /// ブランチ内の全コミットを1つにまとめて新しいメッセージを生成（ベースブランチを指定）
+    /// Squash all commits in branch into one with a new message (specify base branch)
     #[arg(long = "squash", value_name = "BASE")]
     pub squash: Option<String>,
 
-    /// N個前のコミットメッセージを再生成（git rebase を使用）
+    /// Regenerate commit message for N commits back (uses git rebase)
     #[arg(long = "reword", value_name = "N")]
     pub reword: Option<usize>,
 
-    /// 指定したコミットハッシュのdiffからメッセージを生成（標準出力に出力のみ、複数指定可）
+    /// Generate message from diff of specified commit hash(es) (output only, multiple allowed)
     #[arg(short = 'g', long = "generate-for", value_name = "HASH", num_args = 1..)]
     pub generate_for: Option<Vec<String>>,
 
-    /// コミットメッセージに本文（body）も生成
+    /// Generate commit message with body
     #[arg(short = 'b', long = "body")]
     pub with_body: bool,
 
-    /// コミットメッセージの言語（設定ファイルを上書き）
+    /// Language for commit message (overrides config file)
     #[arg(short = 'l', long = "lang")]
     pub language: Option<String>,
 
-    /// デバッグモード（AIに渡すプロンプトを表示）
+    /// Debug mode (show prompt sent to AI)
     #[arg(short = 'd', long = "debug")]
     pub debug: bool,
 }
