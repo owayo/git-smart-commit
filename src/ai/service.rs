@@ -409,7 +409,32 @@ Changes:
         // 先頭と末尾の引用符がある場合は削除
         let message = message.trim_matches('"').trim_matches('\'');
 
-        message.trim().to_string()
+        let message = message.trim().to_string();
+
+        // 件名と本文の間に空行を保証
+        Self::ensure_body_separator(&message)
+    }
+
+    /// 件名と本文の間に空行があることを保証する
+    fn ensure_body_separator(message: &str) -> String {
+        let lines: Vec<&str> = message.lines().collect();
+
+        // 1行以下の場合はそのまま返す
+        if lines.len() <= 1 {
+            return message.to_string();
+        }
+
+        // 2行目が空行の場合はそのまま返す
+        if lines[1].trim().is_empty() {
+            return message.to_string();
+        }
+
+        // 2行目が空行でない場合は、件名の後に空行を挿入
+        let mut result = String::new();
+        result.push_str(lines[0]);
+        result.push_str("\n\n");
+        result.push_str(&lines[1..].join("\n"));
+        result
     }
 }
 
@@ -785,6 +810,43 @@ mod tests {
         let result = AiService::clean_message(message);
         assert!(result.contains("feat: add feature"));
         assert!(result.contains("Description here"));
+    }
+
+    #[test]
+    fn test_clean_message_body_without_empty_line() {
+        // 2行目が空行でない場合、空行を挿入
+        let message = "feat: add feature\nThis is the body.";
+        assert_eq!(
+            AiService::clean_message(message),
+            "feat: add feature\n\nThis is the body."
+        );
+    }
+
+    #[test]
+    fn test_clean_message_body_with_empty_line() {
+        // 既に空行がある場合はそのまま
+        let message = "feat: add feature\n\nThis is the body.";
+        assert_eq!(
+            AiService::clean_message(message),
+            "feat: add feature\n\nThis is the body."
+        );
+    }
+
+    #[test]
+    fn test_clean_message_body_multiple_lines_without_separator() {
+        // 複数行の本文で空行がない場合
+        let message = "feat: add feature\n- item 1\n- item 2\n- item 3";
+        assert_eq!(
+            AiService::clean_message(message),
+            "feat: add feature\n\n- item 1\n- item 2\n- item 3"
+        );
+    }
+
+    #[test]
+    fn test_clean_message_single_line() {
+        // 1行のみの場合はそのまま
+        let message = "feat: add feature";
+        assert_eq!(AiService::clean_message(message), "feat: add feature");
     }
 
     // ============================================================
