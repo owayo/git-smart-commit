@@ -79,6 +79,12 @@ cd git-smart-commit
 make install
 ```
 
+## VS Code 拡張機能
+
+VS Code ユーザー向けに、エディタから直接 git-sc を使用できる拡張機能があります。
+
+**[Git-SC (Smart Commit)](https://marketplace.visualstudio.com/items?itemName=owayo.vscode-git-smart-commit)** - VS Code マーケットプレイスからインストール可能
+
 ## 設定
 
 初回実行時に `git-sc` は `~/.git-sc` に設定ファイルを作成します：

@@ -79,6 +79,12 @@ cd git-smart-commit
 make install
 ```
 
+## VS Code Extension
+
+For VS Code users, an extension is available to use git-sc directly from the editor.
+
+**[Git-SC (Smart Commit)](https://marketplace.visualstudio.com/items?itemName=owayo.vscode-git-smart-commit)** - Available on VS Code Marketplace
+
 ## Configuration
 
 On first run, `git-sc` creates a configuration file at `~/.git-sc`:
