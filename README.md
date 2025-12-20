@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/owayo/git-smart-commit/actions/workflows/ci.yml/badge.svg)](https://github.com/owayo/git-smart-commit/actions/workflows/ci.yml)
 
+<img src="./docs/images/app.png" alt="git-sc" width="100">
+
 AI-powered smart commit message generator using coding agents (Gemini CLI, Codex CLI, or Claude Code).
 
 `git-sc` analyzes your staged changes and past commit history to generate contextually appropriate commit messages using AI coding agents with automatic fallback support.
