@@ -24,7 +24,8 @@ AIコーディングエージェント（Gemini CLI、Codex CLI、Claude Code）
 - **本文サポート**: `-b` で箇条書き本文付きの詳細なコミットメッセージを生成
 - **Amend サポート**: `--amend` で直前のコミットメッセージを再生成
 - **Squash サポート**: `--squash <BASE>` でブランチ内の全コミットを1つにまとめる
-- **Reword サポート**: `--reword <N>` でN個前のコミットメッセージを再生成
+- **Reword サポート**: `--reword <HASH>` で特定のコミットメッセージを再生成
+- **Generate For**: `--generate-for <HASH>...` で既存コミットのdiffからメッセージを生成
 
 ## 前提条件
 
@@ -261,8 +262,14 @@ git-sc --amend
 # ブランチ内の全コミットを1つにまとめる（ベースブランチを指定）
 git-sc --squash origin/main
 
-# N個前のコミットメッセージを再生成（git rebase を使用）
-git-sc --reword 3
+# 特定のコミットメッセージを再生成（git rebase を使用）
+git-sc --reword abc1234
+
+# 既存コミットのdiffからメッセージを生成（出力のみ、コミットなし）
+git-sc --generate-for abc1234
+
+# 複数のコミットからメッセージを生成
+git-sc --generate-for abc1234 def5678
 
 # 箇条書き本文付きの詳細なコミットメッセージを生成
 git-sc -b
@@ -275,7 +282,8 @@ git-sc -a -y           # 全ステージして確認なしでコミット
 git-sc -a -n           # 全ステージしてメッセージをプレビュー
 git-sc --amend -y      # 確認なしで直前のコミットを修正
 git-sc --squash origin/main -y  # 確認なしで全コミットをまとめる
-git-sc --reword 3 -y   # 確認なしで3つ前のコミットを再生成
+git-sc --reword abc1234 -y     # 確認なしで特定のコミットを再生成
+git-sc -g abc1234 -b           # コミットから本文付きメッセージを生成
 ```
 
 ## オプション
@@ -288,7 +296,8 @@ git-sc --reword 3 -y   # 確認なしで3つ前のコミットを再生成
 | `--body` | `-b` | 箇条書き本文付きの詳細なコミットメッセージを生成 |
 | `--amend` | | 直前のコミットメッセージを再生成 |
 | `--squash <BASE>` | | ブランチ内の全コミットを1つにまとめる（ベースブランチを指定） |
-| `--reword <N>` | | N個前のコミットメッセージを再生成（git rebase を使用） |
+| `--reword <HASH>` | | 特定のコミットメッセージを再生成（git rebase を使用） |
+| `--generate-for <HASH>...` | `-g` | 既存コミットのdiffからメッセージを生成（出力のみ、複数指定可） |
 | `--lang` | `-l` | 設定ファイルの言語設定を上書き |
 | `--debug` | `-d` | デバッグモード（AIに渡すプロンプトを表示） |
 | `--help` | `-h` | ヘルプ情報を表示 |
@@ -492,10 +501,10 @@ myorg/PROJECT!1500 バリデーション機能を追加しCI調整
 
 ### Reword の実行例
 
-N個前のコミットメッセージを再生成する場合：
+特定のコミットメッセージをハッシュ指定で再生成する場合：
 ```bash
-$ git-sc --reword 2 -y
-Reword mode: regenerating message for commit 2 back...
+$ git-sc --reword abc1234 -y
+Reword mode: regenerating message for commit abc1234...
 Current commit message:
   wip
 Running prefix script for ^https://gitlab\.example\.com/myorg/...
@@ -510,15 +519,38 @@ Generated commit message:
 myorg/PROJECT!1234 add migration version check
 ──────────────────────────────────────────────────
 
-✓ Commit 2 back reworded successfully!
+✓ Commit abc1234 reworded successfully!
 Note: You may need to force push (git push --force) if already pushed.
 ```
 
 **重要な注意点：**
 - `--reword` オプションは内部で `git rebase` を使用します
+- コミットハッシュ（短縮形またはフル）を指定します
 - すでにプッシュ済みのコミットを変更した場合は、force push（`git push --force`）が必要です
 - 対象範囲にマージコミットが含まれている場合、処理は中止されます
 - rebase中にコンフリクトが発生した場合、自動的に処理が中止されます
+
+### Generate For の実行例
+
+既存コミットのdiffからメッセージを生成する場合（出力のみ、コミットは作成されません）：
+```bash
+$ git-sc --generate-for abc1234
+feat: ユーザー認証フローを追加
+
+$ git-sc -g abc1234 def5678 -b
+feat: 認証とバリデーションを実装
+
+- ユーザーセッション用のJWTトークン生成を追加
+- 入力バリデーションミドルウェアを実装
+- 認証失敗時のエラーハンドリングを作成
+```
+
+**特徴：**
+- 出力専用モード - コミットは作成されず、生成メッセージのみを出力
+- 複数のコミットハッシュに対応 - diffは結合されて分析
+- `-b` フラグで詳細な本文を生成可能
+- `-l` フラグで言語の上書きが可能
+- 他のコマンドにパイプ可能なクリーンな出力
 
 ### プロバイダーフォールバック
 
