@@ -42,7 +42,7 @@ pub enum AppError {
     #[error("rebase中にコンフリクトが発生しました。rebaseを中止しました。")]
     RebaseConflict,
 
-    #[error("無効なreword対象です。1以上の数値を指定してください。")]
+    #[error("Invalid reword target. Please specify a valid commit hash.")]
     InvalidRewordTarget,
 
     #[error("無効なコミットハッシュ: {0}")]
@@ -180,7 +180,7 @@ mod tests {
         let err = AppError::InvalidRewordTarget;
         assert_eq!(
             err.to_string(),
-            "無効なreword対象です。1以上の数値を指定してください。"
+            "Invalid reword target. Please specify a valid commit hash."
         );
     }
 

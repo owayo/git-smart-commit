@@ -706,31 +706,40 @@ impl App {
 
     /// rewordワークフローを実行
     fn run_reword(&self, cli: &Cli) -> Result<(), AppError> {
-        let n = cli.reword.ok_or(AppError::InvalidRewordTarget)?;
+        let hash = cli
+            .reword
+            .as_ref()
+            .ok_or(AppError::InvalidRewordTarget)?
+            .clone();
 
-        // N=0は無効
-        if n == 0 {
-            return Err(AppError::InvalidRewordTarget);
-        }
+        // 短いハッシュを取得して表示用に使用
+        let short_hash = if hash.len() > 7 { &hash[..7] } else { &hash };
 
         println!(
             "{}",
-            format!("Reword mode: regenerating message for commit {} back...", n).cyan()
+            format!(
+                "Reword mode: regenerating message for commit {}...",
+                short_hash
+            )
+            .cyan()
         );
 
         // マージコミットが含まれていないか確認
-        if self.git.has_merge_commits_in_range(n)? {
+        if self.git.has_merge_commits_in_range_by_hash(&hash)? {
             return Err(AppError::HasMergeCommits);
         }
 
+        // ハッシュの位置を取得（recent_commits のスキップ用）
+        let n = self.git.get_commit_position_by_hash(&hash)?;
+
         // 対象コミットのdiffを取得
-        let diff = self.git.get_commit_diff_at(n)?;
+        let diff = self.git.get_commit_diff_by_hash(&hash)?;
         if diff.trim().is_empty() {
             return Err(AppError::NoChanges);
         }
 
         // 現在のコミットメッセージを表示
-        let current_message = self.git.get_commit_message_at(n)?;
+        let current_message = self.git.get_commit_message_by_hash(&hash)?;
         println!("{}", "Current commit message:".cyan());
         println!("  {}", current_message.dimmed());
 
@@ -825,11 +834,11 @@ impl App {
         }
 
         // 確認してreword実行
-        if cli.auto_confirm || self.confirm_reword(n)? {
-            self.git.reword_commit(n, &message)?;
+        if cli.auto_confirm || self.confirm_reword(short_hash)? {
+            self.git.reword_commit_by_hash(&hash, &message)?;
             println!(
                 "{}",
-                format!("✓ Commit {} back reworded successfully!", n)
+                format!("✓ Commit {} reworded successfully!", short_hash)
                     .green()
                     .bold()
             );
@@ -861,8 +870,8 @@ impl App {
     }
 
     /// reword確認プロンプトを表示
-    fn confirm_reword(&self, n: usize) -> Result<bool, AppError> {
-        self.confirm_prompt(&format!("Reword commit {} back? [Y/n] ", n))
+    fn confirm_reword(&self, hash: &str) -> Result<bool, AppError> {
+        self.confirm_prompt(&format!("Reword commit {}? [Y/n] ", hash))
     }
 
     /// 汎用確認プロンプト

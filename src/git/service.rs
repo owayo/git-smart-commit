@@ -553,40 +553,21 @@ impl GitService {
         Ok(self.apply_all_filters(&diff))
     }
 
-    /// N個前のコミットの差分を取得
-    pub fn get_commit_diff_at(&self, n: usize) -> Result<String, AppError> {
-        let commit_ref = if n == 1 {
-            "HEAD".to_string()
-        } else {
-            format!("HEAD~{}", n - 1)
-        };
-
-        let output = Command::new("git")
-            .args(["diff", "-w", &format!("{}^", commit_ref), &commit_ref])
+    /// 指定されたコミットハッシュのメッセージを取得
+    pub fn get_commit_message_by_hash(&self, hash: &str) -> Result<String, AppError> {
+        // まずコミットハッシュが有効か確認
+        let verify_output = Command::new("git")
+            .args(["rev-parse", "--verify", hash])
             .current_dir(&self.repo_path)
             .output()
             .map_err(|e| AppError::GitError(e.to_string()))?;
 
-        if !output.status.success() {
-            return Err(AppError::GitError(
-                String::from_utf8_lossy(&output.stderr).to_string(),
-            ));
+        if !verify_output.status.success() {
+            return Err(AppError::InvalidCommitHash(hash.to_string()));
         }
 
-        let diff = String::from_utf8_lossy(&output.stdout).to_string();
-        Ok(self.apply_all_filters(&diff))
-    }
-
-    /// N個前のコミットのメッセージを取得
-    pub fn get_commit_message_at(&self, n: usize) -> Result<String, AppError> {
-        let commit_ref = if n == 1 {
-            "HEAD".to_string()
-        } else {
-            format!("HEAD~{}", n - 1)
-        };
-
         let output = Command::new("git")
-            .args(["log", "-1", "--format=%s", &commit_ref])
+            .args(["log", "-1", "--format=%s", hash])
             .current_dir(&self.repo_path)
             .output()
             .map_err(|e| AppError::GitError(e.to_string()))?;
@@ -598,6 +579,83 @@ impl GitService {
         }
 
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    /// 指定されたコミットハッシュがHEADから何個前かを取得
+    pub fn get_commit_position_by_hash(&self, hash: &str) -> Result<usize, AppError> {
+        // まずコミットハッシュが有効か確認
+        let verify_output = Command::new("git")
+            .args(["rev-parse", "--verify", hash])
+            .current_dir(&self.repo_path)
+            .output()
+            .map_err(|e| AppError::GitError(e.to_string()))?;
+
+        if !verify_output.status.success() {
+            return Err(AppError::InvalidCommitHash(hash.to_string()));
+        }
+
+        // HEADからそのコミットまでのコミット数をカウント
+        // git rev-list --count hash..HEAD で hash から HEAD までのコミット数を取得
+        // これに1を足すと、そのコミット自体の位置になる
+        let output = Command::new("git")
+            .args(["rev-list", "--count", &format!("{}..HEAD", hash)])
+            .current_dir(&self.repo_path)
+            .output()
+            .map_err(|e| AppError::GitError(e.to_string()))?;
+
+        if !output.status.success() {
+            return Err(AppError::GitError(
+                String::from_utf8_lossy(&output.stderr).to_string(),
+            ));
+        }
+
+        let count_str = String::from_utf8_lossy(&output.stdout);
+        let count: usize = count_str
+            .trim()
+            .parse()
+            .map_err(|_| AppError::GitError("Failed to parse commit count".to_string()))?;
+
+        // count はそのコミットより新しいコミットの数なので、+1で位置になる
+        Ok(count + 1)
+    }
+
+    /// 指定されたコミットハッシュからHEADまでにマージコミットが含まれているかチェック
+    pub fn has_merge_commits_in_range_by_hash(&self, hash: &str) -> Result<bool, AppError> {
+        // まずコミットハッシュが有効か確認
+        let verify_output = Command::new("git")
+            .args(["rev-parse", "--verify", hash])
+            .current_dir(&self.repo_path)
+            .output()
+            .map_err(|e| AppError::GitError(e.to_string()))?;
+
+        if !verify_output.status.success() {
+            return Err(AppError::InvalidCommitHash(hash.to_string()));
+        }
+
+        // マージコミットは親が2つ以上ある
+        let output = Command::new("git")
+            .args(["rev-list", "--merges", &format!("{}..HEAD", hash)])
+            .current_dir(&self.repo_path)
+            .output()
+            .map_err(|e| AppError::GitError(e.to_string()))?;
+
+        if !output.status.success() {
+            return Err(AppError::GitError(
+                String::from_utf8_lossy(&output.stderr).to_string(),
+            ));
+        }
+
+        let merges = String::from_utf8_lossy(&output.stdout);
+        Ok(!merges.trim().is_empty())
+    }
+
+    /// 指定されたコミットハッシュのメッセージを変更（rebase使用）
+    pub fn reword_commit_by_hash(&self, hash: &str, new_message: &str) -> Result<(), AppError> {
+        // 位置を取得
+        let n = self.get_commit_position_by_hash(hash)?;
+
+        // 既存のreword_commitを利用
+        self.reword_commit(n, new_message)
     }
 
     /// N個前のコミットのメッセージを変更（rebase使用）

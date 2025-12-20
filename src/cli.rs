@@ -28,9 +28,9 @@ pub struct Cli {
     #[arg(long = "squash", value_name = "BASE")]
     pub squash: Option<String>,
 
-    /// Regenerate commit message for N commits back (uses git rebase)
-    #[arg(long = "reword", value_name = "N")]
-    pub reword: Option<usize>,
+    /// Regenerate commit message for specified commit hash (uses git rebase)
+    #[arg(long = "reword", value_name = "HASH")]
+    pub reword: Option<String>,
 
     /// Generate message from diff of specified commit hash(es) (output only, multiple allowed)
     #[arg(short = 'g', long = "generate-for", value_name = "HASH", num_args = 1..)]
@@ -189,22 +189,35 @@ mod tests {
 
     #[test]
     fn test_cli_reword() {
-        let cli = Cli::parse_from(["git-sc", "--reword", "3"]);
-        assert_eq!(cli.reword, Some(3));
+        let cli = Cli::parse_from(["git-sc", "--reword", "abc1234"]);
+        assert_eq!(cli.reword, Some("abc1234".to_string()));
     }
 
     #[test]
     fn test_cli_reword_with_confirm() {
-        let cli = Cli::parse_from(["git-sc", "--reword", "5", "-y"]);
-        assert_eq!(cli.reword, Some(5));
+        let cli = Cli::parse_from(["git-sc", "--reword", "abc1234", "-y"]);
+        assert_eq!(cli.reword, Some("abc1234".to_string()));
         assert!(cli.auto_confirm);
     }
 
     #[test]
     fn test_cli_reword_with_dry_run() {
-        let cli = Cli::parse_from(["git-sc", "--reword", "2", "-n"]);
-        assert_eq!(cli.reword, Some(2));
+        let cli = Cli::parse_from(["git-sc", "--reword", "abc1234", "-n"]);
+        assert_eq!(cli.reword, Some("abc1234".to_string()));
         assert!(cli.dry_run);
+    }
+
+    #[test]
+    fn test_cli_reword_with_full_hash() {
+        let cli = Cli::parse_from([
+            "git-sc",
+            "--reword",
+            "1234567890abcdef1234567890abcdef12345678",
+        ]);
+        assert_eq!(
+            cli.reword,
+            Some("1234567890abcdef1234567890abcdef12345678".to_string())
+        );
     }
 
     #[test]
