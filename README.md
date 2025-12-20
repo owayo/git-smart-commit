@@ -24,7 +24,8 @@ AI-powered smart commit message generator using coding agents (Gemini CLI, Codex
 - **Body Support**: Generate detailed commit messages with bullet point body (`-b`)
 - **Amend Support**: Regenerate message for the last commit with `--amend`
 - **Squash Support**: Combine all commits in a branch into one with `--squash <BASE>`
-- **Reword Support**: Regenerate message for a commit N commits back with `--reword <N>`
+- **Reword Support**: Regenerate message for a specific commit with `--reword <HASH>`
+- **Generate For**: Generate message from existing commit diff with `--generate-for <HASH>...`
 
 ## Prerequisites
 
@@ -261,8 +262,14 @@ git-sc --amend
 # Squash all commits in current branch into one (specify base branch)
 git-sc --squash origin/main
 
-# Reword a commit N commits back (regenerate message using git rebase)
-git-sc --reword 3
+# Reword a specific commit (regenerate message using git rebase)
+git-sc --reword abc1234
+
+# Generate message from existing commit diff (output only, no commit)
+git-sc --generate-for abc1234
+
+# Generate message from multiple commits
+git-sc --generate-for abc1234 def5678
 
 # Generate commit message with body (detailed bullet points)
 git-sc -b
@@ -275,7 +282,8 @@ git-sc -a -y           # Stage all and commit without confirmation
 git-sc -a -n           # Stage all and preview message
 git-sc --amend -y      # Amend last commit without confirmation
 git-sc --squash origin/main -y  # Squash all commits without confirmation
-git-sc --reword 3 -y   # Reword commit 3 back without confirmation
+git-sc --reword abc1234 -y     # Reword specific commit without confirmation
+git-sc -g abc1234 -b           # Generate message with body from commit
 ```
 
 ## Options
@@ -288,7 +296,8 @@ git-sc --reword 3 -y   # Reword commit 3 back without confirmation
 | `--body` | `-b` | Generate commit message with body (bullet points) |
 | `--amend` | | Regenerate message for the last commit |
 | `--squash <BASE>` | | Combine all commits in current branch into one (specify base branch) |
-| `--reword <N>` | | Regenerate message for a commit N commits back (uses git rebase) |
+| `--reword <HASH>` | | Regenerate message for a specific commit (uses git rebase) |
+| `--generate-for <HASH>...` | `-g` | Generate message from existing commit diff (output only, multiple allowed) |
 | `--lang` | `-l` | Override language setting from config |
 | `--debug` | `-d` | Debug mode (show prompts sent to AI) |
 | `--help` | `-h` | Print help information |
@@ -495,10 +504,10 @@ myorg/PROJECT!1500 add validation and adjust CI
 
 ### Reword Example
 
-Regenerate commit message for a commit N commits back:
+Regenerate commit message for a specific commit by hash:
 ```bash
-$ git-sc --reword 2 -y
-Reword mode: regenerating message for commit 2 back...
+$ git-sc --reword abc1234 -y
+Reword mode: regenerating message for commit abc1234...
 Current commit message:
   wip
 Running prefix script for ^https://gitlab\.example\.com/myorg/...
@@ -513,15 +522,38 @@ Generated commit message:
 myorg/PROJECT!1234 add migration version check
 ──────────────────────────────────────────────────
 
-✓ Commit 2 back reworded successfully!
+✓ Commit abc1234 reworded successfully!
 Note: You may need to force push (git push --force) if already pushed.
 ```
 
 **Important Notes:**
 - The `--reword` option uses `git rebase` internally
+- Specify the commit hash (short or full) to reword
 - If the commit has already been pushed, you will need to force push (`git push --force`)
 - If merge commits exist in the range, the operation will be aborted
 - If conflicts occur during rebase, the operation will be aborted automatically
+
+### Generate For Example
+
+Generate commit message from existing commit diff (output only, no commit created):
+```bash
+$ git-sc --generate-for abc1234
+feat: add user authentication flow
+
+$ git-sc -g abc1234 def5678 -b
+feat: implement authentication and validation
+
+- Add JWT token generation for user sessions
+- Implement input validation middleware
+- Create error handling for auth failures
+```
+
+**Features:**
+- Output only mode - no commit is created, just prints the generated message
+- Supports multiple commit hashes - diffs are combined for analysis
+- Works with `-b` flag for detailed body generation
+- Works with `-l` flag for language override
+- Clean output suitable for piping to other commands
 
 ### Provider Fallback
 
