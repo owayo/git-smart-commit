@@ -44,6 +44,12 @@ pub enum AppError {
 
     #[error("無効なreword対象です。1以上の数値を指定してください。")]
     InvalidRewordTarget,
+
+    #[error("無効なコミットハッシュ: {0}")]
+    InvalidCommitHash(String),
+
+    #[error("--generate-for と --{0} は同時に使用できません")]
+    ConflictingOptions(String),
 }
 
 #[cfg(test)]
@@ -175,6 +181,21 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "無効なreword対象です。1以上の数値を指定してください。"
+        );
+    }
+
+    #[test]
+    fn test_error_invalid_commit_hash() {
+        let err = AppError::InvalidCommitHash("xyz123".to_string());
+        assert_eq!(err.to_string(), "無効なコミットハッシュ: xyz123");
+    }
+
+    #[test]
+    fn test_error_conflicting_options() {
+        let err = AppError::ConflictingOptions("amend".to_string());
+        assert_eq!(
+            err.to_string(),
+            "--generate-for と --amend は同時に使用できません"
         );
     }
 }

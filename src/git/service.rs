@@ -523,6 +523,36 @@ impl GitService {
         Ok(!merges.trim().is_empty())
     }
 
+    /// 指定されたコミットハッシュの差分を取得
+    pub fn get_commit_diff_by_hash(&self, hash: &str) -> Result<String, AppError> {
+        // まずコミットハッシュが有効か確認
+        let verify_output = Command::new("git")
+            .args(["rev-parse", "--verify", hash])
+            .current_dir(&self.repo_path)
+            .output()
+            .map_err(|e| AppError::GitError(e.to_string()))?;
+
+        if !verify_output.status.success() {
+            return Err(AppError::InvalidCommitHash(hash.to_string()));
+        }
+
+        // git show でそのコミットの差分を取得
+        let output = Command::new("git")
+            .args(["show", hash, "--format=", "--no-color", "-w"])
+            .current_dir(&self.repo_path)
+            .output()
+            .map_err(|e| AppError::GitError(e.to_string()))?;
+
+        if !output.status.success() {
+            return Err(AppError::GitError(
+                String::from_utf8_lossy(&output.stderr).to_string(),
+            ));
+        }
+
+        let diff = String::from_utf8_lossy(&output.stdout).to_string();
+        Ok(self.apply_all_filters(&diff))
+    }
+
     /// N個前のコミットの差分を取得
     pub fn get_commit_diff_at(&self, n: usize) -> Result<String, AppError> {
         let commit_ref = if n == 1 {
@@ -1099,6 +1129,28 @@ index 1234567..abcdefg 100644
         let root_path = root.unwrap();
         // .git ディレクトリが存在することを確認
         assert!(root_path.join(".git").exists());
+    }
+
+    // ============================================================
+    // get_commit_diff_by_hash のテスト
+    // ============================================================
+
+    #[test]
+    fn test_get_commit_diff_by_hash_with_head() {
+        let service = GitService::new();
+        // HEADは有効なコミット参照
+        let result = service.get_commit_diff_by_hash("HEAD");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_get_commit_diff_by_hash_invalid() {
+        let service = GitService::new();
+        // 存在しないハッシュ
+        let result = service.get_commit_diff_by_hash("invalid_hash_xyz");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, AppError::InvalidCommitHash(_)));
     }
 
     // ============================================================

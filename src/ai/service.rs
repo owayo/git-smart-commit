@@ -243,6 +243,29 @@ Changes:
         prefix_type: Option<&str>,
         with_body: bool,
     ) -> Result<String, AppError> {
+        self.generate_commit_message_internal(diff, recent_commits, prefix_type, with_body, false)
+    }
+
+    /// サイレントモードでコミットメッセージを生成（進捗出力なし）
+    pub fn generate_commit_message_silent(
+        &self,
+        diff: &str,
+        recent_commits: &[String],
+        prefix_type: Option<&str>,
+        with_body: bool,
+    ) -> Result<String, AppError> {
+        self.generate_commit_message_internal(diff, recent_commits, prefix_type, with_body, true)
+    }
+
+    /// 内部実装: コミットメッセージ生成
+    fn generate_commit_message_internal(
+        &self,
+        diff: &str,
+        recent_commits: &[String],
+        prefix_type: Option<&str>,
+        with_body: bool,
+        silent: bool,
+    ) -> Result<String, AppError> {
         let prompt =
             Self::build_prompt(diff, recent_commits, &self.language, prefix_type, with_body);
         let mut last_error = None;
@@ -252,17 +275,21 @@ Changes:
                 continue;
             }
 
-            println!("  {} {}...", "Using".dimmed(), provider.name().cyan());
+            if !silent {
+                println!("  {} {}...", "Using".dimmed(), provider.name().cyan());
+            }
 
             match self.call_provider(provider, &prompt) {
                 Ok(message) => return Ok(message),
                 Err(e) => {
-                    eprintln!(
-                        "  {} {} failed: {}",
-                        "⚠".yellow(),
-                        provider.name(),
-                        e.to_string().red()
-                    );
+                    if !silent {
+                        eprintln!(
+                            "  {} {} failed: {}",
+                            "⚠".yellow(),
+                            provider.name(),
+                            e.to_string().red()
+                        );
+                    }
                     // 失敗を記録して次回の優先度を下げる
                     self.record_provider_failure(provider);
                     last_error = Some(e);

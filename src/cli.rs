@@ -30,6 +30,10 @@ pub struct Cli {
     #[arg(long = "reword", value_name = "N")]
     pub reword: Option<usize>,
 
+    /// 指定したコミットハッシュのdiffからメッセージを生成（標準出力に出力のみ、複数指定可）
+    #[arg(short = 'g', long = "generate-for", value_name = "HASH", num_args = 1..)]
+    pub generate_for: Option<Vec<String>>,
+
     /// コミットメッセージに本文（body）も生成
     #[arg(short = 'b', long = "body")]
     pub with_body: bool,
@@ -60,6 +64,7 @@ mod tests {
         assert!(!cli.amend);
         assert!(cli.squash.is_none());
         assert!(cli.reword.is_none());
+        assert!(cli.generate_for.is_none());
         assert!(!cli.with_body);
         assert!(cli.language.is_none());
         assert!(!cli.debug);
@@ -218,5 +223,77 @@ mod tests {
         assert!(cli.stage_all);
         assert!(cli.with_body);
         assert!(cli.auto_confirm);
+    }
+
+    #[test]
+    fn test_cli_generate_for_short() {
+        let cli = Cli::parse_from(["git-sc", "-g", "abc1234"]);
+        assert_eq!(cli.generate_for, Some(vec!["abc1234".to_string()]));
+    }
+
+    #[test]
+    fn test_cli_generate_for_long() {
+        let cli = Cli::parse_from(["git-sc", "--generate-for", "abc1234def5678"]);
+        assert_eq!(cli.generate_for, Some(vec!["abc1234def5678".to_string()]));
+    }
+
+    #[test]
+    fn test_cli_generate_for_multiple() {
+        let cli = Cli::parse_from(["git-sc", "-g", "abc1234", "def5678", "ghi9012"]);
+        assert_eq!(
+            cli.generate_for,
+            Some(vec![
+                "abc1234".to_string(),
+                "def5678".to_string(),
+                "ghi9012".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn test_cli_generate_for_with_body() {
+        let cli = Cli::parse_from(["git-sc", "-g", "abc1234", "-b"]);
+        assert_eq!(cli.generate_for, Some(vec!["abc1234".to_string()]));
+        assert!(cli.with_body);
+    }
+
+    #[test]
+    fn test_cli_generate_for_multiple_with_body() {
+        let cli = Cli::parse_from(["git-sc", "-g", "abc1234", "def5678", "-b"]);
+        assert_eq!(
+            cli.generate_for,
+            Some(vec!["abc1234".to_string(), "def5678".to_string()])
+        );
+        assert!(cli.with_body);
+    }
+
+    #[test]
+    fn test_cli_generate_for_with_language() {
+        let cli = Cli::parse_from(["git-sc", "-g", "abc1234", "-l", "English"]);
+        assert_eq!(cli.generate_for, Some(vec!["abc1234".to_string()]));
+        assert_eq!(cli.language, Some("English".to_string()));
+    }
+
+    #[test]
+    fn test_cli_generate_for_multiple_with_language() {
+        let cli = Cli::parse_from(["git-sc", "-g", "abc1234", "def5678", "-l", "English"]);
+        assert_eq!(
+            cli.generate_for,
+            Some(vec!["abc1234".to_string(), "def5678".to_string()])
+        );
+        assert_eq!(cli.language, Some("English".to_string()));
+    }
+
+    #[test]
+    fn test_cli_generate_for_full_hash() {
+        let cli = Cli::parse_from([
+            "git-sc",
+            "--generate-for",
+            "1234567890abcdef1234567890abcdef12345678",
+        ]);
+        assert_eq!(
+            cli.generate_for,
+            Some(vec!["1234567890abcdef1234567890abcdef12345678".to_string()])
+        );
     }
 }

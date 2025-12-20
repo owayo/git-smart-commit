@@ -53,6 +53,16 @@ impl App {
     /// 2. prefix_rules: url_patternの正規表現にマッチすればそのprefix_typeを使用
     /// 3. Auto: 上記に該当しなければ過去コミットから自動判定
     fn get_prefix_mode(&self) -> PrefixMode {
+        self.get_prefix_mode_internal(false)
+    }
+
+    /// サイレントモードでプレフィックスモードを判定（進捗出力なし）
+    fn get_prefix_mode_silent(&self) -> PrefixMode {
+        self.get_prefix_mode_internal(true)
+    }
+
+    /// 内部実装: プレフィックスモード判定
+    fn get_prefix_mode_internal(&self, silent: bool) -> PrefixMode {
         // リモートURLとブランチ名を取得
         let remote_url = match self.git.get_remote_url() {
             Some(url) => url,
@@ -64,11 +74,13 @@ impl App {
         for script_config in &self.prefix_scripts {
             if let Ok(re) = Regex::new(&script_config.url_pattern) {
                 if re.is_match(&remote_url) {
-                    println!(
-                        "{}",
-                        format!("Running prefix script for {}...", script_config.url_pattern)
-                            .cyan()
-                    );
+                    if !silent {
+                        println!(
+                            "{}",
+                            format!("Running prefix script for {}...", script_config.url_pattern)
+                                .cyan()
+                        );
+                    }
                     if let Some(branch_name) = &branch {
                         if let Some(result) = self.git.run_prefix_script(
                             &script_config.script,
@@ -86,14 +98,16 @@ impl App {
         for rule_config in &self.prefix_rules {
             if let Ok(re) = Regex::new(&rule_config.url_pattern) {
                 if re.is_match(&remote_url) {
-                    println!(
-                        "{}",
-                        format!(
-                            "Using prefix rule for {}: {}",
-                            rule_config.url_pattern, rule_config.prefix_type
-                        )
-                        .cyan()
-                    );
+                    if !silent {
+                        println!(
+                            "{}",
+                            format!(
+                                "Using prefix rule for {}: {}",
+                                rule_config.url_pattern, rule_config.prefix_type
+                            )
+                            .cyan()
+                        );
+                    }
                     return PrefixMode::Rule(rule_config.prefix_type.clone());
                 }
             }
@@ -199,6 +213,21 @@ impl App {
 
         // AI CLIがインストールされているか確認
         self.ai.verify_installation()?;
+
+        // --generate-forモードは別処理（排他チェック付き）
+        if cli.generate_for.is_some() {
+            // 排他チェック
+            if cli.reword.is_some() {
+                return Err(AppError::ConflictingOptions("reword".to_string()));
+            }
+            if cli.amend {
+                return Err(AppError::ConflictingOptions("amend".to_string()));
+            }
+            if cli.squash.is_some() {
+                return Err(AppError::ConflictingOptions("squash".to_string()));
+            }
+            return self.run_generate_for(cli);
+        }
 
         // --rewordモードは別処理
         if cli.reword.is_some() {
@@ -575,6 +604,102 @@ impl App {
             println!("{}", "Squash cancelled.".yellow());
             return Err(AppError::UserCancelled);
         }
+
+        Ok(())
+    }
+
+    /// generate-forワークフローを実行（標準出力にメッセージのみ出力）
+    fn run_generate_for(&self, cli: &Cli) -> Result<(), AppError> {
+        let hashes = cli
+            .generate_for
+            .as_ref()
+            .ok_or_else(|| AppError::InvalidCommitHash("(empty)".to_string()))?;
+
+        if hashes.is_empty() {
+            return Err(AppError::InvalidCommitHash("(empty)".to_string()));
+        }
+
+        // 各コミットのdiffを取得して結合
+        let mut combined_diff = String::new();
+        for hash in hashes {
+            let diff = self.git.get_commit_diff_by_hash(hash)?;
+            if !diff.trim().is_empty() {
+                if !combined_diff.is_empty() {
+                    combined_diff.push('\n');
+                }
+                combined_diff.push_str(&diff);
+            }
+        }
+
+        if combined_diff.trim().is_empty() {
+            return Err(AppError::NoChanges);
+        }
+
+        // プレフィックスモードを判定（サイレントモード）
+        let prefix_mode = self.get_prefix_mode_silent();
+
+        // フォーマット検出用に直近のコミットを取得
+        let recent_commits = self.git.get_recent_commits(5)?;
+
+        // デバッグモード: プロンプトを標準エラー出力に表示（標準出力はメッセージのみ）
+        if cli.debug {
+            eprintln!();
+            let (prefix_type, commits) =
+                Self::get_debug_params_for_prefix_mode(&prefix_mode, &recent_commits, false);
+            let prompt = AiService::build_prompt(
+                &combined_diff,
+                commits,
+                self.ai.language(),
+                prefix_type,
+                cli.with_body,
+            );
+            eprintln!("{}", "=== DEBUG: AI Prompt ===".yellow().bold());
+            eprintln!("{}", "─".repeat(50).dimmed());
+            eprintln!("{}", prompt);
+            eprintln!("{}", "─".repeat(50).dimmed());
+            eprintln!("{}", "=== END DEBUG ===".yellow().bold());
+            eprintln!();
+        }
+
+        // コミットメッセージを生成（サイレントモード）
+        let mut message = match &prefix_mode {
+            PrefixMode::Script(_) => self.ai.generate_commit_message_silent(
+                &combined_diff,
+                &[],
+                Some("plain"),
+                cli.with_body,
+            )?,
+            PrefixMode::Rule(prefix_type) => self.ai.generate_commit_message_silent(
+                &combined_diff,
+                &recent_commits,
+                Some(prefix_type),
+                cli.with_body,
+            )?,
+            PrefixMode::Auto => self.ai.generate_commit_message_silent(
+                &combined_diff,
+                &recent_commits,
+                None,
+                cli.with_body,
+            )?,
+        };
+
+        // スクリプトモードの場合はメッセージを加工
+        if let PrefixMode::Script(result) = prefix_mode {
+            match result {
+                ScriptResult::Prefix(prefix) => {
+                    message = self.apply_prefix(&message, &prefix);
+                }
+                ScriptResult::Empty => {
+                    message = self.strip_type_prefix(&message);
+                }
+                ScriptResult::Failed => {
+                    // AI生成のメッセージをそのまま使用
+                }
+            }
+        }
+
+        // 標準出力にメッセージのみを出力（余計な装飾なし）
+        println!("{}", message);
 
         Ok(())
     }
