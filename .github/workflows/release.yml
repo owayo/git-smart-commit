@@ -1,9 +1,12 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (skip actual release)'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -13,18 +16,86 @@ env:
   BINARY_NAME: git-sc
 
 jobs:
+  prepare-release:
+    name: Prepare Release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      tag: ${{ steps.bump.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump version
+        id: bump
+        run: |
+          # Use 2-digit year (YY) for Windows MSI compatibility (major version must be <= 255)
+          YEAR=$(date +%y)
+          MONTH=$(date +%-m)
+
+          CURRENT=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          echo "Current version: ${CURRENT}"
+
+          if echo "${CURRENT}" | grep -qE '^[0-9]{2,4}\.[0-9]{1,2}\.[0-9]+$'; then
+            OLD_YEAR=$(echo "${CURRENT}" | cut -d. -f1)
+            OLD_MONTH=$(echo "${CURRENT}" | cut -d. -f2)
+            OLD_COUNTER=$(echo "${CURRENT}" | cut -d. -f3)
+            # Handle both 2-digit and 4-digit year formats
+            OLD_YEAR_2DIGIT=$(echo "${OLD_YEAR}" | sed 's/^20//')
+            if [ "${OLD_YEAR_2DIGIT}" = "${YEAR}" ] && [ "${OLD_MONTH}" = "${MONTH}" ]; then
+              NEW_COUNTER=$((OLD_COUNTER + 1))
+            else
+              NEW_COUNTER=100
+            fi
+          else
+            NEW_COUNTER=100
+          fi
+
+          NEW_VERSION="${YEAR}.${MONTH}.${NEW_COUNTER}"
+          echo "New version: ${NEW_VERSION}"
+
+          sed -i "s/^version = \"[^\"]*\"/version = \"${NEW_VERSION}\"/" Cargo.toml
+
+          if [ -f "Cargo.lock" ]; then
+            cargo generate-lockfile 2>/dev/null || true
+          fi
+
+          echo "version=${NEW_VERSION}" >> $GITHUB_OUTPUT
+          echo "tag=v${NEW_VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Commit and tag
+        if: ${{ !inputs.dry_run }}
+        run: |
+          git add Cargo.toml
+          [ -f "Cargo.lock" ] && git add Cargo.lock || true
+
+          git commit -m "Release ${{ steps.bump.outputs.tag }}"
+          git tag -a "${{ steps.bump.outputs.tag }}" -m "Release ${{ steps.bump.outputs.tag }}"
+          git push origin HEAD "${{ steps.bump.outputs.tag }}"
+
+      - name: Dry run info
+        if: ${{ inputs.dry_run }}
+        run: |
+          echo "🧪 Dry run mode - skipping commit and tag"
+          echo "Would release: ${{ steps.bump.outputs.tag }}"
+
   create-release:
     name: Create Release
+    needs: prepare-release
+    if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
     outputs:
       upload_url: ${{ steps.create_release.outputs.upload_url }}
-      version: ${{ steps.get_version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Get version from tag
-        id: get_version
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+        with:
+          ref: ${{ needs.prepare-release.outputs.tag }}
 
       - name: Create Release
         id: create_release
@@ -32,10 +103,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: ${{ github.ref }}
-          release_name: ${{ github.ref_name }}
+          tag_name: ${{ needs.prepare-release.outputs.tag }}
+          release_name: ${{ needs.prepare-release.outputs.tag }}
           body: |
-            ## git-sc ${{ steps.get_version.outputs.version }}
+            ## git-sc ${{ needs.prepare-release.outputs.version }}
 
             ### Installation
 
@@ -43,25 +114,25 @@ jobs:
 
             #### macOS (Apple Silicon)
             ```bash
-            curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/git-sc-aarch64-apple-darwin.tar.gz | tar xz
+            curl -L https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare-release.outputs.tag }}/git-sc-aarch64-apple-darwin.tar.gz | tar xz
             sudo mv git-sc /usr/local/bin/
             ```
 
             #### macOS (Intel)
             ```bash
-            curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/git-sc-x86_64-apple-darwin.tar.gz | tar xz
+            curl -L https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare-release.outputs.tag }}/git-sc-x86_64-apple-darwin.tar.gz | tar xz
             sudo mv git-sc /usr/local/bin/
             ```
 
             #### Linux (x86_64)
             ```bash
-            curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/git-sc-x86_64-unknown-linux-gnu.tar.gz | tar xz
+            curl -L https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare-release.outputs.tag }}/git-sc-x86_64-unknown-linux-gnu.tar.gz | tar xz
             sudo mv git-sc /usr/local/bin/
             ```
 
             #### Linux (ARM64)
             ```bash
-            curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/git-sc-aarch64-unknown-linux-gnu.tar.gz | tar xz
+            curl -L https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare-release.outputs.tag }}/git-sc-aarch64-unknown-linux-gnu.tar.gz | tar xz
             sudo mv git-sc /usr/local/bin/
             ```
 
@@ -73,9 +144,11 @@ jobs:
 
   build-and-upload:
     name: Build and Upload
-    needs: create-release
+    needs: [prepare-release, create-release]
+    if: ${{ !inputs.dry_run }}
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -110,6 +183,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.tag }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -156,13 +231,19 @@ jobs:
           asset_name: ${{ matrix.asset_name }}
           asset_content_type: application/octet-stream
 
-  update-homebrew:
-    name: Update Homebrew Formula (Optional)
-    needs: [create-release, build-and-upload]
+  release-summary:
+    name: Release Summary
+    needs: [prepare-release, build-and-upload]
+    if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
-    if: "!contains(github.ref, 'beta') && !contains(github.ref, 'alpha')"
     steps:
-      - name: Homebrew update placeholder
+      - name: Summary
         run: |
-          echo "Homebrew formula update can be configured here"
-          echo "Version: ${{ needs.create-release.outputs.version }}"
+          echo "🚀 Released ${{ needs.prepare-release.outputs.tag }}"
+          echo ""
+          echo "Assets uploaded:"
+          echo "  - git-sc-x86_64-unknown-linux-gnu.tar.gz"
+          echo "  - git-sc-aarch64-unknown-linux-gnu.tar.gz"
+          echo "  - git-sc-x86_64-apple-darwin.tar.gz"
+          echo "  - git-sc-aarch64-apple-darwin.tar.gz"
+          echo "  - git-sc-x86_64-pc-windows-msvc.zip"
