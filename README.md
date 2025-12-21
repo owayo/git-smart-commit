@@ -1,65 +1,75 @@
-# git-sc (Git Smart Commit) 🪄
+<p align="center">
+  <img src="docs/images/app.png" width="128" alt="git-sc">
+</p>
 
-[![CI](https://github.com/owayo/git-smart-commit/actions/workflows/ci.yml/badge.svg)](https://github.com/owayo/git-smart-commit/actions/workflows/ci.yml)
+<h1 align="center">git-sc</h1>
 
-<img src="./docs/images/app.png" alt="git-sc" width="100">
+<p align="center">
+  AI-powered smart commit message generator for coding agents
+</p>
 
-AI-powered smart commit message generator using coding agents (Gemini CLI, Codex CLI, or Claude Code).
+<p align="center">
+  <a href="https://github.com/owayo/git-smart-commit/actions/workflows/ci.yml">
+    <img alt="CI" src="https://github.com/owayo/git-smart-commit/actions/workflows/ci.yml/badge.svg?branch=main">
+  </a>
+  <a href="https://github.com/owayo/git-smart-commit/releases/latest">
+    <img alt="Version" src="https://img.shields.io/github/v/release/owayo/git-smart-commit">
+  </a>
+  <a href="LICENSE">
+    <img alt="License" src="https://img.shields.io/github/license/owayo/git-smart-commit">
+  </a>
+</p>
 
-`git-sc` analyzes your staged changes and past commit history to generate contextually appropriate commit messages using AI coding agents with automatic fallback support.
+---
 
 ## Features
 
 - **Multi-Provider Support**: Supports Gemini CLI, Codex CLI, and Claude Code with automatic fallback
-- **Smart Cooldown**: Automatically demotes failed providers for 1 hour (configurable) to avoid repeated failures
-- **Configurable**: Customize provider priority, language, and models via `~/.git-sc`
-- **Format Detection**: Automatically detects your commit message format from recent commits:
-  - Conventional Commits (`feat:`, `fix:`, `docs:`, etc.)
-  - Bracket prefix (`[Add]`, `[Fix]`, `[Update]`, etc.)
-  - Colon prefix (`Add:`, `Fix:`, `Update:`, etc.)
-  - Emoji prefix
-  - Plain format
-- **Interactive**: Prompts for confirmation before committing (can be skipped with `-y`)
-- **Dry Run**: Preview generated messages without committing
-- **Body Support**: Generate detailed commit messages with bullet point body (`-b`)
-- **Amend Support**: Regenerate message for the last commit with `--amend`
-- **Squash Support**: Combine all commits in a branch into one with `--squash <BASE>`
-- **Reword Support**: Regenerate message for a specific commit with `--reword <HASH>`
-- **Generate For**: Generate message from existing commit diff with `--generate-for <HASH>...`
+- **Smart Cooldown**: Automatically demotes failed providers for 1 hour (configurable)
+- **Format Detection**: Detects commit format from recent commits (Conventional, Bracket, Emoji, etc.)
+- **Interactive**: Prompts for confirmation before committing (skip with `-y`)
+- **Dry Run**: Preview generated messages without committing (`-n`)
+- **Body Support**: Generate detailed commit messages with bullet points (`-b`)
+- **Amend/Squash/Reword**: Regenerate messages for existing commits
 
-## Prerequisites
+## Requirements
 
-At least one of the following AI coding agents must be installed:
-
-- **Gemini CLI**: `npm install -g @google/gemini-cli`
-- **Codex CLI**: `npm install -g @openai/codex`
-- **Claude Code**: `npm install -g @anthropic-ai/claude-code`
+- **OS**: macOS, Linux, Windows
+- **Git**: Required
+- **AI Provider** (at least one):
+  - Gemini CLI: `npm install -g @google/gemini-cli`
+  - Codex CLI: `npm install -g @openai/codex`
+  - Claude Code: `npm install -g @anthropic-ai/claude-code`
 
 ## Installation
 
 ### From GitHub Releases (Recommended)
 
-Download the latest binary for your platform from [Releases](https://github.com/owayo/git-smart-commit/releases).
+Download the latest binary from [Releases](https://github.com/owayo/git-smart-commit/releases).
 
 #### macOS (Apple Silicon)
+
 ```bash
 curl -L https://github.com/owayo/git-smart-commit/releases/latest/download/git-sc-aarch64-apple-darwin.tar.gz | tar xz
 sudo mv git-sc /usr/local/bin/
 ```
 
 #### macOS (Intel)
+
 ```bash
 curl -L https://github.com/owayo/git-smart-commit/releases/latest/download/git-sc-x86_64-apple-darwin.tar.gz | tar xz
 sudo mv git-sc /usr/local/bin/
 ```
 
 #### Linux (x86_64)
+
 ```bash
 curl -L https://github.com/owayo/git-smart-commit/releases/latest/download/git-sc-x86_64-unknown-linux-gnu.tar.gz | tar xz
 sudo mv git-sc /usr/local/bin/
 ```
 
 #### Linux (ARM64)
+
 ```bash
 curl -L https://github.com/owayo/git-smart-commit/releases/latest/download/git-sc-aarch64-unknown-linux-gnu.tar.gz | tar xz
 sudo mv git-sc /usr/local/bin/
@@ -72,521 +82,149 @@ Download `git-sc-x86_64-pc-windows-msvc.zip` from [Releases](https://github.com/
 ### From Source
 
 ```bash
-# Clone the repository
 git clone https://github.com/owayo/git-smart-commit.git
 cd git-smart-commit
-
-# Build and install
 make install
 ```
 
-## VS Code Extension
+## Quickstart
 
-For VS Code users, an extension is available to use git-sc directly from the editor.
+```bash
+# Generate commit message for staged changes
+git-sc
 
-**[Git-SC (Smart Commit)](https://marketplace.visualstudio.com/items?itemName=owayo.vscode-git-smart-commit)** - Available on VS Code Marketplace
+# Stage all and commit without confirmation
+git-sc -a -y
+
+# Preview message (dry run)
+git-sc -n
+```
+
+## Usage
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `git-sc` | Generate message for staged changes |
+| `git-sc -a` | Stage all changes and generate message |
+| `git-sc --amend` | Regenerate message for last commit |
+| `git-sc --squash <BASE>` | Squash all commits into one |
+| `git-sc --reword <HASH>` | Regenerate message for specific commit |
+| `git-sc -g <HASH>` | Generate from existing commit (output only) |
+
+### Options
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--yes` | `-y` | Skip confirmation prompt |
+| `--dry-run` | `-n` | Show message without committing |
+| `--all` | `-a` | Stage all changes |
+| `--body` | `-b` | Generate with body (bullet points) |
+| `--amend` | | Regenerate for last commit |
+| `--squash` | | Squash commits to one |
+| `--reword` | | Regenerate for specific commit |
+| `--generate-for` | `-g` | Generate from commit diff |
+| `--lang` | `-l` | Override language setting |
+| `--debug` | `-d` | Show prompts sent to AI |
+| `--help` | `-h` | Print help |
+| `--version` | `-V` | Print version |
+
+### Examples
+
+```bash
+# Basic usage
+git-sc                      # Generate for staged changes
+git-sc -a -y                # Stage all and commit directly
+
+# Preview and body
+git-sc -n                   # Dry run (preview only)
+git-sc -b                   # Include detailed body
+
+# Amend and squash
+git-sc --amend              # Regenerate last commit message
+git-sc --squash origin/main # Squash feature branch commits
+
+# Generate from existing commits
+git-sc -g abc1234           # Generate from commit diff
+git-sc -g abc1234 -b        # With detailed body
+```
 
 ## Configuration
 
-On first run, `git-sc` creates a configuration file at `~/.git-sc`:
+Config file: `~/.git-sc`
 
 ```toml
-# AI provider priority order (first available will be used)
-providers = [
-    "gemini",
-    "codex",
-    "claude",
-]
+# AI provider priority
+providers = ["gemini", "codex", "claude"]
 
-# Language for commit messages
+# Commit message language
 language = "Japanese"
 
-# Model configuration for each provider
+# Model configuration
 [models]
 gemini = "flash"
 codex = "gpt-5.1-codex-mini"
 claude = "haiku"
 
-# Prefix script configuration (optional)
-# Execute external scripts to generate commit message prefix based on remote URL
-# url_pattern is a regular expression
-[[prefix_scripts]]
-url_pattern = "^https://gitlab\\.example\\.com/"
-script = "/path/to/prefix-generate.py"
-
-[[prefix_scripts]]
-url_pattern = "^git@gitlab\\.example\\.com:"
-script = "/path/to/prefix-generate.py"
-
-# Prefix rules configuration (optional)
-# Specify prefix format based on remote URL
-# url_pattern is a regular expression
-[[prefix_rules]]
-url_pattern = "github\\.com[:/]myorg/"  # matches both HTTPS and SSH
-prefix_type = "conventional"  # conventional, bracket, colon, emoji, plain, none, or custom format
-
-[[prefix_rules]]
-url_pattern = "^https://gitlab\\.example\\.com/"
-prefix_type = "emoji"
-
-# Provider cooldown configuration (optional)
-# When a provider fails, it will be demoted in priority for this duration
-provider_cooldown_minutes = 60  # default: 60 minutes (1 hour)
+# Provider cooldown (minutes)
+provider_cooldown_minutes = 60
 ```
 
 ### Configuration Options
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `providers` | Priority order of AI providers | `["gemini", "codex", "claude"]` |
-| `language` | Language for commit messages | `"Japanese"` |
-| `models.gemini` | Model for Gemini CLI | `"flash"` |
-| `models.codex` | Model for Codex CLI | `"gpt-5.1-codex-mini"` |
-| `models.claude` | Model for Claude Code | `"haiku"` |
-| `prefix_scripts` | External scripts for prefix generation | `[]` |
-| `prefix_rules` | URL-based prefix format configuration | `[]` |
-| `provider_cooldown_minutes` | Duration to demote failed providers (minutes) | `60` |
-
-### Prefix Priority Order
-
-1. **prefix_scripts** (highest priority): Execute script if `url_pattern` matches (regex match)
-2. **prefix_rules**: Use specified `prefix_type` if `url_pattern` matches (regex match)
-3. **Auto** (default): Auto-detect format from last 5 commits
-
-```mermaid
-flowchart TD
-    START([Start]) --> GET_URL[Get remote URL]
-    GET_URL --> CHECK_SCRIPTS{prefix_scripts<br/>url_pattern matches?}
-
-    CHECK_SCRIPTS -->|Yes| RUN_SCRIPT[Run script]
-    CHECK_SCRIPTS -->|No| CHECK_RULES{prefix_rules<br/>url_pattern matches?}
-
-    RUN_SCRIPT --> SCRIPT_EXIT{Exit code?}
-
-    SCRIPT_EXIT -->|Exit 0<br/>with content| USE_SCRIPT_PREFIX[Use script output as prefix]
-    SCRIPT_EXIT -->|Exit 0<br/>empty| NO_PREFIX[No prefix<br/>message body only]
-    SCRIPT_EXIT -->|Exit 1| CHECK_RULES
-
-    CHECK_RULES -->|Yes| USE_RULE[Use specified prefix_type]
-    CHECK_RULES -->|No| AUTO_DETECT[Auto-detect from<br/>last 5 commits]
-
-    USE_SCRIPT_PREFIX --> GEN_MSG[Generate commit message<br/>with AI]
-    NO_PREFIX --> GEN_MSG
-    USE_RULE --> GEN_MSG
-    AUTO_DETECT --> GEN_MSG
-
-    GEN_MSG --> END([End])
-```
+| `providers` | AI provider priority | `["gemini", "codex", "claude"]` |
+| `language` | Commit message language | `"Japanese"` |
+| `models.*` | Model for each provider | See config |
+| `provider_cooldown_minutes` | Failed provider cooldown | `60` |
+| `prefix_rules` | URL-based prefix format | `[]` |
+| `prefix_scripts` | External prefix scripts | `[]` |
 
 ### Prefix Rules
 
-You can specify prefix format based on the remote URL.
+Specify commit format by remote URL:
 
-| prefix_type | Behavior |
-|-------------|----------|
-| `conventional` | Conventional Commits format (feat:, fix:, docs:, etc.) |
-| `bracket` | Bracket prefix format ([Add], [Fix], [Update], etc.) |
-| `colon` | Colon prefix format (Add:, Fix:, Update:, etc.) |
-| `emoji` | Emoji prefix format (✨, 🐛, 📝, etc.) |
-| `plain` | No prefix (message body only) |
-| `none` | No prefix (message body only) |
-| other | Use as custom format |
+```toml
+[[prefix_rules]]
+url_pattern = "github\\.com[:/]myorg/"
+prefix_type = "conventional"  # conventional, bracket, colon, emoji, plain
+```
 
 ### Prefix Scripts
 
-You can configure external scripts to generate commit message prefixes based on the remote URL. When the remote URL matches the `url_pattern` regular expression, the script is executed with the remote URL and branch name as arguments.
+Custom prefix generation via external scripts:
 
-**Script Exit Code Behavior:**
-
-| Exit Code | Output | Behavior |
-|-----------|--------|----------|
-| `0` | Has content | Use the output as custom prefix |
-| `0` | Empty | No prefix (message body only) |
-| `1` | - | Use AI-generated message as-is |
-
-Example script call:
-```bash
-/path/to/prefix-generate.py "git@example.com:org/repo.git" "feature/my-branch"
+```toml
+[[prefix_scripts]]
+url_pattern = "^https://gitlab\\.example\\.com/"
+script = "/path/to/prefix-generate.py"
 ```
 
-Example script (pseudo-code):
-```bash
-#!/bin/bash
-# Generate prefix based on branch name or external API
-PREFIX=$(generate_prefix "$1" "$2")
-if [ -n "$PREFIX" ]; then
-    echo -n "$PREFIX"
-    exit 0
-else
-    exit 1  # Use AI-generated format
-fi
-```
+## Diff Processing
 
-## Build Commands
+- Whitespace-only changes excluded
+- Binary files excluded
+- `.git-sc-ignore` patterns applied
+- Truncated at 10,000 characters
 
-| Command | Description |
-|---------|-------------|
-| `make build` | Build debug version (no version bump) |
-| `make release` | Build release version (no version bump) |
-| `make release-patch` | Bump patch version and build (0.1.0 → 0.1.1) |
-| `make release-minor` | Bump minor version and build (0.1.0 → 0.2.0) |
-| `make release-major` | Bump major version and build (0.1.0 → 1.0.0) |
-| `make install` | Build release and install to /usr/local/bin |
-| `make install-release` | Bump patch, build, and install |
-| `make tag-release` | Create a git tag for GitHub Actions release |
-| `make tag-release-push` | Create and push tag to trigger release |
-| `make test` | Run tests |
-| `make fmt` | Format code |
-| `make check` | Run clippy and check |
-| `make clean` | Clean build artifacts |
-| `make help` | Show all available commands |
-
-## Usage
-
-```bash
-# Generate commit message for staged changes
-git-sc
-
-# Stage all changes (including unstaged) and generate commit message
-git-sc -a
-
-# Generate message without confirmation prompt
-git-sc -y
-
-# Preview message without committing (dry run)
-git-sc -n
-
-# Regenerate message for the last commit (amend)
-git-sc --amend
-
-# Squash all commits in current branch into one (specify base branch)
-git-sc --squash origin/main
-
-# Reword a specific commit (regenerate message using git rebase)
-git-sc --reword abc1234
-
-# Generate message from existing commit diff (output only, no commit)
-git-sc --generate-for abc1234
-
-# Generate message from multiple commits
-git-sc --generate-for abc1234 def5678
-
-# Generate commit message with body (detailed bullet points)
-git-sc -b
-
-# Override language setting
-git-sc -l English
-
-# Combine options
-git-sc -a -y           # Stage all and commit without confirmation
-git-sc -a -n           # Stage all and preview message
-git-sc --amend -y      # Amend last commit without confirmation
-git-sc --squash origin/main -y  # Squash all commits without confirmation
-git-sc --reword abc1234 -y     # Reword specific commit without confirmation
-git-sc -g abc1234 -b           # Generate message with body from commit
-```
-
-## Options
-
-| Option | Short | Description |
-|--------|-------|-------------|
-| `--yes` | `-y` | Skip confirmation prompt and commit directly |
-| `--dry-run` | `-n` | Show generated message without actually committing |
-| `--all` | `-a` | Stage all changes (including unstaged) and commit |
-| `--body` | `-b` | Generate commit message with body (bullet points) |
-| `--amend` | | Regenerate message for the last commit |
-| `--squash <BASE>` | | Combine all commits in current branch into one (specify base branch) |
-| `--reword <HASH>` | | Regenerate message for a specific commit (uses git rebase) |
-| `--generate-for <HASH>...` | `-g` | Generate message from existing commit diff (output only, multiple allowed) |
-| `--lang` | `-l` | Override language setting from config |
-| `--debug` | `-d` | Debug mode (show prompts sent to AI) |
-| `--help` | `-h` | Print help information |
-| `--version` | `-V` | Print version information |
-
-## How It Works
-
-1. **Verify Environment**: Checks for git repository and AI coding agent installation
-2. **Load Config**: Reads settings from `~/.git-sc` (creates default if not exists)
-3. **Stage Changes**: Optionally stages all changes with `-a` flag
-4. **Get Diff**: Retrieves the staged diff content
-5. **Detect Format**: Analyzes recent commits to detect your preferred format
-6. **Generate Message**: Sends diff and format instructions to AI coding agent (with fallback)
-7. **Confirm & Commit**: Shows the message and prompts for confirmation
-
-## Excluding Files from Diff (`.git-sc-ignore`)
-
-You can exclude specific files or patterns from the diff analysis by creating a `.git-sc-ignore` file in your repository root. This file uses the same syntax as `.gitignore`.
-
-### Example `.git-sc-ignore`
+### .git-sc-ignore
 
 ```gitignore
-# Exclude lock files
 package-lock.json
 yarn.lock
 Cargo.lock
-
-# Exclude generated files
 *.generated.ts
-dist/
-
-# Exclude test fixtures
-tests/fixtures/
 ```
 
-### Diff Processing
+## VS Code Extension
 
-When generating commit messages, `git-sc` processes the diff as follows:
+**[Git-SC (Smart Commit)](https://marketplace.visualstudio.com/items?itemName=owayo.vscode-git-smart-commit)** - Available on VS Code Marketplace
 
-1. **Whitespace changes excluded**: Changes that only affect whitespace or newlines are not included in the diff
-2. **Binary files excluded**: Binary file changes are automatically filtered out
-3. **`.git-sc-ignore` patterns applied**: Files matching patterns in `.git-sc-ignore` are excluded
-4. **Character limit**: If the diff exceeds 10,000 characters, it is truncated to prevent overly long prompts
+## Claude Code Integration
 
-This helps generate more focused commit messages by excluding noisy or irrelevant changes.
-
-## Examples
-
-### With Conventional Commits
-
-If your recent commits are:
-```
-feat: add user authentication
-fix(api): resolve rate limiting issue
-```
-
-`git-sc` will generate messages like:
-```
-feat(auth): implement password reset flow
-```
-
-### With Bracket Prefix
-
-If your recent commits are:
-```
-[Add] new feature
-[Fix] bug in auth
-```
-
-`git-sc` will generate messages like:
-```
-[Update] refactor user service
-```
-
-### With Body Option
-
-Using `-b` flag generates a detailed commit message with bullet points:
-```bash
-$ git-sc -b
-Generating commit message...
-  Using Gemini CLI...
-
-Generated commit message:
-──────────────────────────────────────────────────
-feat: implement user authentication system
-
-- Add login and logout endpoints with JWT token generation
-- Create user model with password hashing using bcrypt
-- Implement middleware for protected routes
-- Add unit tests for authentication flow
-──────────────────────────────────────────────────
-
-Create this commit? [Y/n]
-```
-
-### Squash Commits
-
-When working on a feature branch with multiple commits:
-```
-git log --oneline
-a1b2c3d feat: final adjustment
-d4e5f6g fix: typo
-g7h8i9j feat: add validation
-j0k1l2m feat: initial implementation
-```
-
-Use `--squash` to combine them into a single commit with an AI-generated message:
-```bash
-$ git-sc --squash origin/main
-Squash mode: combining commits into one...
-Base branch: origin/main → Current branch: feature/my-feature
-Commits to squash: 4
-Generating commit message...
-  Using Gemini CLI...
-
-Generated commit message:
-──────────────────────────────────────────────────
-feat: implement user validation feature
-──────────────────────────────────────────────────
-
-Squash 4 commits? [Y/n]
-```
-
-### Basic Usage
-
-In a repository matching a prefix rule, stage all changes and commit without confirmation:
-```bash
-$ git-sc -a -y
-Staging all changes...
-Using prefix rule for git@github\.com:myorg/: conventional
-Generating commit message...
-  Using Gemini CLI...
-
-Generated commit message:
-──────────────────────────────────────────────────
-docs: add spec-driven development documentation
-──────────────────────────────────────────────────
-
-✓ Commit created successfully!
-```
-
-### Amend (Regenerate Commit Message)
-
-Auto-detect prefix format from recent commits and regenerate the message for the last commit:
-```bash
-$ git-sc --amend -y
-Amend mode: regenerating message for last commit...
-Recent commits (for format reference):
-  docs: remove default values from README
-  feat: implement version-based filtering
-  fix: add URL
-  feat: add wait procedure
-  fix: fix variable name
-Generating commit message...
-  Using Gemini CLI...
-
-Generated commit message:
-──────────────────────────────────────────────────
-fix: update execution notes
-──────────────────────────────────────────────────
-
-✓ Commit amended successfully!
-```
-
-### With Prefix Scripts
-
-When prefix scripts are configured, custom prefixes are automatically applied:
-```bash
-$ git-sc --amend -y
-Amend mode: regenerating message for last commit...
-Running prefix script for ^https://gitlab\.example\.com/myorg/...
-Generating commit message...
-  Using Gemini CLI...
-Applied prefix: myorg/PROJECT!1234
-
-Generated commit message:
-──────────────────────────────────────────────────
-myorg/PROJECT!1234 add migration version check
-──────────────────────────────────────────────────
-
-✓ Commit amended successfully!
-```
-
-### Squash Example
-
-Combine multiple commits in a feature branch into one:
-```bash
-$ git-sc --squash origin/develop -y
-Squash mode: combining commits into one...
-Base branch: origin/develop → Current branch: feature/add-validation
-Commits to squash: 13
-Running prefix script for ^https://gitlab\.example\.com/myorg/...
-Generating commit message...
-  Using Gemini CLI...
-Applied prefix: myorg/PROJECT!1500
-
-Generated commit message:
-──────────────────────────────────────────────────
-myorg/PROJECT!1500 add validation and adjust CI
-──────────────────────────────────────────────────
-
-✓ 13 commits squashed successfully!
-```
-
-### Reword Example
-
-Regenerate commit message for a specific commit by hash:
-```bash
-$ git-sc --reword abc1234 -y
-Reword mode: regenerating message for commit abc1234...
-Current commit message:
-  wip
-Running prefix script for ^https://gitlab\.example\.com/myorg/...
-Generating commit message...
-  Using Gemini CLI...
-  ⚠ Gemini CLI failed: [API Error: You have exhausted your daily quota on this model.]
-  Using Codex CLI...
-Applied prefix: myorg/PROJECT!1234
-
-Generated commit message:
-──────────────────────────────────────────────────
-myorg/PROJECT!1234 add migration version check
-──────────────────────────────────────────────────
-
-✓ Commit abc1234 reworded successfully!
-Note: You may need to force push (git push --force) if already pushed.
-```
-
-**Important Notes:**
-- The `--reword` option uses `git rebase` internally
-- Specify the commit hash (short or full) to reword
-- If the commit has already been pushed, you will need to force push (`git push --force`)
-- If merge commits exist in the range, the operation will be aborted
-- If conflicts occur during rebase, the operation will be aborted automatically
-
-### Generate For Example
-
-Generate commit message from existing commit diff (output only, no commit created):
-```bash
-$ git-sc --generate-for abc1234
-feat: add user authentication flow
-
-$ git-sc -g abc1234 def5678 -b
-feat: implement authentication and validation
-
-- Add JWT token generation for user sessions
-- Implement input validation middleware
-- Create error handling for auth failures
-```
-
-**Features:**
-- Output only mode - no commit is created, just prints the generated message
-- Supports multiple commit hashes - diffs are combined for analysis
-- Works with `-b` flag for detailed body generation
-- Works with `-l` flag for language override
-- Clean output suitable for piping to other commands
-
-### Provider Fallback
-
-If Gemini CLI fails or is not installed, `git-sc` automatically tries the next provider:
-```
-Using Gemini CLI...
-⚠ Gemini CLI failed: [API Error: You have exhausted your daily quota on this model.]
-Using Codex CLI...
-✓ Commit created successfully!
-```
-
-### Provider Cooldown
-
-When a provider fails (e.g., API quota exceeded), `git-sc` automatically demotes it in priority for a configurable duration (default: 1 hour). This prevents repeated failures and improves the user experience.
-
-For example, if your provider order is `gemini → codex → claude` and Gemini fails:
-- For the next hour, the effective order becomes `codex → claude → gemini`
-- After the cooldown period expires, the original order is restored
-
-The cooldown state is stored in `~/.git-sc-state` and persists across sessions.
-
-To customize the cooldown duration, add to `~/.git-sc`:
-```toml
-provider_cooldown_minutes = 30  # 30 minutes instead of default 60
-```
-
-Set to `0` to disable the cooldown feature entirely.
-
-## Integration with Claude Code
-
-You can use Claude Code's Hooks feature to automatically generate commit messages when a session ends.
-
-Add the following to `~/.claude/settings.json`:
+Add to `~/.claude/settings.json`:
 
 ```json
 {
@@ -606,17 +244,43 @@ Add the following to `~/.claude/settings.json`:
 }
 ```
 
-This will automatically commit changes when a Claude Code session ends. If there are no changes, it exits gracefully.
+## How It Works
 
-If you are using [cchook](https://github.com/syou6162/cchook), add the following to `~/.claude/cchook/config.yaml`:
-
-```yaml
-Stop:
-  - actions:
-      - type: command
-        command: 'git-sc --all --yes'
+```mermaid
+flowchart LR
+    A[Stage Changes] --> B[Get Diff]
+    B --> C[Detect Format]
+    C --> D[Generate via AI]
+    D --> E[Confirm & Commit]
 ```
+
+1. **Verify**: Check git repo and AI agent availability
+2. **Config**: Load `~/.git-sc` settings
+3. **Diff**: Get staged changes (with exclusions)
+4. **Format**: Detect from recent commits or rules
+5. **Generate**: Send to AI with fallback
+6. **Commit**: Confirm and create commit
+
+## Build Commands
+
+| Command | Description |
+|---------|-------------|
+| `make build` | Build debug version |
+| `make release` | Build release version |
+| `make install` | Build and install to /usr/local/bin |
+| `make test` | Run tests |
+| `make fmt` | Format code |
+| `make check` | Run clippy and check |
+| `make clean` | Clean build artifacts |
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## Changelog
+
+See [Releases](https://github.com/owayo/git-smart-commit/releases) for version history.
 
 ## License
 
-MIT
+[MIT](LICENSE)
