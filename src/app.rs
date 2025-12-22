@@ -357,6 +357,12 @@ impl App {
         if cli.auto_confirm || self.confirm_commit()? {
             self.git.commit(&message)?;
             println!("{}", "✓ Commit created successfully!".green().bold());
+
+            // auto-push が有効な場合は push も実行
+            if self.git.is_auto_push_enabled() {
+                self.git.push()?;
+                println!("{}", "✓ Pushed to remote successfully!".green().bold());
+            }
         } else {
             println!("{}", "Commit cancelled.".yellow());
             return Err(AppError::UserCancelled);
@@ -600,6 +606,12 @@ impl App {
                     .green()
                     .bold()
             );
+
+            // auto-push が有効な場合は push も実行
+            if self.git.is_auto_push_enabled() {
+                self.git.push()?;
+                println!("{}", "✓ Pushed to remote successfully!".green().bold());
+            }
         } else {
             println!("{}", "Squash cancelled.".yellow());
             return Err(AppError::UserCancelled);

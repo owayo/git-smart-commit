@@ -314,6 +314,32 @@ impl GitService {
         Ok(())
     }
 
+    /// リモートにpush
+    pub fn push(&self) -> Result<(), AppError> {
+        let output = Command::new("git")
+            .args(["push"])
+            .current_dir(&self.repo_path)
+            .output()
+            .map_err(|e| AppError::GitError(e.to_string()))?;
+
+        if !output.status.success() {
+            return Err(AppError::GitError(
+                String::from_utf8_lossy(&output.stderr).to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// .git-sc-auto-push ファイルの存在をチェック
+    pub fn is_auto_push_enabled(&self) -> bool {
+        if let Some(git_root) = self.get_git_root() {
+            git_root.join(".git-sc-auto-push").exists()
+        } else {
+            false
+        }
+    }
+
     /// 直前のコミットのdiffを取得（バイナリファイル、.git-sc-ignore対象、空白のみの変更を除外）
     pub fn get_last_commit_diff(&self) -> Result<String, AppError> {
         let output = Command::new("git")

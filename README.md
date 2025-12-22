@@ -218,6 +218,16 @@ Cargo.lock
 *.generated.ts
 ```
 
+### .git-sc-auto-push
+
+Create this file in the repository root to automatically push after commit:
+
+```bash
+touch .git-sc-auto-push
+```
+
+When this file exists, `git-sc` will run `git push` after a successful commit or squash.
+
 ## VS Code Extension
 
 **[Git-SC (Smart Commit)](https://marketplace.visualstudio.com/items?itemName=owayo.vscode-git-smart-commit)** - Available on VS Code Marketplace
