@@ -15,8 +15,18 @@ pub enum PrefixMode {
     Script(ScriptResult),
     /// ルールによるプレフィックスタイプ指定
     Rule(String),
+    /// 設定ファイルによるプレフィックスタイプ指定
+    Config(String),
     /// 自動判定（過去コミットから推論）
     Auto,
+}
+
+/// 有効な prefix_type 値
+const VALID_PREFIX_TYPES: &[&str] = &["conventional", "bracket", "colon", "emoji", "plain", "none"];
+
+/// prefix_type が有効かどうかを検証
+fn is_valid_prefix_type(prefix_type: &str) -> bool {
+    VALID_PREFIX_TYPES.contains(&prefix_type)
 }
 
 /// アプリケーションのメインオーケストレーター
@@ -25,12 +35,22 @@ pub struct App {
     ai: AiService,
     prefix_scripts: Vec<PrefixScriptConfig>,
     prefix_rules: Vec<PrefixRuleConfig>,
+    /// 設定ファイルで指定された prefix_type
+    prefix_type: Option<String>,
+    /// 設定ファイルで指定された auto_push
+    auto_push: Option<bool>,
 }
 
 impl App {
     /// 新しいAppインスタンスを作成
     pub fn new(cli: &Cli) -> Result<Self, AppError> {
         let config = Config::load()?;
+
+        // デバッグモード: 設定ファイル情報を表示
+        if cli.debug {
+            Self::print_config_debug(&config)?;
+        }
+
         let mut ai = AiService::from_config(&config);
 
         // CLIで言語が指定されていれば上書き
@@ -41,9 +61,64 @@ impl App {
         Ok(Self {
             git: GitService::new(),
             ai,
-            prefix_scripts: config.prefix_scripts,
-            prefix_rules: config.prefix_rules,
+            prefix_scripts: config.prefix_scripts.clone(),
+            prefix_rules: config.prefix_rules.clone(),
+            prefix_type: config.prefix_type.clone(),
+            auto_push: config.auto_push,
         })
+    }
+
+    /// デバッグモード: 設定ファイル情報を表示
+    fn print_config_debug(config: &Config) -> Result<(), AppError> {
+        println!();
+        println!("{}", "=== DEBUG: Config Settings ===".yellow().bold());
+        println!("{}", "─".repeat(50).dimmed());
+
+        // グローバル設定ファイルパス
+        if let Ok(global_path) = Config::global_config_path() {
+            if global_path.exists() {
+                println!(
+                    "  Global config: {}",
+                    global_path.display().to_string().cyan()
+                );
+            } else {
+                println!(
+                    "  Global config: {} (not found)",
+                    global_path.display().to_string().dimmed()
+                );
+            }
+        }
+
+        // プロジェクト設定ファイルパス
+        if let Ok(Some(project_path)) = Config::project_config_path() {
+            println!(
+                "  Project config: {}",
+                project_path.display().to_string().cyan()
+            );
+        } else {
+            println!("  Project config: {}", "(not found)".dimmed());
+        }
+
+        println!("{}", "─".repeat(50).dimmed());
+        println!("{}", "Effective settings:".yellow());
+        println!("  providers: {:?}", config.providers);
+        println!("  language: {}", config.language);
+        println!("  models.gemini: {}", config.models.gemini);
+        println!("  models.codex: {}", config.models.codex);
+        println!("  models.claude: {}", config.models.claude);
+        println!("  prefix_type: {:?}", config.prefix_type);
+        println!("  auto_push: {:?}", config.auto_push);
+        println!("  prefix_scripts: {} rule(s)", config.prefix_scripts.len());
+        println!("  prefix_rules: {} rule(s)", config.prefix_rules.len());
+        println!(
+            "  provider_cooldown_minutes: {}",
+            config.provider_cooldown_minutes
+        );
+        println!("{}", "─".repeat(50).dimmed());
+        println!("{}", "=== END DEBUG ===".yellow().bold());
+        println!();
+
+        Ok(())
     }
 
     /// プレフィックスモードを判定
@@ -113,7 +188,30 @@ impl App {
             }
         }
 
-        // 3. 該当なし: 自動判定モード
+        // 3. 設定ファイルの prefix_type をチェック
+        if let Some(ref prefix_type) = self.prefix_type {
+            if is_valid_prefix_type(prefix_type) {
+                if !silent {
+                    println!(
+                        "{}",
+                        format!("Using config prefix_type: {}", prefix_type).cyan()
+                    );
+                }
+                return PrefixMode::Config(prefix_type.clone());
+            } else {
+                // 無効な prefix_type の場合は警告を出力
+                eprintln!(
+                    "{}",
+                    format!(
+                        "警告: 無効な prefix_type '{}' が設定されています。有効な値: {:?}",
+                        prefix_type, VALID_PREFIX_TYPES
+                    )
+                    .yellow()
+                );
+            }
+        }
+
+        // 4. 該当なし: 自動判定モード
         PrefixMode::Auto
     }
 
@@ -147,6 +245,7 @@ impl App {
         let prefix_type = match prefix_mode {
             PrefixMode::Script(_) => Some("plain"),
             PrefixMode::Rule(pt) => Some(pt.as_str()),
+            PrefixMode::Config(pt) => Some(pt.as_str()),
             PrefixMode::Auto => {
                 if is_squash {
                     Some("conventional")
@@ -305,8 +404,8 @@ impl App {
                 self.ai
                     .generate_commit_message(&diff, &[], Some("plain"), cli.with_body)?
             }
-            PrefixMode::Rule(prefix_type) => {
-                // ルールモード: 指定されたprefix_typeで生成
+            PrefixMode::Rule(prefix_type) | PrefixMode::Config(prefix_type) => {
+                // ルール/設定モード: 指定されたprefix_typeで生成
                 self.ai.generate_commit_message(
                     &diff,
                     &recent_commits,
@@ -359,7 +458,7 @@ impl App {
             println!("{}", "✓ Commit created successfully!".green().bold());
 
             // auto-push が有効な場合は push も実行
-            if self.git.is_auto_push_enabled() {
+            if self.git.is_auto_push_enabled(self.auto_push) {
                 self.git.push()?;
                 println!("{}", "✓ Pushed to remote successfully!".green().bold());
             }
@@ -427,12 +526,15 @@ impl App {
                 self.ai
                     .generate_commit_message(&diff, &[], Some("plain"), cli.with_body)?
             }
-            PrefixMode::Rule(prefix_type) => self.ai.generate_commit_message(
-                &diff,
-                &recent_commits,
-                Some(prefix_type),
-                cli.with_body,
-            )?,
+            PrefixMode::Rule(prefix_type) | PrefixMode::Config(prefix_type) => {
+                // ルール/設定モード: 指定されたprefix_typeで生成
+                self.ai.generate_commit_message(
+                    &diff,
+                    &recent_commits,
+                    Some(prefix_type),
+                    cli.with_body,
+                )?
+            }
             PrefixMode::Auto => {
                 self.ai
                     .generate_commit_message(&diff, &recent_commits, None, cli.with_body)?
@@ -552,8 +654,8 @@ impl App {
                 self.ai
                     .generate_commit_message(&diff, &[], Some("plain"), cli.with_body)?
             }
-            PrefixMode::Rule(prefix_type) => {
-                // ルールモード: 指定されたprefix_typeで生成
+            PrefixMode::Rule(prefix_type) | PrefixMode::Config(prefix_type) => {
+                // ルール/設定モード: 指定されたprefix_typeで生成
                 self.ai
                     .generate_commit_message(&diff, &[], Some(prefix_type), cli.with_body)?
             }
@@ -608,7 +710,7 @@ impl App {
             );
 
             // auto-push が有効な場合は push も実行
-            if self.git.is_auto_push_enabled() {
+            if self.git.is_auto_push_enabled(self.auto_push) {
                 self.git.push()?;
                 println!("{}", "✓ Pushed to remote successfully!".green().bold());
             }
@@ -681,12 +783,15 @@ impl App {
                 Some("plain"),
                 cli.with_body,
             )?,
-            PrefixMode::Rule(prefix_type) => self.ai.generate_commit_message_silent(
-                &combined_diff,
-                &recent_commits,
-                Some(prefix_type),
-                cli.with_body,
-            )?,
+            PrefixMode::Rule(prefix_type) | PrefixMode::Config(prefix_type) => {
+                // ルール/設定モード: 指定されたprefix_typeで生成
+                self.ai.generate_commit_message_silent(
+                    &combined_diff,
+                    &recent_commits,
+                    Some(prefix_type),
+                    cli.with_body,
+                )?
+            }
             PrefixMode::Auto => self.ai.generate_commit_message_silent(
                 &combined_diff,
                 &recent_commits,
@@ -798,8 +903,8 @@ impl App {
                 self.ai
                     .generate_commit_message(&diff, &[], Some("plain"), cli.with_body)?
             }
-            PrefixMode::Rule(prefix_type) => {
-                // ルールモード: 指定されたprefix_typeで生成
+            PrefixMode::Rule(prefix_type) | PrefixMode::Config(prefix_type) => {
+                // ルール/設定モード: 指定されたprefix_typeで生成
                 self.ai.generate_commit_message(
                     &diff,
                     &recent_commits,
@@ -1053,6 +1158,25 @@ mod tests {
         let _empty = PrefixMode::Script(ScriptResult::Empty);
         let _failed = PrefixMode::Script(ScriptResult::Failed);
         let _rule = PrefixMode::Rule("conventional".to_string());
+        let _config = PrefixMode::Config("bracket".to_string());
         let _auto = PrefixMode::Auto;
+    }
+
+    // ============================================================
+    // is_valid_prefix_type のテスト
+    // ============================================================
+
+    #[rstest]
+    #[case("conventional", true)]
+    #[case("bracket", true)]
+    #[case("colon", true)]
+    #[case("emoji", true)]
+    #[case("plain", true)]
+    #[case("none", true)]
+    #[case("invalid", false)]
+    #[case("CONVENTIONAL", false)] // 大文字小文字を区別
+    #[case("", false)]
+    fn test_is_valid_prefix_type(#[case] prefix_type: &str, #[case] expected: bool) {
+        assert_eq!(is_valid_prefix_type(prefix_type), expected);
     }
 }
