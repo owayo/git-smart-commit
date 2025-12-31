@@ -1,6 +1,6 @@
 [package]
 name = "git-sc"
-version = "25.12.101"
+version = "25.12.102"
 edition = "2021"
 description = "Smart commit message generator using Gemini CLI"
 license = "MIT"
