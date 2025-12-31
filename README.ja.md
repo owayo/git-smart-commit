@@ -152,7 +152,18 @@ git-sc -g abc1234 -b        # 詳細な本文付き
 
 ## 設定
 
-設定ファイル: `~/.git-sc`
+### 階層的設定
+
+git-sc はプロジェクトレベルでの上書きが可能な階層的設定をサポートしています:
+
+| ファイル | スコープ | 説明 |
+|---------|---------|------|
+| `~/.git-sc` | グローバル | ユーザー全体のデフォルト設定 |
+| `.git-sc` | プロジェクト | リポジトリ固有の上書き設定（リポジトリルートに配置） |
+
+プロジェクト設定はグローバル設定を上書きします。プロジェクト設定で指定されていないフィールドはグローバル設定から継承されます。
+
+### 設定例
 
 ```toml
 # AIプロバイダーの優先順位
@@ -160,6 +171,13 @@ providers = ["gemini", "codex", "claude"]
 
 # コミットメッセージの言語
 language = "Japanese"
+
+# コミットプレフィックス形式（オプション）
+# 値: conventional, bracket, colon, emoji, plain, none
+prefix_type = "conventional"
+
+# コミット後に自動プッシュ（オプション）
+auto_push = true
 
 # モデル設定
 [models]
@@ -177,10 +195,23 @@ provider_cooldown_minutes = 60
 |-----------|------|-----------|
 | `providers` | AIプロバイダーの優先順位 | `["gemini", "codex", "claude"]` |
 | `language` | コミットメッセージの言語 | `"Japanese"` |
+| `prefix_type` | コミットプレフィックス形式 | 自動検出 |
+| `auto_push` | コミット後に自動プッシュ | `false` |
 | `models.*` | 各プロバイダーのモデル | 設定参照 |
 | `provider_cooldown_minutes` | 失敗プロバイダーのクールダウン | `60` |
 | `prefix_rules` | URLベースのプレフィックス形式 | `[]` |
 | `prefix_scripts` | 外部プレフィックススクリプト | `[]` |
+
+### prefix_type の値
+
+| 値 | 例 | 説明 |
+|----|-----|------|
+| `conventional` | `feat: add feature` | Conventional Commits 形式 |
+| `bracket` | `[feat] add feature` | ブラケット形式 |
+| `colon` | `feat: add feature` | シンプルなコロン形式 |
+| `emoji` | `:sparkles: add feature` | 絵文字形式 |
+| `plain` | `Add feature` | プレフィックスなし |
+| `none` | `add feature` | プレフィックスなし、小文字 |
 
 ### プレフィックスルール
 
@@ -218,15 +249,18 @@ Cargo.lock
 *.generated.ts
 ```
 
-### .git-sc-auto-push
+### 自動プッシュ
 
-リポジトリルートにこのファイルを作成すると、コミット後に自動で push します:
+設定ファイルで自動プッシュを有効にできます:
 
-```bash
-touch .git-sc-auto-push
+```toml
+# ~/.git-sc または .git-sc に記述
+auto_push = true
 ```
 
-このファイルが存在する場合、`git-sc` はコミットまたは squash 成功後に `git push` を実行します。
+有効にすると、`git-sc` はコミットまたは squash 成功後に `git push` を実行します。
+
+> **注意**: 後方互換性のため、従来の `.git-sc-auto-push` ファイルも引き続きサポートされています。
 
 ## VS Code 拡張機能
 

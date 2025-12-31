@@ -152,7 +152,18 @@ git-sc -g abc1234 -b        # With detailed body
 
 ## Configuration
 
-Config file: `~/.git-sc`
+### Hierarchical Configuration
+
+git-sc supports hierarchical configuration with project-level overrides:
+
+| File | Scope | Description |
+|------|-------|-------------|
+| `~/.git-sc` | Global | User-wide default settings |
+| `.git-sc` | Project | Repository-specific overrides (in repo root) |
+
+Project settings override global settings. Fields not specified in project config inherit from global config.
+
+### Example Configuration
 
 ```toml
 # AI provider priority
@@ -160,6 +171,13 @@ providers = ["gemini", "codex", "claude"]
 
 # Commit message language
 language = "Japanese"
+
+# Commit prefix format (optional)
+# Values: conventional, bracket, colon, emoji, plain, none
+prefix_type = "conventional"
+
+# Auto-push after commit (optional)
+auto_push = true
 
 # Model configuration
 [models]
@@ -177,10 +195,23 @@ provider_cooldown_minutes = 60
 |--------|-------------|---------|
 | `providers` | AI provider priority | `["gemini", "codex", "claude"]` |
 | `language` | Commit message language | `"Japanese"` |
+| `prefix_type` | Commit prefix format | Auto-detect |
+| `auto_push` | Auto-push after commit | `false` |
 | `models.*` | Model for each provider | See config |
 | `provider_cooldown_minutes` | Failed provider cooldown | `60` |
 | `prefix_rules` | URL-based prefix format | `[]` |
 | `prefix_scripts` | External prefix scripts | `[]` |
+
+### prefix_type Values
+
+| Value | Example | Description |
+|-------|---------|-------------|
+| `conventional` | `feat: add feature` | Conventional Commits format |
+| `bracket` | `[feat] add feature` | Bracket-style prefix |
+| `colon` | `feat: add feature` | Simple colon prefix |
+| `emoji` | `:sparkles: add feature` | Emoji prefix |
+| `plain` | `Add feature` | No prefix |
+| `none` | `add feature` | No prefix, lowercase |
 
 ### Prefix Rules
 
@@ -218,15 +249,18 @@ Cargo.lock
 *.generated.ts
 ```
 
-### .git-sc-auto-push
+### Auto Push
 
-Create this file in the repository root to automatically push after commit:
+Enable auto-push in your config file:
 
-```bash
-touch .git-sc-auto-push
+```toml
+# In ~/.git-sc or .git-sc
+auto_push = true
 ```
 
-When this file exists, `git-sc` will run `git push` after a successful commit or squash.
+When enabled, `git-sc` will run `git push` after a successful commit or squash.
+
+> **Note**: The legacy `.git-sc-auto-push` file is still supported for backward compatibility.
 
 ## VS Code Extension
 
