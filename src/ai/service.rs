@@ -379,7 +379,37 @@ Changes:
                 }
                 "Gemini API request failed".to_string()
             }
-            AiProvider::Codex | AiProvider::Claude => {
+            AiProvider::Codex => {
+                // Codex CLI: "ERROR:" で始まる行を優先的に探す
+                // 例: "ERROR: Your access token could not be refreshed..."
+                for line in stderr.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.starts_with("ERROR:") {
+                        return trimmed.to_string();
+                    }
+                }
+                // "error" を含む行を探す（小文字も含む）
+                for line in stderr.lines() {
+                    let trimmed = line.trim();
+                    let lower = trimmed.to_lowercase();
+                    if lower.contains("error") && !lower.contains("reconnecting") {
+                        return trimmed.to_string();
+                    }
+                }
+                // 最後の非空行を返す（情報メッセージを避ける）
+                stderr
+                    .lines()
+                    .rev()
+                    .find(|l| {
+                        let t = l.trim();
+                        !t.is_empty()
+                            && !t.starts_with("Reading prompt")
+                            && !t.starts_with("Reconnecting")
+                    })
+                    .unwrap_or("Codex API request failed")
+                    .to_string()
+            }
+            AiProvider::Claude => {
                 // 最初の非空行またはジェネリックメッセージを返す
                 stderr
                     .lines()
@@ -693,8 +723,12 @@ mod tests {
     #[test]
     fn test_extract_error_empty_stderr() {
         let stderr = "";
-        let error = AiService::extract_error(stderr, &AiProvider::Codex);
+        // Claude は "API request failed" を返す
+        let error = AiService::extract_error(stderr, &AiProvider::Claude);
         assert_eq!(error, "API request failed");
+        // Codex は "Codex API request failed" を返す
+        let error = AiService::extract_error(stderr, &AiProvider::Codex);
+        assert_eq!(error, "Codex API request failed");
     }
 
     // ============================================================
@@ -866,5 +900,46 @@ mod tests {
         let stderr = "[API Error: First error]\n[API Error: Second error]";
         let error = AiService::extract_error(stderr, &AiProvider::Gemini);
         assert_eq!(error, "[API Error: First error]");
+    }
+
+    #[test]
+    fn test_extract_error_codex_auth_error() {
+        // Codex CLI の認証エラーを正しく抽出
+        let stderr = r#"Reading prompt from stdin...
+OpenAI Codex v0.77.0 (research preview)
+--------
+workdir: /Users/test
+model: gpt-5.1-codex-mini
+--------
+Reconnecting... 1/5
+Reconnecting... 2/5
+ERROR: Your access token could not be refreshed because your refresh token was already used."#;
+        let error = AiService::extract_error(stderr, &AiProvider::Codex);
+        assert!(error.starts_with("ERROR:"));
+        assert!(error.contains("access token"));
+    }
+
+    #[test]
+    fn test_extract_error_codex_reading_prompt_skipped() {
+        // "Reading prompt from stdin..." は無視される
+        let stderr = "Reading prompt from stdin...\nSome actual error message";
+        let error = AiService::extract_error(stderr, &AiProvider::Codex);
+        assert_eq!(error, "Some actual error message");
+    }
+
+    #[test]
+    fn test_extract_error_codex_reconnecting_skipped() {
+        // "Reconnecting..." は無視される
+        let stderr = "Reconnecting... 1/5\nReconnecting... 2/5\nConnection failed";
+        let error = AiService::extract_error(stderr, &AiProvider::Codex);
+        assert_eq!(error, "Connection failed");
+    }
+
+    #[test]
+    fn test_extract_error_codex_error_prefix_priority() {
+        // "ERROR:" で始まる行が優先される
+        let stderr = "Info message\nWARNING: something\nERROR: critical issue\nMore info";
+        let error = AiService::extract_error(stderr, &AiProvider::Codex);
+        assert_eq!(error, "ERROR: critical issue");
     }
 }
