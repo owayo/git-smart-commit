@@ -9,6 +9,9 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/owayo/git-smart-commit/actions/workflows/release.yml">
+    <img alt="Release" src="https://github.com/owayo/git-smart-commit/actions/workflows/release.yml/badge.svg?branch=main">
+  </a>
   <a href="https://github.com/owayo/git-smart-commit/actions/workflows/ci.yml">
     <img alt="CI" src="https://github.com/owayo/git-smart-commit/actions/workflows/ci.yml/badge.svg?branch=main">
   </a>
@@ -18,6 +21,11 @@
   <a href="LICENSE">
     <img alt="License" src="https://img.shields.io/github/license/owayo/git-smart-commit">
   </a>
+</p>
+
+<p align="center">
+  <a href="README.md">English</a> |
+  <a href="README.ja.md">日本語</a>
 </p>
 
 ---
