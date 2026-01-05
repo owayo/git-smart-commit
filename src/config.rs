@@ -524,16 +524,20 @@ language = "Japanese"
 
     #[test]
     fn test_merge_with_empty_project_config() {
-        let mut global = Config::default();
-        global.providers = vec!["gemini".to_string(), "claude".to_string()];
-        global.language = "English".to_string();
-        global.prefix_type = Some("conventional".to_string());
-        global.auto_push = Some(true);
+        let mut global = Config {
+            providers: vec!["gemini".to_string(), "claude".to_string()],
+            language: "English".to_string(),
+            prefix_type: Some("conventional".to_string()),
+            auto_push: Some(true),
+            ..Default::default()
+        };
 
         // 空の providers を持つプロジェクト設定を作成
-        let mut project = Config::default();
-        project.providers = Vec::new(); // 明示的に空にする
-        project.language = default_language(); // デフォルト言語（マージ時に上書きされない）
+        let project = Config {
+            providers: Vec::new(),        // 明示的に空にする
+            language: default_language(), // デフォルト言語（マージ時に上書きされない）
+            ..Default::default()
+        };
 
         global.merge_with(project);
 
@@ -550,11 +554,15 @@ language = "Japanese"
 
     #[test]
     fn test_merge_with_project_overrides_providers() {
-        let mut global = Config::default();
-        global.providers = vec!["gemini".to_string(), "claude".to_string()];
+        let mut global = Config {
+            providers: vec!["gemini".to_string(), "claude".to_string()],
+            ..Default::default()
+        };
 
-        let mut project = Config::default();
-        project.providers = vec!["codex".to_string()];
+        let project = Config {
+            providers: vec!["codex".to_string()],
+            ..Default::default()
+        };
 
         global.merge_with(project);
 
@@ -564,11 +572,15 @@ language = "Japanese"
 
     #[test]
     fn test_merge_with_project_overrides_language() {
-        let mut global = Config::default();
-        global.language = "English".to_string();
+        let mut global = Config {
+            language: "English".to_string(),
+            ..Default::default()
+        };
 
-        let mut project = Config::default();
-        project.language = "French".to_string();
+        let project = Config {
+            language: "French".to_string(),
+            ..Default::default()
+        };
 
         global.merge_with(project);
 
@@ -578,11 +590,15 @@ language = "Japanese"
 
     #[test]
     fn test_merge_with_project_overrides_prefix_type() {
-        let mut global = Config::default();
-        global.prefix_type = Some("conventional".to_string());
+        let mut global = Config {
+            prefix_type: Some("conventional".to_string()),
+            ..Default::default()
+        };
 
-        let mut project = Config::default();
-        project.prefix_type = Some("bracket".to_string());
+        let project = Config {
+            prefix_type: Some("bracket".to_string()),
+            ..Default::default()
+        };
 
         global.merge_with(project);
 
@@ -592,11 +608,15 @@ language = "Japanese"
 
     #[test]
     fn test_merge_with_project_overrides_auto_push() {
-        let mut global = Config::default();
-        global.auto_push = Some(true);
+        let mut global = Config {
+            auto_push: Some(true),
+            ..Default::default()
+        };
 
-        let mut project = Config::default();
-        project.auto_push = Some(false);
+        let project = Config {
+            auto_push: Some(false),
+            ..Default::default()
+        };
 
         global.merge_with(project);
 
@@ -606,9 +626,11 @@ language = "Japanese"
 
     #[test]
     fn test_merge_with_project_none_preserves_global() {
-        let mut global = Config::default();
-        global.prefix_type = Some("conventional".to_string());
-        global.auto_push = Some(true);
+        let mut global = Config {
+            prefix_type: Some("conventional".to_string()),
+            auto_push: Some(true),
+            ..Default::default()
+        };
 
         let project = Config::default();
         // project.prefix_type と project.auto_push は None
@@ -624,9 +646,14 @@ language = "Japanese"
     fn test_merge_with_models_override() {
         let mut global = Config::default();
 
-        let mut project = Config::default();
-        project.models.gemini = "pro".to_string();
-        project.models.claude = "opus".to_string();
+        let project = Config {
+            models: ModelsConfig {
+                gemini: "pro".to_string(),
+                claude: "opus".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
 
         global.merge_with(project);
 
@@ -639,17 +666,21 @@ language = "Japanese"
 
     #[test]
     fn test_merge_with_prefix_rules_override() {
-        let mut global = Config::default();
-        global.prefix_rules = vec![PrefixRuleConfig {
-            url_pattern: "github.com".to_string(),
-            prefix_type: "conventional".to_string(),
-        }];
+        let mut global = Config {
+            prefix_rules: vec![PrefixRuleConfig {
+                url_pattern: "github.com".to_string(),
+                prefix_type: "conventional".to_string(),
+            }],
+            ..Default::default()
+        };
 
-        let mut project = Config::default();
-        project.prefix_rules = vec![PrefixRuleConfig {
-            url_pattern: "gitlab.com".to_string(),
-            prefix_type: "bracket".to_string(),
-        }];
+        let project = Config {
+            prefix_rules: vec![PrefixRuleConfig {
+                url_pattern: "gitlab.com".to_string(),
+                prefix_type: "bracket".to_string(),
+            }],
+            ..Default::default()
+        };
 
         global.merge_with(project);
 
@@ -661,11 +692,15 @@ language = "Japanese"
 
     #[test]
     fn test_merge_with_cooldown_override() {
-        let mut global = Config::default();
-        global.provider_cooldown_minutes = 60;
+        let mut global = Config {
+            provider_cooldown_minutes: 60,
+            ..Default::default()
+        };
 
-        let mut project = Config::default();
-        project.provider_cooldown_minutes = 30;
+        let project = Config {
+            provider_cooldown_minutes: 30,
+            ..Default::default()
+        };
 
         global.merge_with(project);
 

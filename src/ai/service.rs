@@ -749,8 +749,10 @@ mod tests {
 
     #[test]
     fn test_ai_service_from_config_custom_providers() {
-        let mut config = Config::default();
-        config.providers = vec!["claude".to_string(), "gemini".to_string()];
+        let config = Config {
+            providers: vec!["claude".to_string(), "gemini".to_string()],
+            ..Default::default()
+        };
         let service = AiService::from_config(&config);
 
         assert_eq!(service.providers.len(), 2);
@@ -760,8 +762,10 @@ mod tests {
 
     #[test]
     fn test_ai_service_from_config_invalid_providers_fallback() {
-        let mut config = Config::default();
-        config.providers = vec!["invalid".to_string(), "unknown".to_string()];
+        let config = Config {
+            providers: vec!["invalid".to_string(), "unknown".to_string()],
+            ..Default::default()
+        };
         let service = AiService::from_config(&config);
 
         // 無効なプロバイダーのみの場合はデフォルトにフォールバック
@@ -770,8 +774,10 @@ mod tests {
 
     #[test]
     fn test_ai_service_from_config_custom_language() {
-        let mut config = Config::default();
-        config.language = "English".to_string();
+        let config = Config {
+            language: "English".to_string(),
+            ..Default::default()
+        };
         let service = AiService::from_config(&config);
 
         assert_eq!(service.language, "English");

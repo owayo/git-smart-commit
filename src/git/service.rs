@@ -1057,7 +1057,8 @@ index 1234567..abcdefg 100644
         let origin_master = service.branch_exists("origin/master");
         // どちらかが存在するか、リモートがない場合は両方false
         // このテストはリモートの設定に依存するため、結果の検証は緩く
-        assert!(origin_main || origin_master || (!origin_main && !origin_master));
+        // branch_exists が正常に動作することを確認（結果は環境依存）
+        let _ = (origin_main, origin_master);
     }
 
     // ============================================================
@@ -1301,8 +1302,8 @@ index 1234567..abcdefg 100644
         // 実際のリポジトリ環境に依存するため、ファイルが存在する場合は true になる
         let result = service.is_auto_push_enabled(None);
         // ファイルの存在に応じて true/false どちらかになる
-        // このテストは主に関数が正しく動作することを確認
-        assert!(result == true || result == false);
+        // このテストは主に関数が正しく動作することを確認（パニックしないこと）
+        let _ = result;
     }
 
     #[test]
