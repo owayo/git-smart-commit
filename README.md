@@ -123,17 +123,34 @@ git-sc -n
 
 ### Options
 
+#### Basic Options
+
 | Option | Short | Description |
 |--------|-------|-------------|
 | `--yes` | `-y` | Skip confirmation prompt |
 | `--dry-run` | `-n` | Show message without committing |
 | `--all` | `-a` | Stage all changes |
 | `--body` | `-b` | Generate with body (bullet points) |
-| `--amend` | | Regenerate for last commit |
-| `--squash` | | Squash commits to one |
-| `--reword` | | Regenerate for specific commit |
-| `--generate-for` | `-g` | Generate from commit diff |
-| `--lang` | `-l` | Override language setting |
+
+#### Operation Modes
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--amend` | | Regenerate message for last commit |
+| `--squash` | | Squash all commits into one |
+| `--reword` | | Regenerate message for specific commit |
+| `--generate-for` | `-g` | Generate from commit diff (output only) |
+
+#### Settings
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--lang` | `-l` | Override commit message language |
+
+#### Debug & Info
+
+| Option | Short | Description |
+|--------|-------|-------------|
 | `--debug` | `-d` | Show prompts sent to AI |
 | `--help` | `-h` | Print help |
 | `--version` | `-V` | Print version |
