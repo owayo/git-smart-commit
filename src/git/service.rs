@@ -239,7 +239,7 @@ impl GitService {
     /// ステージ済みのdiffを取得（バイナリファイル、.git-sc-ignore対象、空白のみの変更を除外）
     pub fn get_staged_diff(&self) -> Result<String, AppError> {
         let output = Command::new("git")
-            .args(["diff", "--cached", "-w"])
+            .args(["diff", "--cached", "-w", "-U0"])
             .current_dir(&self.repo_path)
             .output()
             .map_err(|e| AppError::GitError(e.to_string()))?;
@@ -353,7 +353,7 @@ impl GitService {
     /// 直前のコミットのdiffを取得（バイナリファイル、.git-sc-ignore対象、空白のみの変更を除外）
     pub fn get_last_commit_diff(&self) -> Result<String, AppError> {
         let output = Command::new("git")
-            .args(["diff", "-w", "HEAD~1", "HEAD"])
+            .args(["diff", "-w", "-U0", "HEAD~1", "HEAD"])
             .current_dir(&self.repo_path)
             .output()
             .map_err(|e| AppError::GitError(e.to_string()))?;
@@ -508,7 +508,7 @@ impl GitService {
     /// ベースからHEADまでの差分を取得（バイナリファイル、.git-sc-ignore対象、空白のみの変更を除外）
     pub fn get_diff_from_base(&self, base: &str) -> Result<String, AppError> {
         let output = Command::new("git")
-            .args(["diff", "-w", base, "HEAD"])
+            .args(["diff", "-w", "-U0", base, "HEAD"])
             .current_dir(&self.repo_path)
             .output()
             .map_err(|e| AppError::GitError(e.to_string()))?;
@@ -574,7 +574,7 @@ impl GitService {
 
         // git show でそのコミットの差分を取得
         let output = Command::new("git")
-            .args(["show", hash, "--format=", "--no-color", "-w"])
+            .args(["show", hash, "--format=", "--no-color", "-w", "-U0"])
             .current_dir(&self.repo_path)
             .output()
             .map_err(|e| AppError::GitError(e.to_string()))?;
