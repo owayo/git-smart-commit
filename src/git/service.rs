@@ -165,7 +165,7 @@ impl GitService {
         Self::truncate_diff(&filtered)
     }
 
-    /// git diffの出力からバイナリファイルの差分を除外
+    /// git diffの出力からバイナリファイルの詳細差分を除外し、変更種別のみを出力
     fn filter_binary_diff(diff_text: &str) -> String {
         if diff_text.is_empty() {
             return String::new();
@@ -181,33 +181,61 @@ impl GitService {
             if line.starts_with("diff --git") {
                 // 新しいdiffブロックの開始
                 let block_start = i;
+                let file_path = Self::extract_file_path_from_diff_header(line)
+                    .unwrap_or("unknown")
+                    .to_string();
                 i += 1;
 
-                // このブロックがバイナリかどうかをチェック
+                // ブロック内の情報を収集
                 let mut is_binary = false;
+                let mut is_new_file = false;
+                let mut is_deleted = false;
+                let mut rename_from: Option<String> = None;
+                let mut rename_to: Option<String> = None;
+
                 while i < lines.len() && !lines[i].starts_with("diff --git") {
-                    if lines[i].contains("Binary files") && lines[i].contains("differ") {
+                    let current_line = lines[i];
+                    if current_line.starts_with("Binary files") && current_line.ends_with("differ")
+                    {
                         is_binary = true;
-                        break;
+                    }
+                    if current_line.starts_with("new file mode") {
+                        is_new_file = true;
+                    }
+                    if current_line.starts_with("deleted file mode") {
+                        is_deleted = true;
+                    }
+                    if current_line.starts_with("rename from ") {
+                        rename_from =
+                            Some(current_line.trim_start_matches("rename from ").to_string());
+                    }
+                    if current_line.starts_with("rename to ") {
+                        rename_to = Some(current_line.trim_start_matches("rename to ").to_string());
                     }
                     i += 1;
                 }
 
-                // バイナリでなければブロックを追加
-                if !is_binary {
-                    for line in lines.iter().take(i).skip(block_start) {
-                        filtered_lines.push(*line);
-                    }
+                if is_binary {
+                    // バイナリファイルの変更種別を出力
+                    let binary_info = if let (Some(from), Some(to)) = (&rename_from, &rename_to) {
+                        format!("[Binary] renamed: {} -> {}", from, to)
+                    } else if is_new_file {
+                        format!("[Binary] added: {}", file_path)
+                    } else if is_deleted {
+                        format!("[Binary] deleted: {}", file_path)
+                    } else {
+                        format!("[Binary] modified: {}", file_path)
+                    };
+                    filtered_lines.push(binary_info);
                 } else {
-                    // バイナリブロックをスキップ（次のdiff --gitまで進む）
-                    while i < lines.len() && !lines[i].starts_with("diff --git") {
-                        i += 1;
+                    // テキストファイルはそのまま追加
+                    for line in lines.iter().take(i).skip(block_start) {
+                        filtered_lines.push((*line).to_string());
                     }
                 }
-                // diffブロック処理後は次のdiff --gitから継続（i += 1をスキップ）
                 continue;
             } else {
-                filtered_lines.push(line);
+                filtered_lines.push(line.to_string());
             }
             i += 1;
         }
@@ -824,7 +852,7 @@ index 1234567..abcdefg 100644
     }
 
     #[test]
-    fn test_filter_binary_diff_removes_binary() {
+    fn test_filter_binary_diff_shows_binary_info() {
         let diff = r#"diff --git a/src/main.rs b/src/main.rs
 index 1234567..abcdefg 100644
 --- a/src/main.rs
@@ -836,17 +864,15 @@ index 1234567..abcdefg 100644
 diff --git a/image.png b/image.png
 Binary files a/image.png and b/image.png differ"#;
 
-        let expected = r#"diff --git a/src/main.rs b/src/main.rs
-index 1234567..abcdefg 100644
---- a/src/main.rs
-+++ b/src/main.rs
-@@ -1,3 +1,4 @@
- fn main() {
-+    println!("Hello");
- }"#;
-
         let result = GitService::filter_binary_diff(diff);
-        assert_eq!(result, expected);
+
+        // テキストファイルの差分が含まれる
+        assert!(result.contains("src/main.rs"));
+        assert!(result.contains("println"));
+        // バイナリファイルは変更種別として出力される
+        assert!(result.contains("[Binary] modified: image.png"));
+        // 詳細なバイナリ差分は含まれない
+        assert!(!result.contains("Binary files a/"));
     }
 
     #[test]
@@ -855,7 +881,7 @@ index 1234567..abcdefg 100644
 Binary files a/image.png and b/image.png differ"#;
 
         let result = GitService::filter_binary_diff(diff);
-        assert_eq!(result, "");
+        assert_eq!(result, "[Binary] modified: image.png");
     }
 
     #[test]
@@ -879,12 +905,14 @@ index 1111111..2222222 100644
 
         let result = GitService::filter_binary_diff(diff);
 
-        // テキストファイルの変更のみが含まれることを確認
+        // テキストファイルの変更が含まれる
         assert!(result.contains("src/lib.rs"));
         assert!(result.contains("config.toml"));
-        assert!(!result.contains("image1.png"));
-        assert!(!result.contains("image2.jpg"));
-        assert!(!result.contains("Binary files"));
+        // バイナリファイルは変更種別として出力される
+        assert!(result.contains("[Binary] modified: image1.png"));
+        assert!(result.contains("[Binary] modified: image2.jpg"));
+        // 詳細なバイナリ差分は含まれない
+        assert!(!result.contains("Binary files a/"));
     }
 
     #[test]
@@ -900,9 +928,54 @@ index aaa..bbb 100644
 
         let result = GitService::filter_binary_diff(diff);
 
-        assert!(!result.contains("logo.svg"));
+        // バイナリファイルは変更種別として出力される
+        assert!(result.contains("[Binary] modified: logo.svg"));
         assert!(result.contains("README.md"));
         assert!(result.contains("# Title"));
+    }
+
+    #[test]
+    fn test_filter_binary_diff_new_file() {
+        let diff = r#"diff --git a/new_image.png b/new_image.png
+new file mode 100644
+Binary files /dev/null and b/new_image.png differ"#;
+
+        let result = GitService::filter_binary_diff(diff);
+        assert_eq!(result, "[Binary] added: new_image.png");
+    }
+
+    #[test]
+    fn test_filter_binary_diff_deleted_file() {
+        let diff = r#"diff --git a/old_image.png b/old_image.png
+deleted file mode 100644
+Binary files a/old_image.png and /dev/null differ"#;
+
+        let result = GitService::filter_binary_diff(diff);
+        assert_eq!(result, "[Binary] deleted: old_image.png");
+    }
+
+    #[test]
+    fn test_filter_binary_diff_renamed_file() {
+        let diff = r#"diff --git a/old_name.png b/new_name.png
+similarity index 100%
+rename from old_name.png
+rename to new_name.png"#;
+
+        let result = GitService::filter_binary_diff(diff);
+        // リネームはテキストファイルとして扱われる（Binary filesがないため）
+        assert!(result.contains("rename from old_name.png"));
+    }
+
+    #[test]
+    fn test_filter_binary_diff_renamed_binary() {
+        let diff = r#"diff --git a/old_name.png b/new_name.png
+similarity index 90%
+rename from old_name.png
+rename to new_name.png
+Binary files a/old_name.png and b/new_name.png differ"#;
+
+        let result = GitService::filter_binary_diff(diff);
+        assert_eq!(result, "[Binary] renamed: old_name.png -> new_name.png");
     }
 
     #[test]
