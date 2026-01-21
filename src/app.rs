@@ -157,12 +157,41 @@ impl App {
                         );
                     }
                     if let Some(branch_name) = &branch {
-                        if let Some(result) = self.git.run_prefix_script(
+                        let result = self.git.run_prefix_script(
                             &script_config.script,
                             &remote_url,
                             branch_name,
-                        ) {
-                            return PrefixMode::Script(result);
+                        );
+
+                        // スクリプト実行結果を出力
+                        if !silent {
+                            match &result {
+                                Some(ScriptResult::Prefix(prefix)) => {
+                                    println!(
+                                        "{}",
+                                        format!("  → prefix: {:?}", prefix.trim()).green()
+                                    );
+                                }
+                                Some(ScriptResult::Empty) => {
+                                    println!(
+                                        "{}",
+                                        "  → prefix: (empty, no prefix will be added)".yellow()
+                                    );
+                                }
+                                Some(ScriptResult::Failed) => {
+                                    println!(
+                                        "{}",
+                                        "  → script exited with non-zero status (exit 1), using AI-generated message".yellow()
+                                    );
+                                }
+                                None => {
+                                    println!("{}", "  → script execution failed".red());
+                                }
+                            }
+                        }
+
+                        if let Some(r) = result {
+                            return PrefixMode::Script(r);
                         }
                     }
                 }

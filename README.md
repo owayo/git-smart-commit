@@ -115,6 +115,7 @@ git-sc -n
 | Command | Description |
 |---------|-------------|
 | `git-sc` | Generate message for staged changes |
+| `git-sc init` | Initialize configuration file |
 | `git-sc -a` | Stage all changes and generate message |
 | `git-sc --amend` | Regenerate message for last commit |
 | `git-sc --squash <BASE>` | Squash all commits into one |
@@ -177,13 +178,29 @@ git-sc -g abc1234 -b        # With detailed body
 
 ## Configuration
 
+### Initial Setup
+
+Initialize configuration with `git-sc init`, or create `~/.config/git-sc/config.toml` manually:
+
+```bash
+git-sc init
+```
+
+This creates a configuration file with default settings at `~/.config/git-sc/config.toml`.
+
+Use `--force` to overwrite an existing configuration:
+
+```bash
+git-sc init --force
+```
+
 ### Hierarchical Configuration
 
 git-sc supports hierarchical configuration with project-level overrides:
 
 | File | Scope | Description |
 |------|-------|-------------|
-| `~/.git-sc` | Global | User-wide default settings |
+| `~/.config/git-sc/config.toml` | Global | User-wide default settings |
 | `.git-sc` | Project | Repository-specific overrides (in repo root) |
 
 Project settings override global settings. Fields not specified in project config inherit from global config.
@@ -279,13 +296,11 @@ Cargo.lock
 Enable auto-push in your config file:
 
 ```toml
-# In ~/.git-sc or .git-sc
+# In ~/.config/git-sc/config.toml or .git-sc
 auto_push = true
 ```
 
 When enabled, `git-sc` will run `git push` after a successful commit or squash.
-
-> **Note**: The legacy `.git-sc-auto-push` file is still supported for backward compatibility.
 
 ## VS Code Extension
 
@@ -324,7 +339,7 @@ flowchart LR
 ```
 
 1. **Verify**: Check git repo and AI agent availability
-2. **Config**: Load `~/.git-sc` settings
+2. **Config**: Load `~/.config/git-sc/config.toml` settings
 3. **Diff**: Get staged changes (with exclusions)
 4. **Format**: Detect from recent commits or rules
 5. **Generate**: Send to AI with fallback

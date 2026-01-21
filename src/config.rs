@@ -100,10 +100,15 @@ impl Default for Config {
 }
 
 impl Config {
-    /// グローバル設定ファイルのパスを取得（~/.git-sc）
+    /// 設定ディレクトリのパスを取得（~/.config/git-sc）
+    pub fn config_dir() -> Option<PathBuf> {
+        dirs::home_dir().map(|home| home.join(".config").join("git-sc"))
+    }
+
+    /// グローバル設定ファイルのパスを取得（~/.config/git-sc/config.toml）
     pub fn global_config_path() -> Result<PathBuf, AppError> {
-        dirs::home_dir()
-            .map(|home| home.join(".git-sc"))
+        Self::config_dir()
+            .map(|dir| dir.join("config.toml"))
             .ok_or_else(|| AppError::ConfigError("Could not find home directory".to_string()))
     }
 
@@ -244,6 +249,13 @@ impl Config {
     pub fn save(&self) -> Result<(), AppError> {
         let path = Self::global_config_path()?;
 
+        // ディレクトリが存在しない場合は作成
+        if let Some(dir) = Self::config_dir() {
+            fs::create_dir_all(&dir).map_err(|e| {
+                AppError::ConfigError(format!("Failed to create config directory: {}", e))
+            })?;
+        }
+
         let content = toml::to_string_pretty(self)
             .map_err(|e| AppError::ConfigError(format!("Failed to serialize config: {}", e)))?;
 
@@ -251,6 +263,52 @@ impl Config {
             .map_err(|e| AppError::ConfigError(format!("Failed to write config: {}", e)))?;
 
         Ok(())
+    }
+
+    /// init コマンド用のデフォルト設定ファイル内容を生成
+    pub fn default_config_content() -> String {
+        r#"# git-sc configuration file
+# AI-powered smart commit message generator
+
+# AI providers priority order
+# Available: "gemini", "codex", "claude"
+providers = ["gemini", "codex", "claude"]
+
+# Commit message language
+language = "Japanese"
+
+# Provider cooldown time (minutes) after failure
+# Set to 0 to disable cooldown
+provider_cooldown_minutes = 60
+
+# Commit message prefix format
+# Available: "conventional", "bracket", "colon", "emoji", "plain", "none"
+# prefix_type = "conventional"
+
+# Auto push after commit
+# auto_push = false
+
+# Model configuration for each provider
+[models]
+gemini = "flash"
+codex = "gpt-5.1-codex-mini"
+claude = "haiku"
+
+# Prefix scripts (executed in order, first match wins)
+# Script receives: remote_url, branch_name as arguments
+# Exit 0 + output: use output as prefix
+# Exit 0 + empty: no prefix
+# Exit 1: use AI-generated message without prefix
+# [[prefix_scripts]]
+# url_pattern = "^https://github\\.com/myorg/"
+# script = "/path/to/prefix-script.sh"
+
+# Prefix rules (URL-based, first match wins)
+# [[prefix_rules]]
+# url_pattern = "github\\.com[:/]myorg/"
+# prefix_type = "conventional"
+"#
+        .to_string()
     }
 }
 

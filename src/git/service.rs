@@ -360,22 +360,8 @@ impl GitService {
     }
 
     /// auto_push が有効かどうかを判定
-    ///
-    /// 優先順位:
-    /// 1. 設定ファイルの auto_push が Some(true/false) ならその値
-    /// 2. None の場合は .git-sc-auto-push ファイルの存在をチェック（後方互換性）
     pub fn is_auto_push_enabled(&self, config_auto_push: Option<bool>) -> bool {
-        // 設定ファイルの値を優先
-        if let Some(auto_push) = config_auto_push {
-            return auto_push;
-        }
-
-        // 後方互換性: .git-sc-auto-push ファイルの存在をチェック
-        if let Some(git_root) = self.get_git_root() {
-            git_root.join(".git-sc-auto-push").exists()
-        } else {
-            false
-        }
+        config_auto_push.unwrap_or(false)
     }
 
     /// 直前のコミットのdiffを取得（バイナリファイル、.git-sc-ignore対象、空白のみの変更を除外）
@@ -460,15 +446,20 @@ impl GitService {
     /// - `Some(ScriptResult::Empty)`: スクリプトが空を返した（exit 0 + 内容なし）→ プレフィックスなし
     /// - `Some(ScriptResult::Failed)`: スクリプトが失敗した（exit 1）→ AI生成メッセージを使用
     /// - `None`: スクリプトの実行自体に失敗
+    ///
+    /// スクリプトの stderr は直接ターミナルに出力されます。
     pub fn run_prefix_script(
         &self,
         script: &str,
         remote_url: &str,
         branch: &str,
     ) -> Option<ScriptResult> {
+        use std::process::Stdio;
+
         let output = Command::new(script)
             .args([remote_url, branch])
             .current_dir(&self.repo_path)
+            .stderr(Stdio::inherit()) // stderrは直接ターミナルに出力
             .output()
             .ok()?;
 
@@ -1356,36 +1347,19 @@ index 1234567..abcdefg 100644
     #[test]
     fn test_is_auto_push_enabled_with_config_true() {
         let service = GitService::new();
-        // 設定ファイルで auto_push = true の場合
         assert!(service.is_auto_push_enabled(Some(true)));
     }
 
     #[test]
     fn test_is_auto_push_enabled_with_config_false() {
         let service = GitService::new();
-        // 設定ファイルで auto_push = false の場合
         assert!(!service.is_auto_push_enabled(Some(false)));
     }
 
     #[test]
-    fn test_is_auto_push_enabled_with_config_none_no_file() {
+    fn test_is_auto_push_enabled_with_config_none() {
         let service = GitService::new();
-        // 設定ファイルで auto_push が未設定で、.git-sc-auto-push ファイルも存在しない場合
-        // 注: このテストは .git-sc-auto-push ファイルが存在しない前提
-        // 実際のリポジトリ環境に依存するため、ファイルが存在する場合は true になる
-        let result = service.is_auto_push_enabled(None);
-        // ファイルの存在に応じて true/false どちらかになる
-        // このテストは主に関数が正しく動作することを確認（パニックしないこと）
-        let _ = result;
-    }
-
-    #[test]
-    fn test_is_auto_push_enabled_config_overrides_file() {
-        let service = GitService::new();
-        // 設定ファイルの値がファイル存在チェックより優先されることを確認
-        // false が設定されていれば、ファイルの存在に関わらず false
-        assert!(!service.is_auto_push_enabled(Some(false)));
-        // true が設定されていれば、ファイルの存在に関わらず true
-        assert!(service.is_auto_push_enabled(Some(true)));
+        // 未設定の場合は false
+        assert!(!service.is_auto_push_enabled(None));
     }
 }

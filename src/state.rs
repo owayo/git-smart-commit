@@ -23,10 +23,10 @@ pub struct State {
 }
 
 impl State {
-    /// 状態ファイルのパスを取得（~/.git-sc-state）
+    /// 状態ファイルのパスを取得（~/.config/git-sc/.providers-state）
     pub fn state_path() -> Result<PathBuf, AppError> {
         dirs::home_dir()
-            .map(|home| home.join(".git-sc-state"))
+            .map(|home| home.join(".config").join("git-sc").join(".providers-state"))
             .ok_or_else(|| AppError::ConfigError("Could not find home directory".to_string()))
     }
 
@@ -48,6 +48,13 @@ impl State {
     /// 状態をファイルに保存
     pub fn save(&self) -> Result<(), AppError> {
         let path = Self::state_path()?;
+
+        // ディレクトリが存在しない場合は作成
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| {
+                AppError::ConfigError(format!("Failed to create state directory: {}", e))
+            })?;
+        }
 
         let content = toml::to_string_pretty(self)
             .map_err(|e| AppError::ConfigError(format!("Failed to serialize state: {}", e)))?;

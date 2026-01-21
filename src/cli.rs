@@ -1,4 +1,15 @@
-use clap::Parser;
+use clap::{Parser, Subcommand};
+
+/// Subcommands for git-sc
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
+pub enum Command {
+    /// Initialize configuration file at ~/.config/git-sc/config.toml
+    Init {
+        /// Force overwrite existing config file without prompting
+        #[arg(long)]
+        force: bool,
+    },
+}
 
 /// AI-powered smart commit message generator using coding agents (Gemini CLI, Codex CLI, or Claude Code)
 #[derive(Parser, Debug)]
@@ -8,6 +19,10 @@ use clap::Parser;
 )]
 #[command(version)]
 pub struct Cli {
+    /// Subcommand (e.g., init)
+    #[command(subcommand)]
+    pub command: Option<Command>,
+
     /// Skip confirmation prompt and commit directly
     #[arg(short = 'y', long = "yes")]
     pub auto_confirm: bool,
@@ -310,5 +325,41 @@ mod tests {
             cli.generate_for,
             Some(vec!["1234567890abcdef1234567890abcdef12345678".to_string()])
         );
+    }
+
+    // ============================================================
+    // Init サブコマンドのテスト
+    // ============================================================
+
+    #[test]
+    fn test_cli_init_subcommand() {
+        let cli = Cli::parse_from(["git-sc", "init"]);
+        assert!(matches!(cli.command, Some(Command::Init { force: false })));
+    }
+
+    #[test]
+    fn test_cli_init_subcommand_with_force() {
+        let cli = Cli::parse_from(["git-sc", "init", "--force"]);
+        assert!(matches!(cli.command, Some(Command::Init { force: true })));
+    }
+
+    #[test]
+    fn test_cli_no_subcommand() {
+        let cli = Cli::parse_from(["git-sc"]);
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn test_cli_command_enum_debug() {
+        let cmd = Command::Init { force: false };
+        let debug_str = format!("{:?}", cmd);
+        assert!(debug_str.contains("Init"));
+    }
+
+    #[test]
+    fn test_cli_command_enum_clone() {
+        let cmd = Command::Init { force: true };
+        let cloned = cmd.clone();
+        assert_eq!(cmd, cloned);
     }
 }
