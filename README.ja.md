@@ -45,14 +45,28 @@
 - **OS**: macOS, Linux, Windows
 - **Git**: 必須
 - **AIプロバイダー**（少なくとも1つ）:
-  - opencode: [opencode ドキュメント](https://github.com/opencodeco/opencode) を参照
+  - opencode: `curl -fsSL https://opencode.ai/install | bash`
   - Gemini CLI: `npm install -g @google/gemini-cli`
   - Codex CLI: `npm install -g @openai/codex`
-  - Claude Code: `npm install -g @anthropic-ai/claude-code`
+  - Claude Code: `curl -fsSL https://claude.ai/install.sh | bash`
 
 ## インストール
 
-### GitHub Releases から（推奨）
+### Homebrew (macOS/Linux)
+
+```bash
+brew install owayo/git-sc/git-sc
+```
+
+### ソースから
+
+```bash
+git clone https://github.com/owayo/git-smart-commit.git
+cd git-smart-commit
+make install
+```
+
+### GitHub Releases から
 
 [Releases](https://github.com/owayo/git-smart-commit/releases) からお使いのプラットフォーム用のバイナリをダウンロード。
 
@@ -87,14 +101,6 @@ sudo mv git-sc /usr/local/bin/
 #### Windows
 
 [Releases](https://github.com/owayo/git-smart-commit/releases) から `git-sc-x86_64-pc-windows-msvc.zip` をダウンロードし、展開して PATH に追加。
-
-### ソースから
-
-```bash
-git clone https://github.com/owayo/git-smart-commit.git
-cd git-smart-commit
-make install
-```
 
 ## クイックスタート
 

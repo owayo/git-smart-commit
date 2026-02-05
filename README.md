@@ -47,12 +47,26 @@
 - **AI Provider** (at least one):
   - Gemini CLI: `npm install -g @google/gemini-cli`
   - Codex CLI: `npm install -g @openai/codex`
-  - Claude Code: `npm install -g @anthropic-ai/claude-code`
-  - opencode: See [opencode documentation](https://github.com/opencodeco/opencode)
+  - Claude Code: `curl -fsSL https://claude.ai/install.sh | bash`
+  - opencode: `curl -fsSL https://opencode.ai/install | bash`
 
 ## Installation
 
-### From GitHub Releases (Recommended)
+### Homebrew (macOS/Linux)
+
+```bash
+brew install owayo/git-sc/git-sc
+```
+
+### From Source
+
+```bash
+git clone https://github.com/owayo/git-smart-commit.git
+cd git-smart-commit
+make install
+```
+
+### From GitHub Releases
 
 Download the latest binary from [Releases](https://github.com/owayo/git-smart-commit/releases).
 
@@ -87,14 +101,6 @@ sudo mv git-sc /usr/local/bin/
 #### Windows
 
 Download `git-sc-x86_64-pc-windows-msvc.zip` from [Releases](https://github.com/owayo/git-smart-commit/releases), extract, and add to PATH.
-
-### From Source
-
-```bash
-git clone https://github.com/owayo/git-smart-commit.git
-cd git-smart-commit
-make install
-```
 
 ## Quickstart
 
