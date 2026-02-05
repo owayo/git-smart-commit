@@ -310,6 +310,17 @@ impl GitService {
 
     /// 全ての変更をステージング
     pub fn stage_all(&self) -> Result<(), AppError> {
+        // Windows: "nul" はWindowsの予約デバイス名
+        // AIプロバイダー呼び出し時に意図せず "nul" ファイルが作成されることがあり、
+        // Git for Windows は nul をインデックス化できないため事前に削除する
+        #[cfg(windows)]
+        {
+            let nul_path = self.repo_path.join("nul");
+            if nul_path.exists() {
+                let _ = std::fs::remove_file(&nul_path);
+            }
+        }
+
         let output = Command::new("git")
             .args(["add", "-A"])
             .current_dir(&self.repo_path)

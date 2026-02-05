@@ -302,14 +302,10 @@ Changes:
 
     /// 特定のAIプロバイダーを呼び出し
     fn call_provider(&self, provider: &AiProvider, prompt: &str) -> Result<String, AppError> {
-        // Build command with stdin support to avoid command line length limits on Windows
-        let mut cmd = if cfg!(windows) {
-            let mut c = Command::new("cmd");
-            c.args(["/C", provider.command()]);
-            c
-        } else {
-            Command::new(provider.command())
-        };
+        // Windows: cmd /C を使わず直接実行する
+        // cmd /C を使用すると、AIプロバイダーのラッパーが > nul を使った場合に
+        // 実ファイル "nul" が作成され、git add -A が失敗する問題がある
+        let mut cmd = Command::new(provider.command());
 
         // Add provider-specific arguments (without the prompt)
         match provider {
@@ -323,6 +319,13 @@ Changes:
                 cmd.args(["--model", &self.models.claude, "-p"]);
             }
         };
+
+        // Windows: 防御策として作業ディレクトリをテンポラリに設定
+        // 万が一 nul ファイルが生成されても、リポジトリ外に追い出す
+        #[cfg(windows)]
+        {
+            cmd.current_dir(std::env::temp_dir());
+        }
 
         // Pass prompt via stdin to avoid OS error 206 (filename too long) on Windows
         cmd.stdin(Stdio::piped());
