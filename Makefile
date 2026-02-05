@@ -19,6 +19,7 @@ release: ## Build release version
 
 install: release ## Build release and install to /usr/local/bin
 	cp target/release/$(BINARY_NAME) $(INSTALL_PATH)/
+	codesign --force --sign - $(INSTALL_PATH)/$(BINARY_NAME)
 
 ## Development
 

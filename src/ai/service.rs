@@ -1,3 +1,4 @@
+use std::fs;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -13,6 +14,7 @@ pub enum AiProvider {
     Gemini,
     Codex,
     Claude,
+    Opencode,
 }
 
 impl AiProvider {
@@ -21,6 +23,7 @@ impl AiProvider {
             AiProvider::Gemini => "Gemini CLI",
             AiProvider::Codex => "Codex CLI",
             AiProvider::Claude => "Claude Code",
+            AiProvider::Opencode => "opencode",
         }
     }
 
@@ -29,6 +32,7 @@ impl AiProvider {
             AiProvider::Gemini => "gemini",
             AiProvider::Codex => "codex",
             AiProvider::Claude => "claude",
+            AiProvider::Opencode => "opencode",
         }
     }
 
@@ -43,6 +47,7 @@ impl AiProvider {
             "gemini" => Some(AiProvider::Gemini),
             "codex" => Some(AiProvider::Codex),
             "claude" => Some(AiProvider::Claude),
+            "opencode" => Some(AiProvider::Opencode),
             _ => None,
         }
     }
@@ -54,6 +59,7 @@ pub struct AiService {
     language: String,
     models: ModelsConfig,
     cooldown_minutes: u64,
+    debug: bool,
 }
 
 impl AiService {
@@ -75,7 +81,12 @@ impl AiService {
 
         // 有効なプロバイダーがない場合はデフォルトにフォールバック
         let providers = if providers.is_empty() {
-            vec![AiProvider::Gemini, AiProvider::Codex, AiProvider::Claude]
+            vec![
+                AiProvider::Opencode,
+                AiProvider::Gemini,
+                AiProvider::Codex,
+                AiProvider::Claude,
+            ]
         } else {
             providers
         };
@@ -85,16 +96,51 @@ impl AiService {
             language: config.language.clone(),
             models: config.models.clone(),
             cooldown_minutes: config.provider_cooldown_minutes,
+            debug: false,
         }
     }
 
     /// デフォルトのフォールバック順序でAiServiceを作成
     pub fn new() -> Self {
         Self {
-            providers: vec![AiProvider::Gemini, AiProvider::Codex, AiProvider::Claude],
+            providers: vec![
+                AiProvider::Opencode,
+                AiProvider::Gemini,
+                AiProvider::Codex,
+                AiProvider::Claude,
+            ],
             language: "Japanese".to_string(),
             models: ModelsConfig::default(),
             cooldown_minutes: 60, // デフォルト1時間
+            debug: false,
+        }
+    }
+
+    /// デバッグモードを設定
+    pub fn set_debug(&mut self, debug: bool) {
+        self.debug = debug;
+    }
+
+    /// デバッグ用にコマンド文字列をフォーマット
+    fn format_command_for_debug(&self, provider: &AiProvider, _prompt: &str) -> String {
+        match provider {
+            AiProvider::Gemini => {
+                format!("gemini -m '{}' <<< '(stdin)'", self.models.gemini)
+            }
+            AiProvider::Codex => {
+                format!("codex exec --model '{}' <<< '(stdin)'", self.models.codex)
+            }
+            AiProvider::Claude => {
+                format!("claude --model '{}' -p <<< '(stdin)'", self.models.claude)
+            }
+            AiProvider::Opencode => {
+                // opencode は -f オプションで一時ファイル経由でプロンプトを渡す
+                // デバッグモードでは --print-logs も付与
+                format!(
+                    "opencode run '...' -m '{}' -f '<temp_file>' --print-logs",
+                    self.models.opencode
+                )
+            }
         }
     }
 
@@ -302,6 +348,18 @@ Changes:
 
     /// 特定のAIプロバイダーを呼び出し
     fn call_provider(&self, provider: &AiProvider, prompt: &str) -> Result<String, AppError> {
+        // opencode は一時ファイル経由でプロンプトを渡す（stdinサポートが不明確なため）
+        let temp_file_path = if matches!(provider, AiProvider::Opencode) {
+            let temp_dir = std::env::temp_dir();
+            let temp_file = temp_dir.join(format!("git-sc-prompt-{}.txt", std::process::id()));
+            fs::write(&temp_file, prompt).map_err(|e| {
+                AppError::AiProviderError(format!("Failed to write temp file: {}", e))
+            })?;
+            Some(temp_file)
+        } else {
+            None
+        };
+
         // Windows: cmd /C を使わず直接実行する
         // cmd /C を使用すると、AIプロバイダーのラッパーが > nul を使った場合に
         // 実ファイル "nul" が作成され、git add -A が失敗する問題がある
@@ -318,7 +376,37 @@ Changes:
             AiProvider::Claude => {
                 cmd.args(["--model", &self.models.claude, "-p"]);
             }
+            AiProvider::Opencode => {
+                // opencode run "message" -m "provider:model" -f <temp_file>
+                // プロンプトは一時ファイル経由で渡す（ファイル内に全指示を含む）
+                // メッセージを先に、オプションを後に
+                if let Some(ref path) = temp_file_path {
+                    cmd.args([
+                        "run",
+                        "Follow the instructions in the attached file exactly. Output only the commit message.",
+                        "-m",
+                        &self.models.opencode,
+                        "-f",
+                        path.to_str().unwrap_or(""),
+                    ]);
+                    // デバッグモードの場合は --print-logs を追加
+                    if self.debug {
+                        cmd.arg("--print-logs");
+                    }
+                }
+            }
         };
+
+        // デバッグモード: 実行するコマンドを表示
+        if self.debug {
+            let cmd_str = self.format_command_for_debug(provider, prompt);
+            println!();
+            println!("{}", "=== DEBUG: AI Provider Command ===".yellow().bold());
+            println!("{}", "─".repeat(50).dimmed());
+            println!("{}", cmd_str.cyan());
+            println!("{}", "─".repeat(50).dimmed());
+            println!();
+        }
 
         // Windows: 防御策として作業ディレクトリをテンポラリに設定
         // 万が一 nul ファイルが生成されても、リポジトリ外に追い出す
@@ -327,12 +415,21 @@ Changes:
             cmd.current_dir(std::env::temp_dir());
         }
 
-        // Pass prompt via stdin to avoid OS error 206 (filename too long) on Windows
-        cmd.stdin(Stdio::piped());
+        // Pass prompt via stdin (except opencode which uses temp file)
+        let uses_stdin = temp_file_path.is_none();
+        if uses_stdin {
+            cmd.stdin(Stdio::piped());
+        } else {
+            cmd.stdin(Stdio::null());
+        }
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
         let mut child = cmd.spawn().map_err(|e| {
+            // 一時ファイルをクリーンアップ
+            if let Some(ref path) = temp_file_path {
+                let _ = fs::remove_file(path);
+            }
             if e.kind() == std::io::ErrorKind::NotFound {
                 AppError::AiProviderError(format!("{} not found", provider.name()))
             } else {
@@ -340,16 +437,31 @@ Changes:
             }
         })?;
 
-        // Write prompt to stdin
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(prompt.as_bytes())
-                .map_err(|e| AppError::AiProviderError(format!("Failed to write prompt: {}", e)))?;
+        // Write prompt to stdin (for non-opencode providers)
+        if uses_stdin {
+            if let Some(mut stdin) = child.stdin.take() {
+                stdin.write_all(prompt.as_bytes()).map_err(|e| {
+                    // 一時ファイルをクリーンアップ
+                    if let Some(ref path) = temp_file_path {
+                        let _ = fs::remove_file(path);
+                    }
+                    AppError::AiProviderError(format!("Failed to write prompt: {}", e))
+                })?;
+            }
         }
 
-        let output = child
-            .wait_with_output()
-            .map_err(|e| AppError::AiProviderError(format!("Failed to wait for process: {}", e)))?;
+        let output = child.wait_with_output().map_err(|e| {
+            // 一時ファイルをクリーンアップ
+            if let Some(ref path) = temp_file_path {
+                let _ = fs::remove_file(path);
+            }
+            AppError::AiProviderError(format!("Failed to wait for process: {}", e))
+        })?;
+
+        // 一時ファイルをクリーンアップ
+        if let Some(ref path) = temp_file_path {
+            let _ = fs::remove_file(path);
+        }
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -420,6 +532,22 @@ Changes:
                     .unwrap_or("API request failed")
                     .to_string()
             }
+            AiProvider::Opencode => {
+                // opencode: エラー行を探す
+                for line in stderr.lines() {
+                    let trimmed = line.trim();
+                    let lower = trimmed.to_lowercase();
+                    if lower.contains("error") || lower.contains("failed") {
+                        return trimmed.to_string();
+                    }
+                }
+                // 最初の非空行またはジェネリックメッセージを返す
+                stderr
+                    .lines()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("opencode request failed")
+                    .to_string()
+            }
         }
     }
 
@@ -488,6 +616,7 @@ mod tests {
         assert_eq!(AiProvider::Gemini.name(), "Gemini CLI");
         assert_eq!(AiProvider::Codex.name(), "Codex CLI");
         assert_eq!(AiProvider::Claude.name(), "Claude Code");
+        assert_eq!(AiProvider::Opencode.name(), "opencode");
     }
 
     #[test]
@@ -495,6 +624,7 @@ mod tests {
         assert_eq!(AiProvider::Gemini.command(), "gemini");
         assert_eq!(AiProvider::Codex.command(), "codex");
         assert_eq!(AiProvider::Claude.command(), "claude");
+        assert_eq!(AiProvider::Opencode.command(), "opencode");
     }
 
     #[rstest]
@@ -503,6 +633,8 @@ mod tests {
     #[case("Gemini", Some(AiProvider::Gemini))]
     #[case("codex", Some(AiProvider::Codex))]
     #[case("claude", Some(AiProvider::Claude))]
+    #[case("opencode", Some(AiProvider::Opencode))]
+    #[case("OPENCODE", Some(AiProvider::Opencode))]
     #[case("unknown", None)]
     #[case("", None)]
     fn test_ai_provider_from_str(#[case] input: &str, #[case] expected: Option<AiProvider>) {
@@ -518,7 +650,7 @@ mod tests {
     fn test_ai_service_new() {
         let service = AiService::new();
         assert_eq!(service.language, "Japanese");
-        assert_eq!(service.providers.len(), 3);
+        assert_eq!(service.providers.len(), 4);
     }
 
     #[test]
@@ -744,10 +876,11 @@ mod tests {
         let service = AiService::from_config(&config);
 
         assert_eq!(service.language, "Japanese");
-        assert_eq!(service.providers.len(), 3);
+        assert_eq!(service.providers.len(), 4);
         assert_eq!(service.models.gemini, "flash");
         assert_eq!(service.models.codex, "gpt-5.1-codex-mini");
         assert_eq!(service.models.claude, "haiku");
+        assert_eq!(service.models.opencode, "opencode/minimax-m2.1-free");
     }
 
     #[test]
@@ -772,7 +905,7 @@ mod tests {
         let service = AiService::from_config(&config);
 
         // 無効なプロバイダーのみの場合はデフォルトにフォールバック
-        assert_eq!(service.providers.len(), 3);
+        assert_eq!(service.providers.len(), 4);
     }
 
     #[test]
@@ -808,10 +941,11 @@ mod tests {
         let service = AiService::default();
 
         assert_eq!(service.language, "Japanese");
-        assert_eq!(service.providers.len(), 3);
-        assert_eq!(service.providers[0].name(), "Gemini CLI");
-        assert_eq!(service.providers[1].name(), "Codex CLI");
-        assert_eq!(service.providers[2].name(), "Claude Code");
+        assert_eq!(service.providers.len(), 4);
+        assert_eq!(service.providers[0].name(), "opencode");
+        assert_eq!(service.providers[1].name(), "Gemini CLI");
+        assert_eq!(service.providers[2].name(), "Codex CLI");
+        assert_eq!(service.providers[3].name(), "Claude Code");
     }
 
     // ============================================================
@@ -950,5 +1084,75 @@ ERROR: Your access token could not be refreshed because your refresh token was a
         let stderr = "Info message\nWARNING: something\nERROR: critical issue\nMore info";
         let error = AiService::extract_error(stderr, &AiProvider::Codex);
         assert_eq!(error, "ERROR: critical issue");
+    }
+
+    // ============================================================
+    // opencode extract_error テスト
+    // ============================================================
+
+    #[test]
+    fn test_extract_error_opencode_with_error() {
+        let stderr = "Some warning\nError: model not found\nMore info";
+        let error = AiService::extract_error(stderr, &AiProvider::Opencode);
+        assert_eq!(error, "Error: model not found");
+    }
+
+    #[test]
+    fn test_extract_error_opencode_with_failed() {
+        let stderr = "Request failed: timeout\nOther info";
+        let error = AiService::extract_error(stderr, &AiProvider::Opencode);
+        assert_eq!(error, "Request failed: timeout");
+    }
+
+    #[test]
+    fn test_extract_error_opencode_empty() {
+        let stderr = "";
+        let error = AiService::extract_error(stderr, &AiProvider::Opencode);
+        assert_eq!(error, "opencode request failed");
+    }
+
+    #[test]
+    fn test_extract_error_opencode_generic() {
+        let stderr = "Some generic message without error keyword";
+        let error = AiService::extract_error(stderr, &AiProvider::Opencode);
+        assert_eq!(error, "Some generic message without error keyword");
+    }
+
+    // ============================================================
+    // format_command_for_debug テスト
+    // ============================================================
+
+    #[test]
+    fn test_format_command_for_debug_gemini() {
+        let service = AiService::new();
+        let cmd = service.format_command_for_debug(&AiProvider::Gemini, "test prompt");
+        assert!(cmd.contains("gemini -m"));
+        assert!(cmd.contains("<<< '(stdin)'"));
+    }
+
+    #[test]
+    fn test_format_command_for_debug_codex() {
+        let service = AiService::new();
+        let cmd = service.format_command_for_debug(&AiProvider::Codex, "test prompt");
+        assert!(cmd.contains("codex exec --model"));
+        assert!(cmd.contains("<<< '(stdin)'"));
+    }
+
+    #[test]
+    fn test_format_command_for_debug_claude() {
+        let service = AiService::new();
+        let cmd = service.format_command_for_debug(&AiProvider::Claude, "test prompt");
+        assert!(cmd.contains("claude --model"));
+        assert!(cmd.contains("-p"));
+        assert!(cmd.contains("<<< '(stdin)'"));
+    }
+
+    #[test]
+    fn test_format_command_for_debug_opencode() {
+        let service = AiService::new();
+        let cmd = service.format_command_for_debug(&AiProvider::Opencode, "test prompt");
+        assert!(cmd.contains("opencode run"));
+        assert!(cmd.contains("-m"));
+        assert!(cmd.contains("-f '<temp_file>'")); // opencode は一時ファイルを使用
     }
 }

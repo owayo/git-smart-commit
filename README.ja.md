@@ -32,7 +32,7 @@
 
 ## 特徴
 
-- **マルチプロバイダー対応**: Gemini CLI、Codex CLI、Claude Code を自動フォールバック付きでサポート
+- **マルチプロバイダー対応**: opencode、Gemini CLI、Codex CLI、Claude Code を自動フォールバック付きでサポート
 - **スマートクールダウン**: 失敗したプロバイダーを1時間（設定可能）優先度を下げて連続失敗を回避
 - **フォーマット自動検出**: 過去のコミットから形式を自動判断（Conventional、Bracket、Emoji等）
 - **インタラクティブ**: コミット前に確認プロンプト表示（`-y` でスキップ可能）
@@ -45,6 +45,7 @@
 - **OS**: macOS, Linux, Windows
 - **Git**: 必須
 - **AIプロバイダー**（少なくとも1つ）:
+  - opencode: [opencode ドキュメント](https://github.com/opencodeco/opencode) を参照
   - Gemini CLI: `npm install -g @google/gemini-cli`
   - Codex CLI: `npm install -g @openai/codex`
   - Claude Code: `npm install -g @anthropic-ai/claude-code`
@@ -209,7 +210,7 @@ git-sc はプロジェクトレベルでの上書きが可能な階層的設定�
 
 ```toml
 # AIプロバイダーの優先順位
-providers = ["gemini", "codex", "claude"]
+providers = ["opencode", "gemini", "codex", "claude"]
 
 # コミットメッセージの言語
 language = "Japanese"
@@ -223,6 +224,7 @@ auto_push = true
 
 # モデル設定
 [models]
+opencode = "opencode/minimax-m2.1-free"
 gemini = "flash"
 codex = "gpt-5.1-codex-mini"
 claude = "haiku"
@@ -235,7 +237,7 @@ provider_cooldown_minutes = 60
 
 | オプション | 説明 | デフォルト |
 |-----------|------|-----------|
-| `providers` | AIプロバイダーの優先順位 | `["gemini", "codex", "claude"]` |
+| `providers` | AIプロバイダーの優先順位 | `["opencode", "gemini", "codex", "claude"]` |
 | `language` | コミットメッセージの言語 | `"Japanese"` |
 | `prefix_type` | コミットプレフィックス形式 | 自動検出 |
 | `auto_push` | コミット後に自動プッシュ | `false` |

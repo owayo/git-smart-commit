@@ -11,6 +11,12 @@ pub struct ModelsConfig {
     pub gemini: String,
     pub codex: String,
     pub claude: String,
+    #[serde(default = "default_opencode_model")]
+    pub opencode: String,
+}
+
+fn default_opencode_model() -> String {
+    "opencode/minimax-m2.1-free".to_string()
 }
 
 impl Default for ModelsConfig {
@@ -19,6 +25,7 @@ impl Default for ModelsConfig {
             gemini: "flash".to_string(),
             codex: "gpt-5.1-codex-mini".to_string(),
             claude: "haiku".to_string(),
+            opencode: default_opencode_model(),
         }
     }
 }
@@ -84,6 +91,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             providers: vec![
+                "opencode".to_string(),
                 "gemini".to_string(),
                 "codex".to_string(),
                 "claude".to_string(),
@@ -148,12 +156,14 @@ impl Config {
         match toml::from_str(&content) {
             Ok(config) => Ok(Some(config)),
             Err(e) => {
+                // パースエラーの場合は警告を出してデフォルトを使用
+                // ファイルは上書きしない
                 eprintln!(
-                    "警告: グローバル設定ファイルの構文エラー ({}): {}",
+                    "警告: グローバル設定ファイルの構文エラー ({}): {}\nデフォルト設定を使用します。",
                     path.display(),
                     e
                 );
-                Ok(None)
+                Ok(Some(Config::default()))
             }
         }
     }
@@ -217,6 +227,9 @@ impl Config {
         if other.models.claude != ModelsConfig::default().claude {
             self.models.claude = other.models.claude;
         }
+        if other.models.opencode != ModelsConfig::default().opencode {
+            self.models.opencode = other.models.opencode;
+        }
 
         // provider_cooldown_minutes: デフォルトでなければ上書き
         if other.provider_cooldown_minutes != default_provider_cooldown_minutes() {
@@ -227,15 +240,8 @@ impl Config {
     /// 階層的に設定を読み込む（グローバル → プロジェクトでマージ）
     pub fn load() -> Result<Self, AppError> {
         // 1. グローバル設定を読み込む
-        let mut config = match Self::load_global()? {
-            Some(c) => c,
-            None => {
-                // グローバル設定が存在しない場合はデフォルトを作成
-                let config = Config::default();
-                config.save()?;
-                config
-            }
-        };
+        // 注意: ファイルは自動作成しない（git-sc init を使用）
+        let mut config: Config = Self::load_global()?.unwrap_or_default();
 
         // 2. プロジェクト設定を読み込んでマージ
         if let Some(project_config) = Self::load_project()? {
@@ -246,6 +252,7 @@ impl Config {
     }
 
     /// 設定をファイルに保存
+    #[allow(dead_code)]
     pub fn save(&self) -> Result<(), AppError> {
         let path = Self::global_config_path()?;
 
@@ -271,8 +278,8 @@ impl Config {
 # AI-powered smart commit message generator
 
 # AI providers priority order
-# Available: "gemini", "codex", "claude"
-providers = ["gemini", "codex", "claude"]
+# Available: "opencode", "gemini", "codex", "claude"
+providers = ["opencode", "gemini", "codex", "claude"]
 
 # Commit message language
 language = "Japanese"
@@ -293,6 +300,7 @@ provider_cooldown_minutes = 60
 gemini = "flash"
 codex = "gpt-5.1-codex-mini"
 claude = "haiku"
+opencode = "opencode/minimax-m2.1-free"
 
 # Prefix scripts (executed in order, first match wins)
 # Script receives: remote_url, branch_name as arguments
@@ -335,6 +343,7 @@ mod tests {
         assert_eq!(
             config.providers,
             vec![
+                "opencode".to_string(),
                 "gemini".to_string(),
                 "codex".to_string(),
                 "claude".to_string()
@@ -353,6 +362,7 @@ mod tests {
         assert_eq!(models.gemini, "flash");
         assert_eq!(models.codex, "gpt-5.1-codex-mini");
         assert_eq!(models.claude, "haiku");
+        assert_eq!(models.opencode, "opencode/minimax-m2.1-free");
     }
 
     #[test]
@@ -720,6 +730,7 @@ language = "Japanese"
         assert_eq!(global.models.claude, "opus");
         // 変更されていないモデルはデフォルトのまま
         assert_eq!(global.models.codex, "gpt-5.1-codex-mini");
+        assert_eq!(global.models.opencode, "opencode/minimax-m2.1-free");
     }
 
     #[test]

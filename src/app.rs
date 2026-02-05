@@ -53,6 +53,11 @@ impl App {
 
         let mut ai = AiService::from_config(&config);
 
+        // デバッグモードを設定
+        if cli.debug {
+            ai.set_debug(true);
+        }
+
         // CLIで言語が指定されていれば上書き
         if let Some(ref lang) = cli.language {
             ai.set_language(lang.clone());

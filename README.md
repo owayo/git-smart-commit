@@ -32,7 +32,7 @@
 
 ## Features
 
-- **Multi-Provider Support**: Supports Gemini CLI, Codex CLI, and Claude Code with automatic fallback
+- **Multi-Provider Support**: Supports Gemini CLI, Codex CLI, Claude Code, and opencode with automatic fallback
 - **Smart Cooldown**: Automatically demotes failed providers for 1 hour (configurable)
 - **Format Detection**: Detects commit format from recent commits (Conventional, Bracket, Emoji, etc.)
 - **Interactive**: Prompts for confirmation before committing (skip with `-y`)
@@ -48,6 +48,7 @@
   - Gemini CLI: `npm install -g @google/gemini-cli`
   - Codex CLI: `npm install -g @openai/codex`
   - Claude Code: `npm install -g @anthropic-ai/claude-code`
+  - opencode: See [opencode documentation](https://github.com/opencodeco/opencode)
 
 ## Installation
 
@@ -209,7 +210,7 @@ Project settings override global settings. Fields not specified in project confi
 
 ```toml
 # AI provider priority
-providers = ["gemini", "codex", "claude"]
+providers = ["opencode", "gemini", "codex", "claude"]
 
 # Commit message language
 language = "Japanese"
@@ -226,6 +227,7 @@ auto_push = true
 gemini = "flash"
 codex = "gpt-5.1-codex-mini"
 claude = "haiku"
+opencode = "opencode/minimax-m2.1-free"
 
 # Provider cooldown (minutes)
 provider_cooldown_minutes = 60
@@ -235,7 +237,7 @@ provider_cooldown_minutes = 60
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `providers` | AI provider priority | `["gemini", "codex", "claude"]` |
+| `providers` | AI provider priority | `["opencode", "gemini", "codex", "claude"]` |
 | `language` | Commit message language | `"Japanese"` |
 | `prefix_type` | Commit prefix format | Auto-detect |
 | `auto_push` | Auto-push after commit | `false` |
