@@ -224,7 +224,7 @@ auto_push = true
 
 # Model configuration
 [models]
-gemini = "flash"
+gemini = "gemini-2.5-flash-lite"
 codex = "gpt-5.1-codex-mini"
 claude = "haiku"
 opencode = "opencode/minimax-m2.1-free"

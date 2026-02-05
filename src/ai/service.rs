@@ -877,7 +877,7 @@ mod tests {
 
         assert_eq!(service.language, "Japanese");
         assert_eq!(service.providers.len(), 4);
-        assert_eq!(service.models.gemini, "flash");
+        assert_eq!(service.models.gemini, "gemini-2.5-flash-lite");
         assert_eq!(service.models.codex, "gpt-5.1-codex-mini");
         assert_eq!(service.models.claude, "haiku");
         assert_eq!(service.models.opencode, "opencode/minimax-m2.1-free");

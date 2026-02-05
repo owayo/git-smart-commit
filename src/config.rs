@@ -22,7 +22,7 @@ fn default_opencode_model() -> String {
 impl Default for ModelsConfig {
     fn default() -> Self {
         Self {
-            gemini: "flash".to_string(),
+            gemini: "gemini-2.5-flash-lite".to_string(),
             codex: "gpt-5.1-codex-mini".to_string(),
             claude: "haiku".to_string(),
             opencode: default_opencode_model(),
@@ -297,7 +297,7 @@ provider_cooldown_minutes = 60
 
 # Model configuration for each provider
 [models]
-gemini = "flash"
+gemini = "gemini-2.5-flash-lite"
 codex = "gpt-5.1-codex-mini"
 claude = "haiku"
 opencode = "opencode/minimax-m2.1-free"
@@ -359,7 +359,7 @@ mod tests {
     fn test_default_models_config() {
         let models = ModelsConfig::default();
 
-        assert_eq!(models.gemini, "flash");
+        assert_eq!(models.gemini, "gemini-2.5-flash-lite");
         assert_eq!(models.codex, "gpt-5.1-codex-mini");
         assert_eq!(models.claude, "haiku");
         assert_eq!(models.opencode, "opencode/minimax-m2.1-free");
@@ -377,7 +377,7 @@ language = "English"
         assert_eq!(config.providers, vec!["gemini".to_string()]);
         assert_eq!(config.language, "English");
         // デフォルト値が使用される
-        assert_eq!(config.models.gemini, "flash");
+        assert_eq!(config.models.gemini, "gemini-2.5-flash-lite");
         assert!(config.prefix_scripts.is_empty());
         assert!(config.prefix_rules.is_empty());
         assert_eq!(config.provider_cooldown_minutes, 60);
@@ -787,7 +787,7 @@ auto_push = true
 provider_cooldown_minutes = 60
 
 [models]
-gemini = "flash"
+gemini = "gemini-2.5-flash-lite"
 codex = "gpt-5.1-codex-mini"
 claude = "haiku"
 "#;
