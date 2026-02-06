@@ -360,9 +360,16 @@ Changes:
             None
         };
 
-        // Windows: cmd /C を使わず直接実行する
-        // cmd /C を使用すると、AIプロバイダーのラッパーが > nul を使った場合に
-        // 実ファイル "nul" が作成され、git add -A が失敗する問題がある
+        // Windows: cmd /C 経由で実行する（npm等でインストールされた .cmd ラッパーに対応するため）
+        // Rust の Command::new() は .cmd/.bat ファイルを直接実行できないため、cmd /C が必要
+        // nul ファイル問題は current_dir(temp_dir) で回避済み
+        #[cfg(windows)]
+        let mut cmd = {
+            let mut c = Command::new("cmd");
+            c.args(["/C", provider.command()]);
+            c
+        };
+        #[cfg(not(windows))]
         let mut cmd = Command::new(provider.command());
 
         // Add provider-specific arguments (without the prompt)
