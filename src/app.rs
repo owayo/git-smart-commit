@@ -39,6 +39,8 @@ pub struct App {
     prefix_type: Option<String>,
     /// 設定ファイルで指定された auto_push
     auto_push: Option<bool>,
+    /// NanoBuddy連携の有効/無効
+    nano_buddy: bool,
 }
 
 impl App {
@@ -70,6 +72,7 @@ impl App {
             prefix_rules: config.prefix_rules.clone(),
             prefix_type: config.prefix_type.clone(),
             auto_push: config.auto_push,
+            nano_buddy: cfg!(target_os = "macos") && config.nano_buddy,
         })
     }
 
@@ -490,6 +493,9 @@ impl App {
         if cli.auto_confirm || self.confirm_commit()? {
             self.git.commit(&message)?;
             println!("{}", "✓ Commit created successfully!".green().bold());
+            if self.nano_buddy {
+                crate::notify::notify_commit_message(&message);
+            }
 
             // auto-push が有効な場合は push も実行
             if self.git.is_auto_push_enabled(self.auto_push) {
@@ -611,6 +617,9 @@ impl App {
         if cli.auto_confirm || self.confirm_amend()? {
             self.git.amend_commit(&message)?;
             println!("{}", "✓ Commit amended successfully!".green().bold());
+            if self.nano_buddy {
+                crate::notify::notify_commit_message(&message);
+            }
         } else {
             println!("{}", "Amend cancelled.".yellow());
             return Err(AppError::UserCancelled);
@@ -742,6 +751,9 @@ impl App {
                     .green()
                     .bold()
             );
+            if self.nano_buddy {
+                crate::notify::notify_commit_message(&message);
+            }
 
             // auto-push が有効な場合は push も実行
             if self.git.is_auto_push_enabled(self.auto_push) {
@@ -993,6 +1005,9 @@ impl App {
                     .green()
                     .bold()
             );
+            if self.nano_buddy {
+                crate::notify::notify_commit_message(&message);
+            }
             println!(
                 "{}",
                 "Note: You may need to force push (git push --force) if already pushed.".yellow()

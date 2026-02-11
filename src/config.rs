@@ -75,6 +75,9 @@ pub struct Config {
     /// 自動プッシュの有効/無効
     #[serde(default)]
     pub auto_push: Option<bool>,
+    /// NanoBuddy連携を有効化 (隠しオプション)
+    #[serde(default)]
+    pub nano_buddy: bool,
 }
 
 /// デフォルトのクールダウン時間（60分 = 1時間）
@@ -103,6 +106,7 @@ impl Default for Config {
             provider_cooldown_minutes: default_provider_cooldown_minutes(),
             prefix_type: None,
             auto_push: None,
+            nano_buddy: false,
         }
     }
 }
@@ -215,6 +219,11 @@ impl Config {
         }
         if other.auto_push.is_some() {
             self.auto_push = other.auto_push;
+        }
+
+        // nano_buddy: true で上書き
+        if other.nano_buddy {
+            self.nano_buddy = true;
         }
 
         // ModelsConfig: 個別フィールドをマージ
@@ -820,5 +829,50 @@ claude = "haiku"
         assert_eq!(global.models.gemini, "pro");
         // claude は変更されていないのでグローバル設定のまま（両方 haiku）
         assert_eq!(global.models.claude, "haiku");
+    }
+
+    // ============================================================
+    // nano_buddy のテスト
+    // ============================================================
+
+    #[test]
+    fn test_config_nano_buddy_default_false() {
+        let config = Config::from_str("providers = [\"gemini\"]\nlanguage = \"Japanese\"").unwrap();
+        assert!(!config.nano_buddy);
+    }
+
+    #[test]
+    fn test_config_nano_buddy_enabled() {
+        let config = Config::from_str(
+            "providers = [\"gemini\"]\nlanguage = \"Japanese\"\nnano_buddy = true",
+        )
+        .unwrap();
+        assert!(config.nano_buddy);
+    }
+
+    #[test]
+    fn test_merge_with_nano_buddy_true_overrides() {
+        let mut global = Config::default();
+        assert!(!global.nano_buddy);
+
+        let mut project = Config::default();
+        project.nano_buddy = true;
+
+        global.merge_with(project);
+        assert!(global.nano_buddy);
+    }
+
+    #[test]
+    fn test_merge_with_nano_buddy_false_preserves() {
+        let mut global = Config {
+            nano_buddy: true,
+            ..Default::default()
+        };
+
+        let project = Config::default(); // nano_buddy = false
+
+        global.merge_with(project);
+        // false doesn't override true
+        assert!(global.nano_buddy);
     }
 }

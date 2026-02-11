@@ -5,6 +5,7 @@ mod config;
 mod error;
 mod git;
 mod init;
+mod notify;
 mod state;
 
 use clap::Parser;
