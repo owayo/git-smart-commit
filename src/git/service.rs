@@ -311,8 +311,8 @@ impl GitService {
     /// 全ての変更をステージング
     pub fn stage_all(&self) -> Result<(), AppError> {
         // Windows: "nul" はWindowsの予約デバイス名
-        // AIプロバイダー呼び出し時に意図せず "nul" ファイルが作成されることがあり、
-        // Git for Windows は nul をインデックス化できないため事前に削除する
+        // AIプロバイダー呼び出し時に意図せず "nul" ファイルが作成されることがあるため、
+        // nul ファイルの削除 + ステージング除外の二重防御を行う
         #[cfg(windows)]
         {
             let nul_path = self.repo_path.join("nul");
@@ -321,8 +321,14 @@ impl GitService {
             }
         }
 
+        // Windows: "nul" を除外してステージング（pathspecの除外指定を使用）
+        #[cfg(windows)]
+        let args: &[&str] = &["add", "-A", "--", ".", ":!nul"];
+        #[cfg(not(windows))]
+        let args: &[&str] = &["add", "-A"];
+
         let output = Command::new("git")
-            .args(["add", "-A"])
+            .args(args)
             .current_dir(&self.repo_path)
             .output()
             .map_err(|e| AppError::GitError(e.to_string()))?;
@@ -331,6 +337,15 @@ impl GitService {
             return Err(AppError::GitError(
                 String::from_utf8_lossy(&output.stderr).to_string(),
             ));
+        }
+
+        // Windows: 万が一 nul がステージされていた場合はアンステージ
+        #[cfg(windows)]
+        {
+            let _ = Command::new("git")
+                .args(["reset", "HEAD", "--", "nul"])
+                .current_dir(&self.repo_path)
+                .output();
         }
 
         Ok(())
@@ -1372,5 +1387,164 @@ index 1234567..abcdefg 100644
         let service = GitService::new();
         // 未設定の場合は false
         assert!(!service.is_auto_push_enabled(None));
+    }
+
+    // ============================================================
+    // filter_ignored_files のテスト (with actual ignore patterns)
+    // ============================================================
+
+    #[test]
+    fn test_filter_ignored_files_with_patterns() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let ignore_path = temp_dir.path().join(".git-sc-ignore");
+        std::fs::write(&ignore_path, "*.lock\nnode_modules/\n").unwrap();
+
+        let mut builder = GitignoreBuilder::new(temp_dir.path());
+        builder.add(&ignore_path);
+        let ignore = builder.build().unwrap();
+
+        let diff = r#"diff --git a/src/main.rs b/src/main.rs
+index 1234567..abcdefg 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,3 +1,4 @@
++new line
+diff --git a/Cargo.lock b/Cargo.lock
+index aaaaaaa..bbbbbbb 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1,3 +1,4 @@
++lock change"#;
+
+        let result = GitService::filter_ignored_files(diff, &ignore);
+        assert!(result.contains("src/main.rs"));
+        assert!(!result.contains("Cargo.lock"));
+    }
+
+    #[test]
+    fn test_filter_ignored_files_empty_diff() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let ignore_path = temp_dir.path().join(".git-sc-ignore");
+        std::fs::write(&ignore_path, "*.lock\n").unwrap();
+
+        let mut builder = GitignoreBuilder::new(temp_dir.path());
+        builder.add(&ignore_path);
+        let ignore = builder.build().unwrap();
+
+        let result = GitService::filter_ignored_files("", &ignore);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_filter_ignored_files_all_ignored() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let ignore_path = temp_dir.path().join(".git-sc-ignore");
+        std::fs::write(&ignore_path, "*.lock\n").unwrap();
+
+        let mut builder = GitignoreBuilder::new(temp_dir.path());
+        builder.add(&ignore_path);
+        let ignore = builder.build().unwrap();
+
+        let diff = r#"diff --git a/Cargo.lock b/Cargo.lock
+index aaaaaaa..bbbbbbb 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1,3 +1,4 @@
++lock change"#;
+
+        let result = GitService::filter_ignored_files(diff, &ignore);
+        assert!(!result.contains("Cargo.lock"));
+    }
+
+    #[test]
+    fn test_filter_ignored_files_none_ignored() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let ignore_path = temp_dir.path().join(".git-sc-ignore");
+        std::fs::write(&ignore_path, "*.xyz\n").unwrap();
+
+        let mut builder = GitignoreBuilder::new(temp_dir.path());
+        builder.add(&ignore_path);
+        let ignore = builder.build().unwrap();
+
+        let diff = r#"diff --git a/src/main.rs b/src/main.rs
+index 1234567..abcdefg 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,3 +1,4 @@
++new line"#;
+
+        let result = GitService::filter_ignored_files(diff, &ignore);
+        assert!(result.contains("src/main.rs"));
+        assert!(result.contains("new line"));
+    }
+
+    // ============================================================
+    // filter_binary_diff の追加エッジケーステスト
+    // ============================================================
+
+    #[test]
+    fn test_filter_binary_diff_text_with_binary_keyword_in_filename() {
+        let diff = r#"diff --git a/binary_helper.rs b/binary_helper.rs
+index 1234567..abcdefg 100644
+--- a/binary_helper.rs
++++ b/binary_helper.rs
+@@ -1 +1,2 @@
++// binary helper code"#;
+
+        let result = GitService::filter_binary_diff(diff);
+        assert!(result.contains("binary_helper.rs"));
+        assert!(result.contains("binary helper code"));
+    }
+
+    #[test]
+    fn test_filter_binary_diff_multiple_text_files() {
+        let diff = r#"diff --git a/src/a.rs b/src/a.rs
+index 111..222 100644
+--- a/src/a.rs
++++ b/src/a.rs
+@@ -1 +1,2 @@
++// a
+diff --git a/src/b.rs b/src/b.rs
+index 333..444 100644
+--- a/src/b.rs
++++ b/src/b.rs
+@@ -1 +1,2 @@
++// b
+diff --git a/src/c.rs b/src/c.rs
+index 555..666 100644
+--- a/src/c.rs
++++ b/src/c.rs
+@@ -1 +1,2 @@
++// c"#;
+
+        let result = GitService::filter_binary_diff(diff);
+        assert!(result.contains("src/a.rs"));
+        assert!(result.contains("src/b.rs"));
+        assert!(result.contains("src/c.rs"));
+    }
+
+    // ============================================================
+    // truncate_diff の追加テスト
+    // ============================================================
+
+    #[test]
+    fn test_truncate_diff_no_newlines() {
+        let diff: String = "x".repeat(MAX_DIFF_CHARS + 100);
+        let result = GitService::truncate_diff(&diff);
+        assert!(result.contains("... (diff truncated: exceeded 10000 characters)"));
+    }
+
+    #[test]
+    fn test_truncate_diff_empty() {
+        let result = GitService::truncate_diff("");
+        assert_eq!(result, "");
     }
 }

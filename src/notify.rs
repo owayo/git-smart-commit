@@ -92,4 +92,21 @@ mod tests {
         let first_line = msg.lines().next().unwrap_or(msg);
         assert_eq!(first_line, "");
     }
+
+    #[test]
+    fn test_notify_with_unicode() {
+        notify_commit_message("feat: Unicode テスト 日本語");
+    }
+
+    #[test]
+    fn test_notify_with_emoji() {
+        notify_commit_message("feat: add feature ✨🎉🐛");
+    }
+
+    #[test]
+    fn test_first_line_with_body_bullets() {
+        let msg = "feat: add feature\n\n- detail 1\n- detail 2";
+        let first_line = msg.lines().next().unwrap_or(msg);
+        assert_eq!(first_line, "feat: add feature");
+    }
 }

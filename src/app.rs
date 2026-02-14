@@ -1228,4 +1228,97 @@ mod tests {
     fn test_is_valid_prefix_type(#[case] prefix_type: &str, #[case] expected: bool) {
         assert_eq!(is_valid_prefix_type(prefix_type), expected);
     }
+
+    // ============================================================
+    // get_debug_params_for_prefix_mode のテスト
+    // ============================================================
+
+    #[test]
+    fn test_debug_params_script_mode() {
+        let prefix_mode = PrefixMode::Script(ScriptResult::Prefix("PREFIX ".to_string()));
+        let recent_commits = vec!["feat: test".to_string()];
+        let (prefix_type, commits) =
+            App::get_debug_params_for_prefix_mode(&prefix_mode, &recent_commits, false);
+        assert_eq!(prefix_type, Some("plain"));
+        assert!(commits.is_empty());
+    }
+
+    #[test]
+    fn test_debug_params_rule_mode() {
+        let prefix_mode = PrefixMode::Rule("bracket".to_string());
+        let recent_commits = vec!["feat: test".to_string()];
+        let (prefix_type, commits) =
+            App::get_debug_params_for_prefix_mode(&prefix_mode, &recent_commits, false);
+        assert_eq!(prefix_type, Some("bracket"));
+        assert_eq!(commits.len(), 1);
+    }
+
+    #[test]
+    fn test_debug_params_config_mode() {
+        let prefix_mode = PrefixMode::Config("emoji".to_string());
+        let recent_commits = vec!["feat: test".to_string()];
+        let (prefix_type, commits) =
+            App::get_debug_params_for_prefix_mode(&prefix_mode, &recent_commits, false);
+        assert_eq!(prefix_type, Some("emoji"));
+        assert_eq!(commits.len(), 1);
+    }
+
+    #[test]
+    fn test_debug_params_auto_mode_normal() {
+        let prefix_mode = PrefixMode::Auto;
+        let recent_commits = vec!["feat: test".to_string()];
+        let (prefix_type, commits) =
+            App::get_debug_params_for_prefix_mode(&prefix_mode, &recent_commits, false);
+        assert_eq!(prefix_type, None);
+        assert_eq!(commits.len(), 1);
+    }
+
+    #[test]
+    fn test_debug_params_auto_mode_squash() {
+        let prefix_mode = PrefixMode::Auto;
+        let recent_commits = vec!["feat: test".to_string()];
+        let (prefix_type, commits) =
+            App::get_debug_params_for_prefix_mode(&prefix_mode, &recent_commits, true);
+        assert_eq!(prefix_type, Some("conventional"));
+        assert!(commits.is_empty());
+    }
+
+    #[test]
+    fn test_debug_params_script_failed() {
+        let prefix_mode = PrefixMode::Script(ScriptResult::Failed);
+        let recent_commits = vec!["fix: bug".to_string(), "feat: add".to_string()];
+        let (prefix_type, commits) =
+            App::get_debug_params_for_prefix_mode(&prefix_mode, &recent_commits, false);
+        assert_eq!(prefix_type, Some("plain"));
+        assert!(commits.is_empty());
+    }
+
+    #[test]
+    fn test_debug_params_script_empty() {
+        let prefix_mode = PrefixMode::Script(ScriptResult::Empty);
+        let recent_commits = vec![];
+        let (prefix_type, commits) =
+            App::get_debug_params_for_prefix_mode(&prefix_mode, &recent_commits, false);
+        assert_eq!(prefix_type, Some("plain"));
+        assert!(commits.is_empty());
+    }
+
+    // ============================================================
+    // VALID_PREFIX_TYPES 定数のテスト
+    // ============================================================
+
+    #[test]
+    fn test_valid_prefix_types_count() {
+        assert_eq!(VALID_PREFIX_TYPES.len(), 6);
+    }
+
+    #[test]
+    fn test_valid_prefix_types_contains_all() {
+        assert!(VALID_PREFIX_TYPES.contains(&"conventional"));
+        assert!(VALID_PREFIX_TYPES.contains(&"bracket"));
+        assert!(VALID_PREFIX_TYPES.contains(&"colon"));
+        assert!(VALID_PREFIX_TYPES.contains(&"emoji"));
+        assert!(VALID_PREFIX_TYPES.contains(&"plain"));
+        assert!(VALID_PREFIX_TYPES.contains(&"none"));
+    }
 }

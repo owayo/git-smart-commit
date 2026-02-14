@@ -278,4 +278,85 @@ mod tests {
 
         assert!(deserialized.provider_failures.contains_key("gemini"));
     }
+
+    #[test]
+    fn test_record_failure_overwrites_previous() {
+        let mut state = State::default();
+        state.record_failure("gemini");
+        let first_time = state.provider_failures.get("gemini").unwrap().failed_at;
+
+        // 同じプロバイダーに再度失敗を記録
+        state.record_failure("gemini");
+        let second_time = state.provider_failures.get("gemini").unwrap().failed_at;
+
+        // 2回目のタイムスタンプは1回目以上
+        assert!(second_time >= first_time);
+        // エントリは1つのまま
+        assert_eq!(state.provider_failures.len(), 1);
+    }
+
+    #[test]
+    fn test_cleanup_expired_keeps_recent() {
+        let mut state = State::default();
+        state.record_failure("gemini");
+        state.record_failure("codex");
+
+        // 両方とも直近の失敗なので、クリーンアップしても残る
+        state.cleanup_expired(60);
+        assert_eq!(state.provider_failures.len(), 2);
+    }
+
+    #[test]
+    fn test_cleanup_expired_zero_cooldown() {
+        let mut state = State::default();
+        state.record_failure("gemini");
+
+        // クールダウン0分の場合、全エントリが期限切れ
+        state.cleanup_expired(0);
+        assert!(state.provider_failures.is_empty());
+    }
+
+    #[test]
+    fn test_reorder_providers_empty_providers() {
+        let state = State::default();
+        let providers: Vec<String> = vec![];
+        let reordered = state.reorder_providers(providers, 60);
+        assert!(reordered.is_empty());
+    }
+
+    #[test]
+    fn test_reorder_providers_all_demoted() {
+        let mut state = State::default();
+        state.record_failure("gemini");
+        state.record_failure("codex");
+        state.record_failure("claude");
+
+        let providers = vec![
+            "gemini".to_string(),
+            "codex".to_string(),
+            "claude".to_string(),
+        ];
+
+        let reordered = state.reorder_providers(providers, 60);
+        // 全プロバイダーが降格されても、リスト自体は残る
+        assert_eq!(reordered.len(), 3);
+    }
+
+    #[test]
+    fn test_get_demoted_providers_zero_cooldown() {
+        let mut state = State::default();
+        state.record_failure("gemini");
+
+        // クールダウン0の場合、全エントリが即座に期限切れ
+        let demoted = state.get_demoted_providers(0);
+        assert!(demoted.is_empty());
+    }
+
+    #[test]
+    fn test_state_path_returns_valid_path() {
+        let result = State::state_path();
+        assert!(result.is_ok());
+        let path = result.unwrap();
+        assert!(path.to_str().unwrap().contains(".providers-state"));
+    }
 }

@@ -362,7 +362,7 @@ Changes:
 
         // Windows: cmd /C 経由で実行する（npm等でインストールされた .cmd ラッパーに対応するため）
         // Rust の Command::new() は .cmd/.bat ファイルを直接実行できないため、cmd /C が必要
-        // nul ファイル問題は current_dir(temp_dir) で回避済み
+        // nul ファイル問題は stage_all() 側で防御済み
         #[cfg(windows)]
         let mut cmd = {
             let mut c = Command::new("cmd");
@@ -413,13 +413,6 @@ Changes:
             println!("{}", cmd_str.cyan());
             println!("{}", "─".repeat(50).dimmed());
             println!();
-        }
-
-        // Windows: 防御策として作業ディレクトリをテンポラリに設定
-        // 万が一 nul ファイルが生成されても、リポジトリ外に追い出す
-        #[cfg(windows)]
-        {
-            cmd.current_dir(std::env::temp_dir());
         }
 
         // Pass prompt via stdin (except opencode which uses temp file)
@@ -1161,5 +1154,107 @@ ERROR: Your access token could not be refreshed because your refresh token was a
         assert!(cmd.contains("opencode run"));
         assert!(cmd.contains("-m"));
         assert!(cmd.contains("-f '<temp_file>'")); // opencode は一時ファイルを使用
+    }
+
+    // ============================================================
+    // ensure_body_separator の追加テスト
+    // ============================================================
+
+    #[test]
+    fn test_ensure_body_separator_empty() {
+        let result = AiService::ensure_body_separator("");
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_ensure_body_separator_single_line() {
+        let result = AiService::ensure_body_separator("feat: add feature");
+        assert_eq!(result, "feat: add feature");
+    }
+
+    #[test]
+    fn test_ensure_body_separator_already_has_separator() {
+        let result =
+            AiService::ensure_body_separator("feat: add feature\n\n- detail 1\n- detail 2");
+        assert_eq!(result, "feat: add feature\n\n- detail 1\n- detail 2");
+    }
+
+    #[test]
+    fn test_ensure_body_separator_missing_separator() {
+        let result = AiService::ensure_body_separator("feat: add feature\n- detail 1\n- detail 2");
+        assert_eq!(result, "feat: add feature\n\n- detail 1\n- detail 2");
+    }
+
+    #[test]
+    fn test_ensure_body_separator_three_lines_no_separator() {
+        let result = AiService::ensure_body_separator("subject\nbody line 1\nbody line 2");
+        assert_eq!(result, "subject\n\nbody line 1\nbody line 2");
+    }
+
+    // ============================================================
+    // AiProvider config_key のテスト
+    // ============================================================
+
+    #[test]
+    fn test_ai_provider_config_key() {
+        assert_eq!(AiProvider::Gemini.config_key(), "gemini");
+        assert_eq!(AiProvider::Codex.config_key(), "codex");
+        assert_eq!(AiProvider::Claude.config_key(), "claude");
+        assert_eq!(AiProvider::Opencode.config_key(), "opencode");
+    }
+
+    // ============================================================
+    // AiService set_debug のテスト
+    // ============================================================
+
+    #[test]
+    fn test_ai_service_set_debug() {
+        let mut service = AiService::new();
+        assert!(!service.debug);
+        service.set_debug(true);
+        assert!(service.debug);
+        service.set_debug(false);
+        assert!(!service.debug);
+    }
+
+    // ============================================================
+    // AiService language のテスト
+    // ============================================================
+
+    #[test]
+    fn test_ai_service_language_getter() {
+        let service = AiService::new();
+        assert_eq!(service.language(), "Japanese");
+    }
+
+    #[test]
+    fn test_ai_service_language_after_set() {
+        let mut service = AiService::new();
+        service.set_language("French".to_string());
+        assert_eq!(service.language(), "French");
+    }
+
+    // ============================================================
+    // AiService from_config with cooldown のテスト
+    // ============================================================
+
+    #[test]
+    fn test_ai_service_from_config_custom_cooldown() {
+        let config = Config {
+            provider_cooldown_minutes: 30,
+            ..Default::default()
+        };
+        let service = AiService::from_config(&config);
+        assert_eq!(service.cooldown_minutes, 30);
+    }
+
+    #[test]
+    fn test_ai_service_from_config_zero_cooldown() {
+        let config = Config {
+            provider_cooldown_minutes: 0,
+            ..Default::default()
+        };
+        let service = AiService::from_config(&config);
+        assert_eq!(service.cooldown_minutes, 0);
     }
 }

@@ -855,8 +855,10 @@ claude = "haiku"
         let mut global = Config::default();
         assert!(!global.nano_buddy);
 
-        let mut project = Config::default();
-        project.nano_buddy = true;
+        let project = Config {
+            nano_buddy: true,
+            ..Default::default()
+        };
 
         global.merge_with(project);
         assert!(global.nano_buddy);

@@ -121,4 +121,40 @@ mod tests {
             "Config content should deserialize to Config"
         );
     }
+
+    #[test]
+    fn test_default_config_values_match_defaults() {
+        let content = Config::default_config_content();
+        let config: Config = toml::from_str(&content).unwrap();
+        let defaults = Config::default();
+
+        assert_eq!(config.providers, defaults.providers);
+        assert_eq!(config.language, defaults.language);
+        assert_eq!(
+            config.provider_cooldown_minutes,
+            defaults.provider_cooldown_minutes
+        );
+        assert_eq!(config.models.gemini, defaults.models.gemini);
+        assert_eq!(config.models.codex, defaults.models.codex);
+        assert_eq!(config.models.claude, defaults.models.claude);
+        assert_eq!(config.models.opencode, defaults.models.opencode);
+    }
+
+    #[test]
+    fn test_default_config_content_has_all_provider_options() {
+        let content = Config::default_config_content();
+        assert!(content.contains("opencode"));
+        assert!(content.contains("gemini"));
+        assert!(content.contains("codex"));
+        assert!(content.contains("claude"));
+    }
+
+    #[test]
+    fn test_default_config_content_has_prefix_type_options() {
+        let content = Config::default_config_content();
+        assert!(content.contains("conventional"));
+        assert!(content.contains("bracket"));
+        assert!(content.contains("emoji"));
+        assert!(content.contains("plain"));
+    }
 }
