@@ -128,36 +128,45 @@ impl AiService {
         prompt: &str,
         temp_file_path: Option<&std::path::Path>,
     ) -> String {
+        let escaped_prompt = prompt.replace('\'', "'\\''");
         match provider {
             AiProvider::Gemini => {
-                format!(
-                    "echo '{}' | gemini -m '{}'",
-                    prompt.replace('\'', "'\\''"),
-                    self.models.gemini
-                )
+                let model_arg = if self.models.gemini.is_empty() {
+                    String::new()
+                } else {
+                    format!(" -m '{}'", self.models.gemini)
+                };
+                format!("echo '{}' | gemini{}", escaped_prompt, model_arg)
             }
             AiProvider::Codex => {
-                format!(
-                    "echo '{}' | codex exec --model '{}'",
-                    prompt.replace('\'', "'\\''"),
-                    self.models.codex
-                )
+                let model_arg = if self.models.codex.is_empty() {
+                    String::new()
+                } else {
+                    format!(" --model '{}'", self.models.codex)
+                };
+                format!("echo '{}' | codex exec{}", escaped_prompt, model_arg)
             }
             AiProvider::Claude => {
-                format!(
-                    "echo '{}' | claude --model '{}' -p",
-                    prompt.replace('\'', "'\\''"),
-                    self.models.claude
-                )
+                let model_arg = if self.models.claude.is_empty() {
+                    String::new()
+                } else {
+                    format!(" --model '{}'", self.models.claude)
+                };
+                format!("echo '{}' | claude{} -p", escaped_prompt, model_arg)
             }
             AiProvider::Opencode => {
                 let file_display = temp_file_path
                     .and_then(|p| p.to_str())
                     .map(|s| s.replace('\\', "/"))
                     .unwrap_or_else(|| "<temp_file>".to_string());
+                let model_arg = if self.models.opencode.is_empty() {
+                    String::new()
+                } else {
+                    format!(" -m '{}'", self.models.opencode)
+                };
                 format!(
-                    "opencode run 'Follow the instructions in the attached file exactly. Output only the commit message.' -m '{}' -f '{}' --print-logs",
-                    self.models.opencode,
+                    "opencode run 'Follow the instructions in the attached file exactly. Output only the commit message.'{} -f '{}' --print-logs",
+                    model_arg,
                     file_display
                 )
             }
@@ -401,20 +410,28 @@ Changes:
         let mut cmd = Command::new(provider.command());
 
         // Add provider-specific arguments (without the prompt)
+        // 各プロバイダーの models が空文字列の場合、モデルパラメータを省略する
         match provider {
             AiProvider::Gemini => {
-                cmd.args(["-m", &self.models.gemini]);
+                if !self.models.gemini.is_empty() {
+                    cmd.args(["-m", &self.models.gemini]);
+                }
             }
             AiProvider::Codex => {
-                cmd.args(["exec", "--model", &self.models.codex]);
+                cmd.arg("exec");
+                if !self.models.codex.is_empty() {
+                    cmd.args(["--model", &self.models.codex]);
+                }
             }
             AiProvider::Claude => {
-                cmd.args(["--model", &self.models.claude, "-p"]);
+                if !self.models.claude.is_empty() {
+                    cmd.args(["--model", &self.models.claude]);
+                }
+                cmd.arg("-p");
             }
             AiProvider::Opencode => {
-                // opencode run "message" -m "provider:model" -f <temp_file>
+                // opencode run "message" [-m "provider:model"] -f <temp_file>
                 // プロンプトは一時ファイル経由で渡す（ファイル内に全指示を含む）
-                // メッセージを先に、オプションを後に
                 if let Some(ref path) = temp_file_path {
                     // Windows: バックスラッシュをフォワードスラッシュに正規化
                     // cmd /C 経由やCLIツール間でのパス受け渡しの互換性対策
@@ -422,11 +439,11 @@ Changes:
                     cmd.args([
                         "run",
                         "Follow the instructions in the attached file exactly. Output only the commit message.",
-                        "-m",
-                        &self.models.opencode,
-                        "-f",
-                        &path_str,
                     ]);
+                    if !self.models.opencode.is_empty() {
+                        cmd.args(["-m", self.models.opencode.as_str()]);
+                    }
+                    cmd.args(["-f", &path_str]);
                     // デバッグモードの場合は --print-logs を追加
                     if self.debug {
                         cmd.arg("--print-logs");
@@ -969,7 +986,7 @@ mod tests {
         assert_eq!(service.models.gemini, "gemini-2.5-flash-lite");
         assert_eq!(service.models.codex, "gpt-5.1-codex-mini");
         assert_eq!(service.models.claude, "haiku");
-        assert_eq!(service.models.opencode, "opencode/minimax-m2.1-free");
+        assert_eq!(service.models.opencode, "opencode/minimax-m2.5-free");
     }
 
     #[test]
@@ -1260,6 +1277,45 @@ ERROR: Your access token could not be refreshed because your refresh token was a
         let service = AiService::new();
         let cmd = service.format_command_for_debug(&AiProvider::Gemini, "it's a test", None);
         assert!(cmd.contains("it'\\''s a test"));
+    }
+
+    #[test]
+    fn test_format_command_for_debug_gemini_empty_model() {
+        let mut service = AiService::new();
+        service.models.gemini = String::new();
+        let cmd = service.format_command_for_debug(&AiProvider::Gemini, "test", None);
+        assert!(cmd.contains("echo 'test' | gemini"));
+        assert!(!cmd.contains("-m"));
+    }
+
+    #[test]
+    fn test_format_command_for_debug_codex_empty_model() {
+        let mut service = AiService::new();
+        service.models.codex = String::new();
+        let cmd = service.format_command_for_debug(&AiProvider::Codex, "test", None);
+        assert!(cmd.contains("codex exec"));
+        assert!(!cmd.contains("--model"));
+    }
+
+    #[test]
+    fn test_format_command_for_debug_claude_empty_model() {
+        let mut service = AiService::new();
+        service.models.claude = String::new();
+        let cmd = service.format_command_for_debug(&AiProvider::Claude, "test", None);
+        assert!(cmd.contains("claude"));
+        assert!(cmd.contains("-p"));
+        assert!(!cmd.contains("--model"));
+    }
+
+    #[test]
+    fn test_format_command_for_debug_opencode_empty_model() {
+        let mut service = AiService::new();
+        service.models.opencode = String::new();
+        let temp_path = std::path::Path::new("/tmp/test.txt");
+        let cmd = service.format_command_for_debug(&AiProvider::Opencode, "test", Some(temp_path));
+        assert!(cmd.contains("opencode run"));
+        assert!(!cmd.contains("-m"));
+        assert!(cmd.contains("-f '/tmp/test.txt'"));
     }
 
     // ============================================================

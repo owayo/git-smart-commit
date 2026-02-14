@@ -16,7 +16,7 @@ pub struct ModelsConfig {
 }
 
 fn default_opencode_model() -> String {
-    "opencode/minimax-m2.1-free".to_string()
+    "opencode/minimax-m2.5-free".to_string()
 }
 
 impl Default for ModelsConfig {
@@ -309,7 +309,7 @@ provider_cooldown_minutes = 60
 gemini = "gemini-2.5-flash-lite"
 codex = "gpt-5.1-codex-mini"
 claude = "haiku"
-opencode = "opencode/minimax-m2.1-free"
+opencode = "opencode/minimax-m2.5-free"
 
 # Prefix scripts (executed in order, first match wins)
 # Script receives: remote_url, branch_name as arguments
@@ -371,7 +371,7 @@ mod tests {
         assert_eq!(models.gemini, "gemini-2.5-flash-lite");
         assert_eq!(models.codex, "gpt-5.1-codex-mini");
         assert_eq!(models.claude, "haiku");
-        assert_eq!(models.opencode, "opencode/minimax-m2.1-free");
+        assert_eq!(models.opencode, "opencode/minimax-m2.5-free");
     }
 
     #[test]
@@ -739,7 +739,7 @@ language = "Japanese"
         assert_eq!(global.models.claude, "opus");
         // 変更されていないモデルはデフォルトのまま
         assert_eq!(global.models.codex, "gpt-5.1-codex-mini");
-        assert_eq!(global.models.opencode, "opencode/minimax-m2.1-free");
+        assert_eq!(global.models.opencode, "opencode/minimax-m2.5-free");
     }
 
     #[test]
