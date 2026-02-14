@@ -136,7 +136,7 @@ impl AiService {
                 } else {
                     format!(" -m '{}'", self.models.gemini)
                 };
-                format!("echo '{}' | gemini{}", escaped_prompt, model_arg)
+                format!("gemini{} -p '{}'", model_arg, escaped_prompt)
             }
             AiProvider::Codex => {
                 let model_arg = if self.models.codex.is_empty() {
@@ -416,6 +416,7 @@ Changes:
                 if !self.models.gemini.is_empty() {
                     cmd.args(["-m", &self.models.gemini]);
                 }
+                cmd.args(["-p", prompt]);
             }
             AiProvider::Codex => {
                 cmd.arg("exec");
@@ -476,8 +477,10 @@ Changes:
             println!();
         }
 
-        // Pass prompt via stdin (except opencode which uses temp file)
-        let uses_stdin = temp_file_path.is_none();
+        // stdin でプロンプトを渡すプロバイダー: codex, claude
+        // -p 引数で渡す: gemini
+        // 一時ファイル経由: opencode
+        let uses_stdin = matches!(provider, AiProvider::Codex | AiProvider::Claude);
         if uses_stdin {
             cmd.stdin(Stdio::piped());
         } else {
@@ -498,7 +501,7 @@ Changes:
             }
         })?;
 
-        // Write prompt to stdin (for non-opencode providers)
+        // Write prompt to stdin (codex, claude)
         if uses_stdin {
             if let Some(mut stdin) = child.stdin.take() {
                 stdin.write_all(prompt.as_bytes()).map_err(|e| {
@@ -1233,7 +1236,7 @@ ERROR: Your access token could not be refreshed because your refresh token was a
         let service = AiService::new();
         let cmd = service.format_command_for_debug(&AiProvider::Gemini, "test prompt", None);
         assert!(cmd.contains("gemini -m"));
-        assert!(cmd.contains("echo 'test prompt'"));
+        assert!(cmd.contains("-p 'test prompt'"));
     }
 
     #[test]
@@ -1284,7 +1287,7 @@ ERROR: Your access token could not be refreshed because your refresh token was a
         let mut service = AiService::new();
         service.models.gemini = String::new();
         let cmd = service.format_command_for_debug(&AiProvider::Gemini, "test", None);
-        assert!(cmd.contains("echo 'test' | gemini"));
+        assert!(cmd.contains("gemini -p 'test'"));
         assert!(!cmd.contains("-m"));
     }
 
