@@ -159,6 +159,7 @@ git-sc -n
 
 | Option | Short | Description |
 |--------|-------|-------------|
+| `--quiet` | `-q` | Suppress progress messages |
 | `--debug` | `-d` | Show prompts sent to AI |
 | `--help` | `-h` | Print help |
 | `--version` | `-V` | Print version |
@@ -237,6 +238,9 @@ opencode = "opencode/minimax-m2.1-free"
 
 # Provider cooldown (minutes)
 provider_cooldown_minutes = 60
+
+# Provider timeout (seconds) per call
+provider_timeout_seconds = 30
 ```
 
 ### Configuration Options
@@ -249,6 +253,7 @@ provider_cooldown_minutes = 60
 | `auto_push` | Auto-push after commit | `false` |
 | `models.*` | Model for each provider | See config |
 | `provider_cooldown_minutes` | Failed provider cooldown | `60` |
+| `provider_timeout_seconds` | Provider call timeout | `30` |
 | `prefix_rules` | URL-based prefix format | `[]` |
 | `prefix_scripts` | External prefix scripts | `[]` |
 
@@ -327,7 +332,7 @@ Add to `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "git-sc --all --yes"
+            "command": "git-sc --all --yes --quiet"
           }
         ]
       }

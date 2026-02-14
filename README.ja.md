@@ -159,6 +159,7 @@ git-sc -n
 
 | オプション | 短縮 | 説明 |
 |-----------|------|------|
+| `--quiet` | `-q` | 進捗メッセージを抑制 |
 | `--debug` | `-d` | AIに渡すプロンプトを表示 |
 | `--help` | `-h` | ヘルプを表示 |
 | `--version` | `-V` | バージョンを表示 |
@@ -237,6 +238,9 @@ claude = "haiku"
 
 # プロバイダークールダウン（分）
 provider_cooldown_minutes = 60
+
+# プロバイダータイムアウト（秒）
+provider_timeout_seconds = 30
 ```
 
 ### 設定オプション
@@ -249,6 +253,7 @@ provider_cooldown_minutes = 60
 | `auto_push` | コミット後に自動プッシュ | `false` |
 | `models.*` | 各プロバイダーのモデル | 設定参照 |
 | `provider_cooldown_minutes` | 失敗プロバイダーのクールダウン | `60` |
+| `provider_timeout_seconds` | プロバイダー呼び出しのタイムアウト | `30` |
 | `prefix_rules` | URLベースのプレフィックス形式 | `[]` |
 | `prefix_scripts` | 外部プレフィックススクリプト | `[]` |
 
@@ -327,7 +332,7 @@ auto_push = true
         "hooks": [
           {
             "type": "command",
-            "command": "git-sc --all --yes"
+            "command": "git-sc --all --yes --quiet"
           }
         ]
       }

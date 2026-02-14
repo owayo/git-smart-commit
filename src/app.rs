@@ -384,7 +384,9 @@ impl App {
 
         // --allフラグがあれば全変更をステージング
         if cli.stage_all {
-            println!("{}", "Staging all changes...".cyan());
+            if !cli.quiet {
+                println!("{}", "Staging all changes...".cyan());
+            }
             self.git.stage_all()?;
         }
 
@@ -394,7 +396,9 @@ impl App {
             staged_diff
         } else if cli.stage_all {
             // --allフラグ指定時で変更がない場合は正常終了
-            println!("{}", "変更がありません。".cyan());
+            if !cli.quiet {
+                println!("{}", "変更がありません。".cyan());
+            }
             return Ok(());
         } else {
             // デフォルト: ステージ済みのみ

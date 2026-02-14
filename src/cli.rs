@@ -62,6 +62,10 @@ pub struct Cli {
     /// Debug mode (show prompt sent to AI)
     #[arg(short = 'd', long = "debug")]
     pub debug: bool,
+
+    /// Suppress progress messages (useful for scripting/hooks)
+    #[arg(short = 'q', long = "quiet")]
+    pub quiet: bool,
 }
 
 #[cfg(test)]
@@ -85,6 +89,7 @@ mod tests {
         assert!(!cli.with_body);
         assert!(cli.language.is_none());
         assert!(!cli.debug);
+        assert!(!cli.quiet);
     }
 
     #[test]
@@ -312,6 +317,26 @@ mod tests {
             Some(vec!["abc1234".to_string(), "def5678".to_string()])
         );
         assert_eq!(cli.language, Some("English".to_string()));
+    }
+
+    #[test]
+    fn test_cli_quiet_short() {
+        let cli = Cli::parse_from(["git-sc", "-q"]);
+        assert!(cli.quiet);
+    }
+
+    #[test]
+    fn test_cli_quiet_long() {
+        let cli = Cli::parse_from(["git-sc", "--quiet"]);
+        assert!(cli.quiet);
+    }
+
+    #[test]
+    fn test_cli_quiet_with_all_and_yes() {
+        let cli = Cli::parse_from(["git-sc", "-a", "-y", "-q"]);
+        assert!(cli.stage_all);
+        assert!(cli.auto_confirm);
+        assert!(cli.quiet);
     }
 
     #[test]

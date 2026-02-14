@@ -59,6 +59,7 @@ pub struct AiService {
     language: String,
     models: ModelsConfig,
     cooldown_minutes: u64,
+    timeout_seconds: u64,
     debug: bool,
 }
 
@@ -96,6 +97,7 @@ impl AiService {
             language: config.language.clone(),
             models: config.models.clone(),
             cooldown_minutes: config.provider_cooldown_minutes,
+            timeout_seconds: config.provider_timeout_seconds,
             debug: false,
         }
     }
@@ -112,6 +114,7 @@ impl AiService {
             language: "Japanese".to_string(),
             models: ModelsConfig::default(),
             cooldown_minutes: 60, // デフォルト1時間
+            timeout_seconds: 30,  // デフォルト30秒
             debug: false,
         }
     }
@@ -136,7 +139,8 @@ impl AiService {
                 } else {
                     format!(" -m '{}'", self.models.gemini)
                 };
-                format!("gemini{} -p '{}'", model_arg, escaped_prompt)
+                let debug_arg = if self.debug { " --debug" } else { "" };
+                format!("gemini{}{} -p '{}'", model_arg, debug_arg, escaped_prompt)
             }
             AiProvider::Codex => {
                 let model_arg = if self.models.codex.is_empty() {
@@ -416,6 +420,9 @@ Changes:
                 if !self.models.gemini.is_empty() {
                     cmd.args(["-m", &self.models.gemini]);
                 }
+                if self.debug {
+                    cmd.arg("--debug");
+                }
                 cmd.args(["-p", prompt]);
             }
             AiProvider::Codex => {
@@ -514,72 +521,134 @@ Changes:
             }
         }
 
-        let output = child.wait_with_output().map_err(|e| {
-            // 一時ファイルをクリーンアップ
-            if let Some(ref path) = temp_file_path {
-                let _ = fs::remove_file(path);
+        // stdout/stderr をスレッドで読み取り（デバッグ時はリアルタイム表示）
+        // try_wait ループでタイムアウトを監視
+        let is_debug = self.debug;
+
+        if is_debug {
+            println!();
+            println!(
+                "{}",
+                "=== DEBUG: AI Provider Output (streaming) ==="
+                    .yellow()
+                    .bold()
+            );
+            println!("{}", "─".repeat(50).dimmed());
+        }
+
+        let stdout_pipe = child.stdout.take();
+        let stderr_pipe = child.stderr.take();
+
+        // stdout 読み取りスレッド（デバッグ時はリアルタイム表示）
+        let stdout_thread = std::thread::spawn(move || {
+            use std::io::BufRead;
+            let mut buf = String::new();
+            if let Some(pipe) = stdout_pipe {
+                let reader = std::io::BufReader::new(pipe);
+                for line in reader.lines().map_while(Result::ok) {
+                    if is_debug {
+                        println!("  {}", line);
+                    }
+                    buf.push_str(&line);
+                    buf.push('\n');
+                }
             }
-            AppError::AiProviderError(format!("Failed to wait for process: {}", e))
-        })?;
+            buf
+        });
+
+        // stderr 読み取りスレッド（デバッグ時はリアルタイム表示）
+        let stderr_thread = std::thread::spawn(move || {
+            use colored::Colorize;
+            use std::io::BufRead;
+            let mut buf = String::new();
+            if let Some(pipe) = stderr_pipe {
+                let reader = std::io::BufReader::new(pipe);
+                for line in reader.lines().map_while(Result::ok) {
+                    if is_debug {
+                        eprintln!("  {}", line.red());
+                    }
+                    buf.push_str(&line);
+                    buf.push('\n');
+                }
+            }
+            buf
+        });
+
+        // タイムアウト付きでプロセス完了を待機
+        let timeout = std::time::Duration::from_secs(self.timeout_seconds);
+        let start = std::time::Instant::now();
+        let exit_status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => {
+                    if start.elapsed() > timeout {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        if let Some(ref path) = temp_file_path {
+                            let _ = fs::remove_file(path);
+                        }
+                        return Err(AppError::AiProviderError(format!(
+                            "{} timed out after {} seconds",
+                            provider.name(),
+                            self.timeout_seconds
+                        )));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                Err(e) => {
+                    if let Some(ref path) = temp_file_path {
+                        let _ = fs::remove_file(path);
+                    }
+                    return Err(AppError::AiProviderError(format!(
+                        "Failed to wait for process: {}",
+                        e
+                    )));
+                }
+            }
+        };
+
+        let stdout_str = stdout_thread.join().unwrap_or_default();
+        let stderr_str = stderr_thread.join().unwrap_or_default();
+
+        if is_debug {
+            println!("{}", "─".repeat(50).dimmed());
+            println!(
+                "  {}: {}",
+                "exit code".dimmed(),
+                exit_status.to_string().cyan()
+            );
+            println!();
+        }
 
         // 一時ファイルをクリーンアップ
         if let Some(ref path) = temp_file_path {
             let _ = fs::remove_file(path);
         }
 
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-        // デバッグモード: stdout/stderr/exit code を常に表示
-        if self.debug {
-            println!();
-            println!("{}", "=== DEBUG: AI Provider Output ===".yellow().bold());
-            println!("{}", "─".repeat(50).dimmed());
-            println!(
-                "  {}: {}",
-                "exit code".dimmed(),
-                output.status.to_string().cyan()
-            );
-            if !stderr.trim().is_empty() {
-                println!("  {}:", "stderr".dimmed());
-                for line in stderr.lines() {
-                    println!("    {}", line.red());
-                }
-            }
-            let stdout_str = String::from_utf8_lossy(&output.stdout);
-            if !stdout_str.trim().is_empty() {
-                println!("  {}:", "stdout".dimmed());
-                for line in stdout_str.lines() {
-                    println!("    {}", line);
-                }
-            }
-            println!("{}", "─".repeat(50).dimmed());
-            println!();
-        }
-
-        if !output.status.success() {
-            let error_msg = Self::extract_error(&stderr, provider);
+        if !exit_status.success() {
+            let error_msg = Self::extract_error(&stderr_str, provider);
             return Err(AppError::AiProviderError(error_msg));
         }
 
         // exit code が 0 でも stderr にエラーがあれば失敗扱い
-        if !stderr.trim().is_empty() {
-            let lower = stderr.to_lowercase();
+        if !stderr_str.trim().is_empty() {
+            let lower = stderr_str.to_lowercase();
             if lower.contains("file not found") || lower.contains("error:") {
-                let error_msg = Self::extract_error(&stderr, provider);
+                let error_msg = Self::extract_error(&stderr_str, provider);
                 return Err(AppError::AiProviderError(error_msg));
             }
         }
 
-        let message = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let message = stdout_str.trim().to_string();
         let message = Self::clean_message(&message);
 
         if message.is_empty() {
             // stderr にヒントがあればそれも含める
-            if !stderr.trim().is_empty() {
+            if !stderr_str.trim().is_empty() {
                 return Err(AppError::AiProviderError(format!(
                     "{} returned an empty response (stderr: {})",
                     provider.name(),
-                    stderr.trim()
+                    stderr_str.trim()
                 )));
             }
             return Err(AppError::AiProviderError(format!(
@@ -990,6 +1059,7 @@ mod tests {
         assert_eq!(service.models.codex, "gpt-5.1-codex-mini");
         assert_eq!(service.models.claude, "haiku");
         assert_eq!(service.models.opencode, "");
+        assert_eq!(service.timeout_seconds, 30);
     }
 
     #[test]

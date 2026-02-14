@@ -75,6 +75,9 @@ pub struct Config {
     /// 自動プッシュの有効/無効
     #[serde(default)]
     pub auto_push: Option<bool>,
+    /// プロバイダー呼び出しのタイムアウト（秒）
+    #[serde(default = "default_provider_timeout_seconds")]
+    pub provider_timeout_seconds: u64,
     /// NanoBuddy連携を有効化 (隠しオプション)
     #[serde(default)]
     pub nano_buddy: bool,
@@ -83,6 +86,11 @@ pub struct Config {
 /// デフォルトのクールダウン時間（60分 = 1時間）
 fn default_provider_cooldown_minutes() -> u64 {
     60
+}
+
+/// デフォルトのプロバイダータイムアウト（30秒）
+fn default_provider_timeout_seconds() -> u64 {
+    30
 }
 
 /// デフォルトの言語
@@ -106,6 +114,7 @@ impl Default for Config {
             provider_cooldown_minutes: default_provider_cooldown_minutes(),
             prefix_type: None,
             auto_push: None,
+            provider_timeout_seconds: default_provider_timeout_seconds(),
             nano_buddy: false,
         }
     }
@@ -244,6 +253,11 @@ impl Config {
         if other.provider_cooldown_minutes != default_provider_cooldown_minutes() {
             self.provider_cooldown_minutes = other.provider_cooldown_minutes;
         }
+
+        // provider_timeout_seconds: デフォルトでなければ上書き
+        if other.provider_timeout_seconds != default_provider_timeout_seconds() {
+            self.provider_timeout_seconds = other.provider_timeout_seconds;
+        }
     }
 
     /// 階層的に設定を読み込む（グローバル → プロジェクトでマージ）
@@ -296,6 +310,10 @@ language = "Japanese"
 # Provider cooldown time (minutes) after failure
 # Set to 0 to disable cooldown
 provider_cooldown_minutes = 60
+
+# Provider timeout (seconds) per call
+# If a provider takes longer than this, it will be killed and the next provider tried
+provider_timeout_seconds = 30
 
 # Commit message prefix format
 # Available: "conventional", "bracket", "colon", "emoji", "plain", "none"
@@ -362,6 +380,7 @@ mod tests {
         assert!(config.prefix_scripts.is_empty());
         assert!(config.prefix_rules.is_empty());
         assert_eq!(config.provider_cooldown_minutes, 60);
+        assert_eq!(config.provider_timeout_seconds, 30);
     }
 
     #[test]
@@ -784,6 +803,37 @@ language = "Japanese"
 
         // プロジェクト設定のクールダウンが上書きされる
         assert_eq!(global.provider_cooldown_minutes, 30);
+    }
+
+    #[test]
+    fn test_merge_with_timeout_override() {
+        let mut global = Config {
+            provider_timeout_seconds: 30,
+            ..Default::default()
+        };
+
+        let project = Config {
+            provider_timeout_seconds: 10,
+            ..Default::default()
+        };
+
+        global.merge_with(project);
+
+        // プロジェクト設定のタイムアウトが上書きされる
+        assert_eq!(global.provider_timeout_seconds, 10);
+    }
+
+    #[test]
+    fn test_parse_config_with_timeout() {
+        let toml = r#"
+providers = ["gemini"]
+language = "Japanese"
+provider_timeout_seconds = 60
+"#;
+
+        let config = Config::from_str(toml).unwrap();
+
+        assert_eq!(config.provider_timeout_seconds, 60);
     }
 
     #[test]
