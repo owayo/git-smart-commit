@@ -483,16 +483,61 @@ Changes:
             let _ = fs::remove_file(path);
         }
 
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+        // デバッグモード: stdout/stderr/exit code を常に表示
+        if self.debug {
+            println!();
+            println!("{}", "=== DEBUG: AI Provider Output ===".yellow().bold());
+            println!("{}", "─".repeat(50).dimmed());
+            println!(
+                "  {}: {}",
+                "exit code".dimmed(),
+                output.status.to_string().cyan()
+            );
+            if !stderr.trim().is_empty() {
+                println!("  {}:", "stderr".dimmed());
+                for line in stderr.lines() {
+                    println!("    {}", line.red());
+                }
+            }
+            let stdout_str = String::from_utf8_lossy(&output.stdout);
+            if !stdout_str.trim().is_empty() {
+                println!("  {}:", "stdout".dimmed());
+                for line in stdout_str.lines() {
+                    println!("    {}", line);
+                }
+            }
+            println!("{}", "─".repeat(50).dimmed());
+            println!();
+        }
+
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
             let error_msg = Self::extract_error(&stderr, provider);
             return Err(AppError::AiProviderError(error_msg));
+        }
+
+        // exit code が 0 でも stderr にエラーがあれば失敗扱い
+        if !stderr.trim().is_empty() {
+            let lower = stderr.to_lowercase();
+            if lower.contains("file not found") || lower.contains("error:") {
+                let error_msg = Self::extract_error(&stderr, provider);
+                return Err(AppError::AiProviderError(error_msg));
+            }
         }
 
         let message = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let message = Self::clean_message(&message);
 
         if message.is_empty() {
+            // stderr にヒントがあればそれも含める
+            if !stderr.trim().is_empty() {
+                return Err(AppError::AiProviderError(format!(
+                    "{} returned an empty response (stderr: {})",
+                    provider.name(),
+                    stderr.trim()
+                )));
+            }
             return Err(AppError::AiProviderError(format!(
                 "{} returned an empty response",
                 provider.name()
