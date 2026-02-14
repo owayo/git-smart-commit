@@ -1,4 +1,4 @@
-use std::fs;
+use std::fs::{self, File};
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -153,7 +153,8 @@ impl AiService {
             AiProvider::Opencode => {
                 let file_display = temp_file_path
                     .and_then(|p| p.to_str())
-                    .unwrap_or("<temp_file>");
+                    .map(|s| s.replace('\\', "/"))
+                    .unwrap_or_else(|| "<temp_file>".to_string());
                 format!(
                     "opencode run 'Follow the instructions in the attached file exactly. Output only the commit message.' -m '{}' -f '{}' --print-logs",
                     self.models.opencode,
@@ -371,9 +372,17 @@ Changes:
         let temp_file_path = if matches!(provider, AiProvider::Opencode) {
             let temp_dir = std::env::temp_dir();
             let temp_file = temp_dir.join(format!("git-sc-prompt-{}.txt", std::process::id()));
-            fs::write(&temp_file, prompt).map_err(|e| {
+            // sync_all で確実にディスクにフラッシュ（Windows の遅延書き込み対策）
+            let mut file = File::create(&temp_file).map_err(|e| {
+                AppError::AiProviderError(format!("Failed to create temp file: {}", e))
+            })?;
+            file.write_all(prompt.as_bytes()).map_err(|e| {
                 AppError::AiProviderError(format!("Failed to write temp file: {}", e))
             })?;
+            file.sync_all().map_err(|e| {
+                AppError::AiProviderError(format!("Failed to sync temp file: {}", e))
+            })?;
+            drop(file); // 明示的にファイルハンドルを閉じる
             Some(temp_file)
         } else {
             None
@@ -407,13 +416,16 @@ Changes:
                 // プロンプトは一時ファイル経由で渡す（ファイル内に全指示を含む）
                 // メッセージを先に、オプションを後に
                 if let Some(ref path) = temp_file_path {
+                    // Windows: バックスラッシュをフォワードスラッシュに正規化
+                    // cmd /C 経由やCLIツール間でのパス受け渡しの互換性対策
+                    let path_str = path.to_str().unwrap_or("").replace('\\', "/");
                     cmd.args([
                         "run",
                         "Follow the instructions in the attached file exactly. Output only the commit message.",
                         "-m",
                         &self.models.opencode,
                         "-f",
-                        path.to_str().unwrap_or(""),
+                        &path_str,
                     ]);
                     // デバッグモードの場合は --print-logs を追加
                     if self.debug {
@@ -431,6 +443,18 @@ Changes:
             println!("{}", "=== DEBUG: AI Provider Command ===".yellow().bold());
             println!("{}", "─".repeat(50).dimmed());
             println!("{}", cmd_str.cyan());
+            // 一時ファイル使用時はファイル情報を表示
+            if let Some(ref path) = temp_file_path {
+                match fs::metadata(path) {
+                    Ok(meta) => println!(
+                        "  {} temp_file: {} ({} bytes)",
+                        "✓".green(),
+                        path.display(),
+                        meta.len()
+                    ),
+                    Err(e) => println!("  {} temp_file: {} ({})", "✗".red(), path.display(), e),
+                }
+            }
             println!("{}", "─".repeat(50).dimmed());
             println!();
         }
