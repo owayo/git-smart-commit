@@ -122,23 +122,42 @@ impl AiService {
     }
 
     /// デバッグ用にコマンド文字列をフォーマット
-    fn format_command_for_debug(&self, provider: &AiProvider, _prompt: &str) -> String {
+    fn format_command_for_debug(
+        &self,
+        provider: &AiProvider,
+        prompt: &str,
+        temp_file_path: Option<&std::path::Path>,
+    ) -> String {
         match provider {
             AiProvider::Gemini => {
-                format!("gemini -m '{}' <<< '(stdin)'", self.models.gemini)
+                format!(
+                    "echo '{}' | gemini -m '{}'",
+                    prompt.replace('\'', "'\\''"),
+                    self.models.gemini
+                )
             }
             AiProvider::Codex => {
-                format!("codex exec --model '{}' <<< '(stdin)'", self.models.codex)
+                format!(
+                    "echo '{}' | codex exec --model '{}'",
+                    prompt.replace('\'', "'\\''"),
+                    self.models.codex
+                )
             }
             AiProvider::Claude => {
-                format!("claude --model '{}' -p <<< '(stdin)'", self.models.claude)
+                format!(
+                    "echo '{}' | claude --model '{}' -p",
+                    prompt.replace('\'', "'\\''"),
+                    self.models.claude
+                )
             }
             AiProvider::Opencode => {
-                // opencode は -f オプションで一時ファイル経由でプロンプトを渡す
-                // デバッグモードでは --print-logs も付与
+                let file_display = temp_file_path
+                    .and_then(|p| p.to_str())
+                    .unwrap_or("<temp_file>");
                 format!(
-                    "opencode run '...' -m '{}' -f '<temp_file>' --print-logs",
-                    self.models.opencode
+                    "opencode run 'Follow the instructions in the attached file exactly. Output only the commit message.' -m '{}' -f '{}' --print-logs",
+                    self.models.opencode,
+                    file_display
                 )
             }
         }
@@ -406,7 +425,8 @@ Changes:
 
         // デバッグモード: 実行するコマンドを表示
         if self.debug {
-            let cmd_str = self.format_command_for_debug(provider, prompt);
+            let cmd_str =
+                self.format_command_for_debug(provider, prompt, temp_file_path.as_deref());
             println!();
             println!("{}", "=== DEBUG: AI Provider Command ===".yellow().bold());
             println!("{}", "─".repeat(50).dimmed());
@@ -1125,35 +1145,52 @@ ERROR: Your access token could not be refreshed because your refresh token was a
     #[test]
     fn test_format_command_for_debug_gemini() {
         let service = AiService::new();
-        let cmd = service.format_command_for_debug(&AiProvider::Gemini, "test prompt");
+        let cmd = service.format_command_for_debug(&AiProvider::Gemini, "test prompt", None);
         assert!(cmd.contains("gemini -m"));
-        assert!(cmd.contains("<<< '(stdin)'"));
+        assert!(cmd.contains("echo 'test prompt'"));
     }
 
     #[test]
     fn test_format_command_for_debug_codex() {
         let service = AiService::new();
-        let cmd = service.format_command_for_debug(&AiProvider::Codex, "test prompt");
+        let cmd = service.format_command_for_debug(&AiProvider::Codex, "test prompt", None);
         assert!(cmd.contains("codex exec --model"));
-        assert!(cmd.contains("<<< '(stdin)'"));
+        assert!(cmd.contains("echo 'test prompt'"));
     }
 
     #[test]
     fn test_format_command_for_debug_claude() {
         let service = AiService::new();
-        let cmd = service.format_command_for_debug(&AiProvider::Claude, "test prompt");
+        let cmd = service.format_command_for_debug(&AiProvider::Claude, "test prompt", None);
         assert!(cmd.contains("claude --model"));
         assert!(cmd.contains("-p"));
-        assert!(cmd.contains("<<< '(stdin)'"));
+        assert!(cmd.contains("echo 'test prompt'"));
     }
 
     #[test]
     fn test_format_command_for_debug_opencode() {
         let service = AiService::new();
-        let cmd = service.format_command_for_debug(&AiProvider::Opencode, "test prompt");
+        let temp_path = std::path::Path::new("/tmp/git-sc-prompt-12345.txt");
+        let cmd =
+            service.format_command_for_debug(&AiProvider::Opencode, "test prompt", Some(temp_path));
         assert!(cmd.contains("opencode run"));
         assert!(cmd.contains("-m"));
-        assert!(cmd.contains("-f '<temp_file>'")); // opencode は一時ファイルを使用
+        assert!(cmd.contains("-f '/tmp/git-sc-prompt-12345.txt'"));
+    }
+
+    #[test]
+    fn test_format_command_for_debug_opencode_no_path() {
+        let service = AiService::new();
+        let cmd = service.format_command_for_debug(&AiProvider::Opencode, "test prompt", None);
+        assert!(cmd.contains("opencode run"));
+        assert!(cmd.contains("-f '<temp_file>'"));
+    }
+
+    #[test]
+    fn test_format_command_for_debug_prompt_with_single_quotes() {
+        let service = AiService::new();
+        let cmd = service.format_command_for_debug(&AiProvider::Gemini, "it's a test", None);
+        assert!(cmd.contains("it'\\''s a test"));
     }
 
     // ============================================================
