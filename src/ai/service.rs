@@ -989,7 +989,7 @@ mod tests {
         assert_eq!(service.models.gemini, "gemini-2.5-flash-lite");
         assert_eq!(service.models.codex, "gpt-5.1-codex-mini");
         assert_eq!(service.models.claude, "haiku");
-        assert_eq!(service.models.opencode, "opencode/minimax-m2.5-free");
+        assert_eq!(service.models.opencode, "");
     }
 
     #[test]
@@ -1258,12 +1258,25 @@ ERROR: Your access token could not be refreshed because your refresh token was a
 
     #[test]
     fn test_format_command_for_debug_opencode() {
+        // デフォルトは空モデルなので -m なし
         let service = AiService::new();
         let temp_path = std::path::Path::new("/tmp/git-sc-prompt-12345.txt");
         let cmd =
             service.format_command_for_debug(&AiProvider::Opencode, "test prompt", Some(temp_path));
         assert!(cmd.contains("opencode run"));
-        assert!(cmd.contains("-m"));
+        assert!(!cmd.contains("-m"));
+        assert!(cmd.contains("-f '/tmp/git-sc-prompt-12345.txt'"));
+    }
+
+    #[test]
+    fn test_format_command_for_debug_opencode_with_model() {
+        let mut service = AiService::new();
+        service.models.opencode = "opencode/some-model".to_string();
+        let temp_path = std::path::Path::new("/tmp/git-sc-prompt-12345.txt");
+        let cmd =
+            service.format_command_for_debug(&AiProvider::Opencode, "test prompt", Some(temp_path));
+        assert!(cmd.contains("opencode run"));
+        assert!(cmd.contains("-m 'opencode/some-model'"));
         assert!(cmd.contains("-f '/tmp/git-sc-prompt-12345.txt'"));
     }
 
