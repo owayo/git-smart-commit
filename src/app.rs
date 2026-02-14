@@ -111,11 +111,13 @@ impl App {
         println!("{}", "Effective settings:".yellow());
         println!("  providers: {:?}", config.providers);
         println!("  language: {}", config.language);
+        println!("  models.opencode: {}", config.models.opencode);
         println!("  models.gemini: {}", config.models.gemini);
         println!("  models.codex: {}", config.models.codex);
         println!("  models.claude: {}", config.models.claude);
         println!("  prefix_type: {:?}", config.prefix_type);
         println!("  auto_push: {:?}", config.auto_push);
+        println!("  nano_buddy: {}", config.nano_buddy);
         println!("  prefix_scripts: {} rule(s)", config.prefix_scripts.len());
         println!("  prefix_rules: {} rule(s)", config.prefix_rules.len());
         println!(
