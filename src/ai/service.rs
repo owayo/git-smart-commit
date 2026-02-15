@@ -359,7 +359,22 @@ Changes:
             }
 
             match self.call_provider(provider, &prompt) {
-                Ok(message) => return Ok(message),
+                Ok(message) => {
+                    // --body 未指定時は1行目のみ使用（AIが複数行を返した場合の対策）
+                    let message = if !with_body {
+                        message.lines().next().unwrap_or("").trim().to_string()
+                    } else {
+                        message
+                    };
+                    if message.is_empty() {
+                        last_error = Some(AppError::AiProviderError(format!(
+                            "{} returned an empty first line",
+                            provider.name()
+                        )));
+                        continue;
+                    }
+                    return Ok(message);
+                }
                 Err(e) => {
                     if !silent {
                         eprintln!(
