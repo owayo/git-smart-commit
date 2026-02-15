@@ -6,14 +6,22 @@
 # Variables
 BINARY_NAME := git-sc
 INSTALL_PATH := /usr/local/bin
+UNAME_S := $(shell uname -s)
+
+# macOS では Apple Intelligence (fm-rs) を有効化
+ifeq ($(UNAME_S),Darwin)
+CARGO_FEATURES := --features apple-ai
+else
+CARGO_FEATURES :=
+endif
 
 ## Build Commands
 
 build: ## Build debug version
-	cargo build
+	cargo build $(CARGO_FEATURES)
 
 release: ## Build release version
-	cargo build --release
+	cargo build --release $(CARGO_FEATURES)
 
 ## Installation
 

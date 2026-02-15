@@ -4,7 +4,7 @@ AI-powered smart commit message generator CLI tool written in Rust.
 
 ## Project Overview
 
-This CLI tool generates commit messages using AI coding agents (opencode, Gemini CLI, Codex CLI, Claude Code) with automatic provider fallback and format detection.
+This CLI tool generates commit messages using AI coding agents (opencode, Gemini CLI, Codex CLI, Claude Code, Apple Intelligence) with automatic provider fallback and format detection.
 
 ## Quick Reference
 
@@ -12,7 +12,7 @@ This CLI tool generates commit messages using AI coding agents (opencode, Gemini
 ```bash
 make build      # Debug build
 make release    # Release build (optimized)
-make install    # Build and install to /usr/local/bin
+make install    # Build and install to /usr/local/bin (Apple Intelligence enabled on macOS)
 make test       # Run tests
 make fmt        # Format code
 make check      # Run clippy and cargo check
@@ -47,6 +47,7 @@ src/
 └── git/
     ├── mod.rs
     └── service.rs  # GitService for git operations
+
 ```
 
 ### Key Components
@@ -54,7 +55,7 @@ src/
 | Module | Responsibility |
 |--------|----------------|
 | `App` | Orchestrates workflow: verify env → load config → get diff → detect format → generate → commit |
-| `AiService` | Multi-provider AI with fallback (opencode → gemini → codex → claude) |
+| `AiService` | Multi-provider AI with fallback (opencode → gemini → codex → claude → apple-intelligence) |
 | `GitService` | Git operations (diff, commit, amend, squash, reword) |
 | `Config` | Hierarchical config: global (~/.config/git-sc/config.toml) + project (.git-sc) |
 | `ProviderState` | Tracks failed providers with 1-hour cooldown |
@@ -63,7 +64,9 @@ src/
 
 Each provider is called via CLI subprocess:
 - **opencode**: Uses temp file with `-f` flag to avoid command line length limits
-- **gemini/codex/claude**: Uses stdin for prompt input
+- **gemini**: Uses `-p` flag for prompt input
+- **codex/claude**: Uses stdin for prompt input
+- **apple-intelligence**: fm-rs (Rust FFI) via Foundation Models on-device (macOS 26+, Apple Intelligence enabled)
 
 When a provider fails, it enters cooldown (default: 60 minutes) and the next provider is tried.
 

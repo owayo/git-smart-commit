@@ -32,7 +32,7 @@
 
 ## Features
 
-- **Multi-Provider Support**: Supports Gemini CLI, Codex CLI, Claude Code, and opencode with automatic fallback
+- **Multi-Provider Support**: Supports Gemini CLI, Codex CLI, Claude Code, opencode, and Apple Intelligence with automatic fallback
 - **Smart Cooldown**: Automatically demotes failed providers for 1 hour (configurable)
 - **Format Detection**: Detects commit format from recent commits (Conventional, Bracket, Emoji, etc.)
 - **Interactive**: Prompts for confirmation before committing (skip with `-y`)
@@ -49,6 +49,7 @@
   - Codex CLI: `npm install -g @openai/codex`
   - Claude Code: `curl -fsSL https://claude.ai/install.sh | bash`
   - opencode: `curl -fsSL https://opencode.ai/install | bash`
+  - Apple Intelligence: Built-in on macOS (macOS 26+ with Apple Silicon required)
 
 ## Installation
 
@@ -217,7 +218,7 @@ Project settings override global settings. Fields not specified in project confi
 
 ```toml
 # AI provider priority
-providers = ["opencode", "gemini", "codex", "claude"]
+providers = ["opencode", "gemini", "codex", "claude", "apple-intelligence"]
 
 # Commit message language
 language = "Japanese"
@@ -247,7 +248,7 @@ provider_timeout_seconds = 30
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `providers` | AI provider priority | `["opencode", "gemini", "codex", "claude"]` |
+| `providers` | AI provider priority | `["opencode", "gemini", "codex", "claude", "apple-intelligence"]` |
 | `language` | Commit message language | `"Japanese"` |
 | `prefix_type` | Commit prefix format | Auto-detect |
 | `auto_push` | Auto-push after commit | `false` |
@@ -357,6 +358,15 @@ flowchart LR
 4. **Format**: Detect from recent commits or rules
 5. **Generate**: Send to AI with fallback
 6. **Commit**: Confirm and create commit
+
+## Apple Intelligence
+
+Apple Intelligence provider uses [fm-rs](https://github.com/blacktop/fm-rs) (Rust bindings for Apple's [Foundation Models](https://developer.apple.com/documentation/foundationmodels) framework) for fully on-device inference. No API key or network connection is required.
+
+- **Requirements**: macOS 26 (Tahoe) or later, Apple Silicon, Apple Intelligence enabled in System Settings
+- **How it works**: With Apple Intelligence enabled (default on macOS), git-sc calls Foundation Models directly via fm-rs. A `LanguageModelSession` is created with commit-message-specific instructions for each generation.
+- **Build**: `cargo build --features apple-ai` (automatic with `make build` / `make install` on macOS)
+- **Cross-platform**: On Linux/Windows, Apple Intelligence is not available and is automatically skipped
 
 ## Build Commands
 

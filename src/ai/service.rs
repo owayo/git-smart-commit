@@ -8,6 +8,21 @@ use crate::config::{Config, ModelsConfig};
 use crate::error::AppError;
 use crate::state::State;
 
+/// Conventional Commits プレフィックスの詳細説明
+const CONVENTIONAL_COMMITS_GUIDE: &str = "\
+Use Conventional Commits format. Choose the prefix that best matches the change:\n\
+- feat: new feature or functionality added\n\
+- fix: bug fix\n\
+- docs: documentation only changes (README, comments, JSDoc)\n\
+- style: code style changes (formatting, whitespace, semicolons) with no logic change\n\
+- refactor: code restructuring without adding features or fixing bugs\n\
+- perf: performance improvement\n\
+- test: adding or correcting tests\n\
+- build: changes to build system or dependencies (Cargo.toml, package.json, Makefile)\n\
+- ci: CI/CD configuration changes (GitHub Actions, GitLab CI)\n\
+- chore: maintenance tasks that don't modify src or test files\n\
+- revert: reverting a previous commit";
+
 /// AIプロバイダーの種類
 #[derive(Debug, Clone, Copy)]
 pub enum AiProvider {
@@ -15,6 +30,7 @@ pub enum AiProvider {
     Codex,
     Claude,
     Opencode,
+    AppleIntelligence,
 }
 
 impl AiProvider {
@@ -24,6 +40,7 @@ impl AiProvider {
             AiProvider::Codex => "Codex CLI",
             AiProvider::Claude => "Claude Code",
             AiProvider::Opencode => "opencode",
+            AiProvider::AppleIntelligence => "Apple Intelligence",
         }
     }
 
@@ -33,6 +50,7 @@ impl AiProvider {
             AiProvider::Codex => "codex",
             AiProvider::Claude => "claude",
             AiProvider::Opencode => "opencode",
+            AiProvider::AppleIntelligence => "apple-ai",
         }
     }
 
@@ -48,6 +66,7 @@ impl AiProvider {
             "codex" => Some(AiProvider::Codex),
             "claude" => Some(AiProvider::Claude),
             "opencode" => Some(AiProvider::Opencode),
+            "apple-intelligence" | "apple_intelligence" => Some(AiProvider::AppleIntelligence),
             _ => None,
         }
     }
@@ -64,6 +83,20 @@ pub struct AiService {
 }
 
 impl AiService {
+    /// デフォルトのプロバイダーリストを返す
+    fn default_providers() -> Vec<AiProvider> {
+        let mut providers = vec![
+            AiProvider::Opencode,
+            AiProvider::Gemini,
+            AiProvider::Codex,
+            AiProvider::Claude,
+        ];
+        if cfg!(all(target_os = "macos", feature = "apple-ai")) {
+            providers.push(AiProvider::AppleIntelligence);
+        }
+        providers
+    }
+
     /// 設定からAiServiceを作成
     pub fn from_config(config: &Config) -> Self {
         let provider_strings: Vec<String> = config.providers.clone();
@@ -82,12 +115,7 @@ impl AiService {
 
         // 有効なプロバイダーがない場合はデフォルトにフォールバック
         let providers = if providers.is_empty() {
-            vec![
-                AiProvider::Opencode,
-                AiProvider::Gemini,
-                AiProvider::Codex,
-                AiProvider::Claude,
-            ]
+            Self::default_providers()
         } else {
             providers
         };
@@ -105,12 +133,7 @@ impl AiService {
     /// デフォルトのフォールバック順序でAiServiceを作成
     pub fn new() -> Self {
         Self {
-            providers: vec![
-                AiProvider::Opencode,
-                AiProvider::Gemini,
-                AiProvider::Codex,
-                AiProvider::Claude,
-            ],
+            providers: Self::default_providers(),
             language: "Japanese".to_string(),
             models: ModelsConfig::default(),
             cooldown_minutes: 60, // デフォルト1時間
@@ -174,6 +197,9 @@ impl AiService {
                     file_display
                 )
             }
+            AiProvider::AppleIntelligence => {
+                format!("echo '{}' | apple-ai", escaped_prompt)
+            }
         }
     }
 
@@ -210,6 +236,11 @@ impl AiService {
 
     /// プロバイダーがインストールされているかチェック
     fn is_installed(provider: &AiProvider) -> bool {
+        // Apple Intelligence: apple-ai feature 有効時のみ利用可能（ランタイムで可否判定）
+        if matches!(provider, AiProvider::AppleIntelligence) {
+            return cfg!(all(target_os = "macos", feature = "apple-ai"));
+        }
+
         // Windows uses "where", Unix uses "which"
         let check_cmd = if cfg!(windows) { "where" } else { "which" };
         Command::new(check_cmd)
@@ -228,9 +259,7 @@ impl AiService {
         with_body: bool,
     ) -> String {
         let format_section = match prefix_type {
-            Some("conventional") => {
-                "Use Conventional Commits format (e.g., feat:, fix:, docs:, refactor:, test:, chore:).".to_string()
-            }
+            Some("conventional") => CONVENTIONAL_COMMITS_GUIDE.to_string(),
             Some("bracket") => {
                 "Use bracket prefix format (e.g., [Add], [Fix], [Update], [Remove], [Refactor]).".to_string()
             }
@@ -249,7 +278,7 @@ impl AiService {
             None => {
                 // 自動判定モード: 過去のコミットから推論
                 if recent_commits.is_empty() {
-                    "No recent commits found. Use Conventional Commits format (e.g., feat:, fix:, docs:, refactor:, test:, chore:).".to_string()
+                    format!("No recent commits found. {}", CONVENTIONAL_COMMITS_GUIDE)
                 } else {
                     format!(
                         "Recent commit messages in this repository:\n{}\n\nAnalyze the recent commit messages above and match their style/format.",
@@ -358,7 +387,17 @@ Changes:
                 println!("  {} {}...", "Using".dimmed(), provider.name().cyan());
             }
 
-            match self.call_provider(provider, &prompt) {
+            // Apple Intelligence: fm-rs feature 有効時はネイティブ呼び出し
+            #[cfg(all(target_os = "macos", feature = "apple-ai"))]
+            let result = if matches!(provider, AiProvider::AppleIntelligence) {
+                Self::call_apple_intelligence_native(&prompt, &self.language)
+            } else {
+                self.call_provider(provider, &prompt)
+            };
+            #[cfg(not(all(target_os = "macos", feature = "apple-ai")))]
+            let result = self.call_provider(provider, &prompt);
+
+            match result {
                 Ok(message) => {
                     // --body 未指定時は1行目のみ使用（AIが複数行を返した場合の対策）
                     let message = if !with_body {
@@ -473,6 +512,12 @@ Changes:
                     }
                 }
             }
+            AiProvider::AppleIntelligence => {
+                // fm-rs feature 有効時はネイティブ呼び出しのため、ここには到達しない
+                return Err(AppError::AiProviderError(
+                    "Apple Intelligence requires the apple-ai feature flag".to_string(),
+                ));
+            }
         };
 
         // デバッグモード: 実行するコマンドを表示
@@ -502,6 +547,7 @@ Changes:
         // stdin でプロンプトを渡すプロバイダー: codex, claude
         // -p 引数で渡す: gemini
         // 一時ファイル経由: opencode
+        // apple-intelligence: ネイティブ呼び出し（ここには到達しない）
         let uses_stdin = matches!(provider, AiProvider::Codex | AiProvider::Claude);
         if uses_stdin {
             cmd.stdin(Stdio::piped());
@@ -675,6 +721,55 @@ Changes:
         Ok(message)
     }
 
+    /// Apple Intelligence をネイティブ呼び出し（fm-rs経由）
+    #[cfg(all(target_os = "macos", feature = "apple-ai"))]
+    fn call_apple_intelligence_native(prompt: &str, language: &str) -> Result<String, AppError> {
+        let model = fm_rs::SystemLanguageModel::new().map_err(|e| {
+            AppError::AiProviderError(format!("Failed to initialize Apple Intelligence: {}", e))
+        })?;
+
+        model.ensure_available().map_err(|_| {
+            AppError::AiProviderError(
+                "Apple Intelligence is not available (requires macOS 26+, Apple Silicon, Apple Intelligence enabled)".to_string()
+            )
+        })?;
+
+        let instructions = format!(
+            "You are a Git commit message generator. \
+            You receive a diff or description of code changes and output ONLY a concise commit message in {language}. \
+            Do not include any explanation, commentary, or formatting beyond the commit message itself. \
+            Follow the format instructions provided in the prompt exactly.\n\n\
+            Style rules:\n\
+            - Use short, direct phrases (noun phrases or verb stems)\n\
+            - Do NOT use polite or formal sentence endings\n\
+            - Do NOT end with a period\n\
+            - Keep the message concise and descriptive\n\n\
+            When using Conventional Commits format, choose the correct prefix:\n{guide}",
+            language = language,
+            guide = CONVENTIONAL_COMMITS_GUIDE
+        );
+
+        let session = fm_rs::Session::with_instructions(&model, &instructions)
+            .map_err(|e| AppError::AiProviderError(format!("Failed to create session: {}", e)))?;
+
+        let options = fm_rs::GenerationOptions::builder().temperature(0.3).build();
+
+        let response = session.respond(prompt, &options).map_err(|e| {
+            AppError::AiProviderError(format!("Apple Intelligence generation failed: {}", e))
+        })?;
+
+        let message = response.content().trim().to_string();
+        let message = Self::clean_message(&message);
+
+        if message.is_empty() {
+            return Err(AppError::AiProviderError(
+                "Apple Intelligence returned an empty response".to_string(),
+            ));
+        }
+
+        Ok(message)
+    }
+
     /// stderrからエラーメッセージを抽出
     fn extract_error(stderr: &str, provider: &AiProvider) -> String {
         match provider {
@@ -739,6 +834,20 @@ Changes:
                     .lines()
                     .find(|l| !l.trim().is_empty())
                     .unwrap_or("opencode request failed")
+                    .to_string()
+            }
+            AiProvider::AppleIntelligence => {
+                // apple-ai: "Error:" で始まる行を探す
+                for line in stderr.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.starts_with("Error:") {
+                        return trimmed.to_string();
+                    }
+                }
+                stderr
+                    .lines()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("Apple Intelligence request failed")
                     .to_string()
             }
         }
@@ -810,6 +919,7 @@ mod tests {
         assert_eq!(AiProvider::Codex.name(), "Codex CLI");
         assert_eq!(AiProvider::Claude.name(), "Claude Code");
         assert_eq!(AiProvider::Opencode.name(), "opencode");
+        assert_eq!(AiProvider::AppleIntelligence.name(), "Apple Intelligence");
     }
 
     #[test]
@@ -818,6 +928,7 @@ mod tests {
         assert_eq!(AiProvider::Codex.command(), "codex");
         assert_eq!(AiProvider::Claude.command(), "claude");
         assert_eq!(AiProvider::Opencode.command(), "opencode");
+        assert_eq!(AiProvider::AppleIntelligence.command(), "apple-ai");
     }
 
     #[rstest]
@@ -828,6 +939,9 @@ mod tests {
     #[case("claude", Some(AiProvider::Claude))]
     #[case("opencode", Some(AiProvider::Opencode))]
     #[case("OPENCODE", Some(AiProvider::Opencode))]
+    #[case("apple-intelligence", Some(AiProvider::AppleIntelligence))]
+    #[case("apple_intelligence", Some(AiProvider::AppleIntelligence))]
+    #[case("APPLE-INTELLIGENCE", Some(AiProvider::AppleIntelligence))]
     #[case("unknown", None)]
     #[case("", None)]
     fn test_ai_provider_from_str(#[case] input: &str, #[case] expected: Option<AiProvider>) {
@@ -843,7 +957,12 @@ mod tests {
     fn test_ai_service_new() {
         let service = AiService::new();
         assert_eq!(service.language, "Japanese");
-        assert_eq!(service.providers.len(), 4);
+        let expected_len = if cfg!(all(target_os = "macos", feature = "apple-ai")) {
+            5
+        } else {
+            4
+        };
+        assert_eq!(service.providers.len(), expected_len);
     }
 
     #[test]
@@ -1069,7 +1188,12 @@ mod tests {
         let service = AiService::from_config(&config);
 
         assert_eq!(service.language, "Japanese");
-        assert_eq!(service.providers.len(), 4);
+        let expected_len = if cfg!(all(target_os = "macos", feature = "apple-ai")) {
+            5
+        } else {
+            4
+        };
+        assert_eq!(service.providers.len(), expected_len);
         assert_eq!(service.models.gemini, "gemini-2.5-flash-lite");
         assert_eq!(service.models.codex, "gpt-5.1-codex-mini");
         assert_eq!(service.models.claude, "haiku");
@@ -1099,7 +1223,12 @@ mod tests {
         let service = AiService::from_config(&config);
 
         // 無効なプロバイダーのみの場合はデフォルトにフォールバック
-        assert_eq!(service.providers.len(), 4);
+        let expected_len = if cfg!(all(target_os = "macos", feature = "apple-ai")) {
+            5
+        } else {
+            4
+        };
+        assert_eq!(service.providers.len(), expected_len);
     }
 
     #[test]
@@ -1135,11 +1264,19 @@ mod tests {
         let service = AiService::default();
 
         assert_eq!(service.language, "Japanese");
-        assert_eq!(service.providers.len(), 4);
+        let expected_len = if cfg!(all(target_os = "macos", feature = "apple-ai")) {
+            5
+        } else {
+            4
+        };
+        assert_eq!(service.providers.len(), expected_len);
         assert_eq!(service.providers[0].name(), "opencode");
         assert_eq!(service.providers[1].name(), "Gemini CLI");
         assert_eq!(service.providers[2].name(), "Codex CLI");
         assert_eq!(service.providers[3].name(), "Claude Code");
+        if cfg!(all(target_os = "macos", feature = "apple-ai")) {
+            assert_eq!(service.providers[4].name(), "Apple Intelligence");
+        }
     }
 
     // ============================================================
@@ -1313,6 +1450,35 @@ ERROR: Your access token could not be refreshed because your refresh token was a
     }
 
     // ============================================================
+    // Apple Intelligence extract_error テスト
+    // ============================================================
+
+    #[test]
+    fn test_extract_error_apple_intelligence_with_error() {
+        let stderr =
+            "Error: Apple Intelligence is not available on this device\nRequires macOS 26+";
+        let error = AiService::extract_error(stderr, &AiProvider::AppleIntelligence);
+        assert_eq!(
+            error,
+            "Error: Apple Intelligence is not available on this device"
+        );
+    }
+
+    #[test]
+    fn test_extract_error_apple_intelligence_empty() {
+        let stderr = "";
+        let error = AiService::extract_error(stderr, &AiProvider::AppleIntelligence);
+        assert_eq!(error, "Apple Intelligence request failed");
+    }
+
+    #[test]
+    fn test_extract_error_apple_intelligence_generic() {
+        let stderr = "Some unexpected output";
+        let error = AiService::extract_error(stderr, &AiProvider::AppleIntelligence);
+        assert_eq!(error, "Some unexpected output");
+    }
+
+    // ============================================================
     // format_command_for_debug テスト
     // ============================================================
 
@@ -1371,6 +1537,15 @@ ERROR: Your access token could not be refreshed because your refresh token was a
         let cmd = service.format_command_for_debug(&AiProvider::Opencode, "test prompt", None);
         assert!(cmd.contains("opencode run"));
         assert!(cmd.contains("-f '<temp_file>'"));
+    }
+
+    #[test]
+    fn test_format_command_for_debug_apple_intelligence() {
+        let service = AiService::new();
+        let cmd =
+            service.format_command_for_debug(&AiProvider::AppleIntelligence, "test prompt", None);
+        assert!(cmd.contains("apple-ai"));
+        assert!(cmd.contains("echo 'test prompt'"));
     }
 
     #[test]
@@ -1464,6 +1639,7 @@ ERROR: Your access token could not be refreshed because your refresh token was a
         assert_eq!(AiProvider::Codex.config_key(), "codex");
         assert_eq!(AiProvider::Claude.config_key(), "claude");
         assert_eq!(AiProvider::Opencode.config_key(), "opencode");
+        assert_eq!(AiProvider::AppleIntelligence.config_key(), "apple-ai");
     }
 
     // ============================================================

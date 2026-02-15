@@ -32,7 +32,7 @@
 
 ## 特徴
 
-- **マルチプロバイダー対応**: opencode、Gemini CLI、Codex CLI、Claude Code を自動フォールバック付きでサポート
+- **マルチプロバイダー対応**: Gemini CLI、Codex CLI、Claude Code、opencode、Apple Intelligence を自動フォールバック付きでサポート
 - **スマートクールダウン**: 失敗したプロバイダーを1時間（設定可能）優先度を下げて連続失敗を回避
 - **フォーマット自動検出**: 過去のコミットから形式を自動判断（Conventional、Bracket、Emoji等）
 - **インタラクティブ**: コミット前に確認プロンプト表示（`-y` でスキップ可能）
@@ -45,10 +45,11 @@
 - **OS**: macOS, Linux, Windows
 - **Git**: 必須
 - **AIプロバイダー**（少なくとも1つ）:
-  - opencode: `curl -fsSL https://opencode.ai/install | bash`
   - Gemini CLI: `npm install -g @google/gemini-cli`
   - Codex CLI: `npm install -g @openai/codex`
   - Claude Code: `curl -fsSL https://claude.ai/install.sh | bash`
+  - opencode: `curl -fsSL https://opencode.ai/install | bash`
+  - Apple Intelligence: macOS版に内蔵（macOS 26+、Apple Silicon必須）
 
 ## インストール
 
@@ -217,7 +218,7 @@ git-sc はプロジェクトレベルでの上書きが可能な階層的設定�
 
 ```toml
 # AIプロバイダーの優先順位
-providers = ["opencode", "gemini", "codex", "claude"]
+providers = ["opencode", "gemini", "codex", "claude", "apple-intelligence"]
 
 # コミットメッセージの言語
 language = "Japanese"
@@ -231,10 +232,10 @@ auto_push = true
 
 # モデル設定
 [models]
-opencode = "opencode/minimax-m2.1-free"
 gemini = "gemini-2.5-flash-lite"
 codex = "gpt-5.1-codex-mini"
 claude = "haiku"
+opencode = "opencode/minimax-m2.1-free"
 
 # プロバイダークールダウン（分）
 provider_cooldown_minutes = 60
@@ -247,7 +248,7 @@ provider_timeout_seconds = 30
 
 | オプション | 説明 | デフォルト |
 |-----------|------|-----------|
-| `providers` | AIプロバイダーの優先順位 | `["opencode", "gemini", "codex", "claude"]` |
+| `providers` | AIプロバイダーの優先順位 | `["opencode", "gemini", "codex", "claude", "apple-intelligence"]` |
 | `language` | コミットメッセージの言語 | `"Japanese"` |
 | `prefix_type` | コミットプレフィックス形式 | 自動検出 |
 | `auto_push` | コミット後に自動プッシュ | `false` |
@@ -357,6 +358,15 @@ flowchart LR
 4. **フォーマット検出**: 過去のコミットまたはルールから検出
 5. **生成**: AIに送信（フォールバック付き）
 6. **コミット**: 確認してコミットを作成
+
+## Apple Intelligence
+
+Apple Intelligence プロバイダーは、[fm-rs](https://github.com/blacktop/fm-rs)（Appleの [Foundation Models](https://developer.apple.com/documentation/foundationmodels) フレームワークのRustバインディング）を使用し、完全オンデバイス推論を行います。APIキーやネットワーク接続は不要です。
+
+- **動作要件**: macOS 26（Tahoe）以降、Apple Silicon、システム設定でApple Intelligenceが有効であること
+- **仕組み**: Apple Intelligence を有効化した状態で実行すると（macOSではデフォルト）、git-scがfm-rs経由でFoundation Modelsを直接呼び出します。コミットメッセージ生成用のinstructionsを設定した `LanguageModelSession` を毎回作成します
+- **ビルド**: `cargo build --features apple-ai`（macOSでは `make build` / `make install` で自動的に有効）
+- **クロスプラットフォーム**: Linux/WindowsではApple Intelligenceは利用できず、自動的にスキップされます
 
 ## ビルドコマンド
 

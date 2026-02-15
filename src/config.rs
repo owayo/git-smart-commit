@@ -100,13 +100,17 @@ fn default_language() -> String {
 
 impl Default for Config {
     fn default() -> Self {
+        let mut providers = vec![
+            "opencode".to_string(),
+            "gemini".to_string(),
+            "codex".to_string(),
+            "claude".to_string(),
+        ];
+        if cfg!(all(target_os = "macos", feature = "apple-ai")) {
+            providers.push("apple-intelligence".to_string());
+        }
         Self {
-            providers: vec![
-                "opencode".to_string(),
-                "gemini".to_string(),
-                "codex".to_string(),
-                "claude".to_string(),
-            ],
+            providers,
             language: default_language(),
             models: ModelsConfig::default(),
             prefix_scripts: Vec::new(),
@@ -297,12 +301,26 @@ impl Config {
 
     /// init コマンド用のデフォルト設定ファイル内容を生成
     pub fn default_config_content() -> String {
-        r#"# git-sc configuration file
+        let providers = if cfg!(all(target_os = "macos", feature = "apple-ai")) {
+            r#"providers = ["opencode", "gemini", "codex", "claude", "apple-intelligence"]"#
+        } else {
+            r#"providers = ["opencode", "gemini", "codex", "claude"]"#
+        };
+
+        let apple_ai_available = if cfg!(all(target_os = "macos", feature = "apple-ai")) {
+            r#"# Available: "opencode", "gemini", "codex", "claude", "apple-intelligence"
+# "apple-intelligence" requires macOS 26+ with Apple Silicon"#
+        } else {
+            r#"# Available: "opencode", "gemini", "codex", "claude""#
+        };
+
+        format!(
+            r#"# git-sc configuration file
 # AI-powered smart commit message generator
 
 # AI providers priority order
-# Available: "opencode", "gemini", "codex", "claude"
-providers = ["opencode", "gemini", "codex", "claude"]
+{apple_ai_available}
+{providers}
 
 # Commit message language
 language = "Japanese"
@@ -343,7 +361,7 @@ opencode = ""
 # url_pattern = "github\\.com[:/]myorg/"
 # prefix_type = "conventional"
 "#
-        .to_string()
+        )
     }
 }
 
@@ -367,15 +385,16 @@ mod tests {
     fn test_default_config() {
         let config = Config::default();
 
-        assert_eq!(
-            config.providers,
-            vec![
-                "opencode".to_string(),
-                "gemini".to_string(),
-                "codex".to_string(),
-                "claude".to_string()
-            ]
-        );
+        let mut expected_providers = vec![
+            "opencode".to_string(),
+            "gemini".to_string(),
+            "codex".to_string(),
+            "claude".to_string(),
+        ];
+        if cfg!(all(target_os = "macos", feature = "apple-ai")) {
+            expected_providers.push("apple-intelligence".to_string());
+        }
+        assert_eq!(config.providers, expected_providers);
         assert_eq!(config.language, "Japanese");
         assert!(config.prefix_scripts.is_empty());
         assert!(config.prefix_rules.is_empty());
@@ -396,8 +415,8 @@ mod tests {
     #[test]
     fn test_parse_minimal_config() {
         let toml = r#"
-providers = ["gemini"]
-language = "English"
+        providers = ["gemini"]
+        language = "English"
 "#;
 
         let config = Config::from_str(toml).unwrap();
@@ -414,9 +433,9 @@ language = "English"
     #[test]
     fn test_parse_config_with_custom_cooldown() {
         let toml = r#"
-providers = ["gemini"]
-language = "Japanese"
-provider_cooldown_minutes = 30
+        providers = ["gemini"]
+        language = "Japanese"
+        provider_cooldown_minutes = 30
 "#;
 
         let config = Config::from_str(toml).unwrap();
@@ -427,9 +446,9 @@ provider_cooldown_minutes = 30
     #[test]
     fn test_parse_config_with_zero_cooldown() {
         let toml = r#"
-providers = ["gemini"]
-language = "Japanese"
-provider_cooldown_minutes = 0
+        providers = ["gemini"]
+        language = "Japanese"
+        provider_cooldown_minutes = 0
 "#;
 
         let config = Config::from_str(toml).unwrap();
@@ -441,12 +460,12 @@ provider_cooldown_minutes = 0
     #[test]
     fn test_parse_config_with_prefix_scripts() {
         let toml = r#"
-providers = ["claude"]
-language = "Japanese"
+        providers = ["claude"]
+        language = "Japanese"
 
-[[prefix_scripts]]
-url_pattern = "^https://github\\.com/myorg/"
-script = "/path/to/script.sh"
+        [[prefix_scripts]]
+        url_pattern = "^https://github\\.com/myorg/"
+        script = "/path/to/script.sh"
 "#;
 
         let config = Config::from_str(toml).unwrap();
