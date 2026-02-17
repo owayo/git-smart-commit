@@ -391,3 +391,4 @@ See [Releases](https://github.com/owayo/git-smart-commit/releases) for version h
 ## License
 
 [MIT](LICENSE)
+

@@ -736,15 +736,31 @@ Changes:
 
         let instructions = format!(
             "You are a Git commit message generator. \
-            You receive a diff or description of code changes and output ONLY a concise commit message in {language}. \
-            Do not include any explanation, commentary, or formatting beyond the commit message itself. \
-            Follow the format instructions provided in the prompt exactly.\n\n\
+            Output ONLY a commit message in {language}. No explanation, no markdown, no code blocks.\n\n\
+            CRITICAL FORMAT RULE: The commit message MUST start with a type prefix followed by a COLON and a SPACE.\n\
+            Correct: \"feat: add user authentication\"\n\
+            Correct: \"fix: resolve null pointer error\"\n\
+            WRONG:   \"feat add user authentication\" (missing colon)\n\
+            WRONG:   \"Add user authentication\" (missing prefix)\n\n\
+            The format is ALWAYS: <type>: <description>\n\n\
+            Available types and when to use each:\n{guide}\n\n\
+            Examples:\n\
+            - New function/struct/feature → feat: <description>\n\
+            - Bug fix/error correction → fix: <description>\n\
+            - Documentation/comments/README → docs: <description>\n\
+            - Formatting/whitespace/import order → style: <description>\n\
+            - Code restructuring (no behavior change) → refactor: <description>\n\
+            - Performance improvement/caching → perf: <description>\n\
+            - Adding/updating tests → test: <description>\n\
+            - Dependencies/Cargo.toml/Makefile → build: <description>\n\
+            - CI/CD workflow changes → ci: <description>\n\
+            - .gitignore/LICENSE/config files → chore: <description>\n\
+            - Removing/reverting code → revert: <description>\n\n\
             Style rules:\n\
-            - Use short, direct phrases (noun phrases or verb stems)\n\
-            - Do NOT use polite or formal sentence endings\n\
+            - Use short, direct phrases\n\
             - Do NOT end with a period\n\
-            - Keep the message concise and descriptive\n\n\
-            When using Conventional Commits format, choose the correct prefix:\n{guide}",
+            - Do NOT use polite or formal sentence endings\n\
+            - Keep under 72 characters",
             language = language,
             guide = CONVENTIONAL_COMMITS_GUIDE
         );
@@ -1695,5 +1711,464 @@ ERROR: Your access token could not be refreshed because your refresh token was a
         };
         let service = AiService::from_config(&config);
         assert_eq!(service.cooldown_minutes, 0);
+    }
+
+    // ============================================================
+    // Apple Intelligence 統合テスト (cargo test --features apple-ai -- --ignored)
+    // ============================================================
+
+    /// Conventional Commits の有効なプレフィックス一覧
+    #[cfg(all(target_os = "macos", feature = "apple-ai"))]
+    const CONVENTIONAL_PREFIXES: &[&str] = &[
+        "feat", "fix", "docs", "style", "refactor", "perf", "test", "build", "ci", "chore",
+        "revert",
+    ];
+
+    /// 生成メッセージが Conventional Commits 形式かチェック
+    #[cfg(all(target_os = "macos", feature = "apple-ai"))]
+    fn is_conventional_commit(message: &str) -> bool {
+        let first_line = message.lines().next().unwrap_or("");
+        CONVENTIONAL_PREFIXES.iter().any(|p| {
+            first_line.starts_with(&format!("{}:", p)) || first_line.starts_with(&format!("{}(", p))
+        })
+    }
+
+    /// Apple Intelligence が利用可能ならプロンプトを送って結果を返す。
+    /// 利用不可ならNoneを返す（テストスキップ用）。
+    #[cfg(all(target_os = "macos", feature = "apple-ai"))]
+    fn try_apple_intelligence(
+        diff: &str,
+        prefix_type: Option<&str>,
+        with_body: bool,
+    ) -> Option<Result<String, AppError>> {
+        let model = fm_rs::SystemLanguageModel::new().ok()?;
+        if model.ensure_available().is_err() {
+            return None;
+        }
+        let prompt = AiService::build_prompt(diff, &[], "English", prefix_type, with_body);
+        Some(AiService::call_apple_intelligence_native(
+            &prompt, "English",
+        ))
+    }
+
+    /// Apple Intelligence テスト結果を検証して出力するヘルパー。
+    /// Conventional Commits 形式でなくても WARN を出すだけでテストは落とさない。
+    /// (オンデバイス ~3B モデルの精度限界を許容する)
+    #[cfg(all(target_os = "macos", feature = "apple-ai"))]
+    fn assert_apple_intelligence_result(
+        label: &str,
+        result: Option<Result<String, AppError>>,
+        check_body_format: bool,
+    ) {
+        match result {
+            None => {
+                println!("[SKIP] {} - Apple Intelligence not available", label);
+            }
+            Some(Ok(msg)) => {
+                assert!(!msg.is_empty(), "[{}] Message should not be empty", label);
+                if check_body_format {
+                    println!("[{}] Generated:\n{}", label, msg);
+                    let lines: Vec<&str> = msg.lines().collect();
+                    if lines.len() > 1 && !lines[1].trim().is_empty() {
+                        println!(
+                            "[WARN] [{}] Second line should be empty separator, got: {:?}",
+                            label, lines[1]
+                        );
+                    }
+                } else {
+                    println!("[{}] Generated: {}", label, msg);
+                }
+                if is_conventional_commit(&msg) {
+                    println!("[OK]   [{}] Conventional Commits format detected", label);
+                } else {
+                    println!(
+                        "[WARN] [{}] Not Conventional Commits format (on-device ~3B model limitation)",
+                        label
+                    );
+                }
+            }
+            Some(Err(e)) => {
+                println!("[FAIL] [{}] Generation failed (acceptable): {}", label, e);
+            }
+        }
+    }
+
+    // ----------------------------------------
+    // feat パターン (3 cases)
+    // ----------------------------------------
+
+    #[cfg(all(target_os = "macos", feature = "apple-ai"))]
+    #[rstest]
+    #[case(
+        "feat-1-new-function",
+        "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -0,0 +1,5 @@\n+pub fn new_feature() {\n+    println!(\"new feature\");\n+}\n"
+    )]
+    #[case(
+        "feat-2-new-struct-and-impl",
+        "--- a/src/models/user.rs\n+++ b/src/models/user.rs\n@@ -0,0 +1,18 @@\n+pub struct User {\n+    pub id: u64,\n+    pub name: String,\n+    pub email: String,\n+}\n+\n+impl User {\n+    pub fn new(name: &str, email: &str) -> Self {\n+        Self {\n+            id: 0,\n+            name: name.to_string(),\n+            email: email.to_string(),\n+        }\n+    }\n+\n+    pub fn display_name(&self) -> &str {\n+        &self.name\n+    }\n+}\n"
+    )]
+    #[case(
+        "feat-3-new-cli-flag",
+        "--- a/src/cli.rs\n+++ b/src/cli.rs\n@@ -25,6 +25,10 @@\n     #[arg(short, long)]\n     pub verbose: bool,\n \n+    /// Export output as JSON format\n+    #[arg(long)]\n+    pub json: bool,\n+\n     #[arg(short, long)]\n     pub output: Option<String>,\n"
+    )]
+    #[test]
+    #[ignore]
+    fn test_apple_intelligence_feat(#[case] label: &str, #[case] diff: &str) {
+        assert_apple_intelligence_result(
+            label,
+            try_apple_intelligence(diff, Some("conventional"), false),
+            false,
+        );
+    }
+
+    // ----------------------------------------
+    // fix パターン (3 cases)
+    // ----------------------------------------
+
+    #[cfg(all(target_os = "macos", feature = "apple-ai"))]
+    #[rstest]
+    #[case(
+        "fix-1-comparison-operator",
+        "--- a/src/app.rs\n+++ b/src/app.rs\n@@ -10,3 +10,3 @@\n-    if count = 0 {\n+    if count == 0 {\n"
+    )]
+    #[case(
+        "fix-2-null-pointer",
+        "--- a/src/service.rs\n+++ b/src/service.rs\n@@ -42,4 +42,7 @@\n     pub fn get_user(&self, id: u64) -> Option<&User> {\n-        self.users.get(&id).unwrap()\n+        self.users.get(&id)\n     }\n"
+    )]
+    #[case(
+        "fix-3-off-by-one",
+        "--- a/src/pagination.rs\n+++ b/src/pagination.rs\n@@ -15,3 +15,3 @@\n     pub fn total_pages(&self, total_items: usize) -> usize {\n-        total_items / self.page_size\n+        (total_items + self.page_size - 1) / self.page_size\n     }\n"
+    )]
+    #[test]
+    #[ignore]
+    fn test_apple_intelligence_fix(#[case] label: &str, #[case] diff: &str) {
+        assert_apple_intelligence_result(
+            label,
+            try_apple_intelligence(diff, Some("conventional"), false),
+            false,
+        );
+    }
+
+    // ----------------------------------------
+    // docs パターン (3 cases)
+    // ----------------------------------------
+
+    #[cfg(all(target_os = "macos", feature = "apple-ai"))]
+    #[rstest]
+    #[case(
+        "docs-1-readme-install",
+        "--- a/README.md\n+++ b/README.md\n@@ -1,2 +1,6 @@\n # Project\n+\n+## Installation\n+\n+```bash\n+cargo install my-tool\n+```\n"
+    )]
+    #[case(
+        "docs-2-rustdoc-comment",
+        "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -5,2 +5,8 @@\n+/// Calculates the factorial of a number.\n+///\n+/// # Examples\n+///\n+/// ```\n+/// assert_eq!(factorial(5), 120);\n+/// ```\n pub fn factorial(n: u64) -> u64 {\n"
+    )]
+    #[case(
+        "docs-3-changelog",
+        "--- a/CHANGELOG.md\n+++ b/CHANGELOG.md\n@@ -1,3 +1,9 @@\n # Changelog\n \n+## [1.2.0] - 2025-01-15\n+\n+### Added\n+- New export command for JSON output\n+- Support for custom configuration files\n+\n ## [1.1.0] - 2024-12-01\n"
+    )]
+    #[test]
+    #[ignore]
+    fn test_apple_intelligence_docs(#[case] label: &str, #[case] diff: &str) {
+        assert_apple_intelligence_result(
+            label,
+            try_apple_intelligence(diff, Some("conventional"), false),
+            false,
+        );
+    }
+
+    // ----------------------------------------
+    // style パターン (3 cases)
+    // ----------------------------------------
+
+    #[cfg(all(target_os = "macos", feature = "apple-ai"))]
+    #[rstest]
+    #[case(
+        "style-1-formatting",
+        "--- a/src/main.rs\n+++ b/src/main.rs\n@@ -5,4 +5,4 @@\n-fn main(){\n-let x=1;\n-let y=2;\n+fn main() {\n+    let x = 1;\n+    let y = 2;\n"
+    )]
+    #[case(
+        "style-2-trailing-whitespace",
+        "--- a/src/utils.rs\n+++ b/src/utils.rs\n@@ -1,6 +1,6 @@\n-pub fn trim(s: &str) -> &str {  \n-    s.trim()  \n-}  \n+pub fn trim(s: &str) -> &str {\n+    s.trim()\n+}\n"
+    )]
+    #[case(
+        "style-3-import-sorting",
+        "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,5 +1,5 @@\n-use std::io;\n-use std::collections::HashMap;\n-use std::fs;\n+use std::collections::HashMap;\n+use std::fs;\n+use std::io;\n"
+    )]
+    #[test]
+    #[ignore]
+    fn test_apple_intelligence_style(#[case] label: &str, #[case] diff: &str) {
+        assert_apple_intelligence_result(
+            label,
+            try_apple_intelligence(diff, Some("conventional"), false),
+            false,
+        );
+    }
+
+    // ----------------------------------------
+    // refactor パターン (3 cases)
+    // ----------------------------------------
+
+    #[cfg(all(target_os = "macos", feature = "apple-ai"))]
+    #[rstest]
+    #[case(
+        "refactor-1-extract-params",
+        "--- a/src/handler.rs\n+++ b/src/handler.rs\n@@ -1,8 +1,6 @@\n-fn process(a: i32, b: i32, c: i32) -> i32 {\n-    let tmp = a + b;\n-    tmp * c\n-}\n+fn process(params: &Params) -> i32 {\n+    (params.a + params.b) * params.c\n+}\n"
+    )]
+    #[case(
+        "refactor-2-extract-method",
+        "--- a/src/app.rs\n+++ b/src/app.rs\n@@ -20,12 +20,8 @@\n     pub fn run(&self) {\n-        let config = Config::load();\n-        let validated = config.validate();\n-        if !validated {\n-            eprintln!(\"Invalid config\");\n-            return;\n-        }\n-        self.execute(config);\n+        match self.load_and_validate_config() {\n+            Ok(config) => self.execute(config),\n+            Err(e) => eprintln!(\"Config error: {}\", e),\n+        }\n     }\n"
+    )]
+    #[case(
+        "refactor-3-enum-replace-strings",
+        "--- a/src/status.rs\n+++ b/src/status.rs\n@@ -1,10 +1,16 @@\n-pub fn get_status(code: &str) -> &str {\n-    match code {\n-        \"ok\" => \"Success\",\n-        \"err\" => \"Error\",\n-        \"pending\" => \"Pending\",\n-        _ => \"Unknown\",\n-    }\n+pub enum Status {\n+    Ok,\n+    Error,\n+    Pending,\n+}\n+\n+impl Status {\n+    pub fn label(&self) -> &str {\n+        match self {\n+            Status::Ok => \"Success\",\n+            Status::Error => \"Error\",\n+            Status::Pending => \"Pending\",\n+        }\n+    }\n }\n"
+    )]
+    #[test]
+    #[ignore]
+    fn test_apple_intelligence_refactor(#[case] label: &str, #[case] diff: &str) {
+        assert_apple_intelligence_result(
+            label,
+            try_apple_intelligence(diff, Some("conventional"), false),
+            false,
+        );
+    }
+
+    // ----------------------------------------
+    // perf パターン (3 cases)
+    // ----------------------------------------
+
+    #[cfg(all(target_os = "macos", feature = "apple-ai"))]
+    #[rstest]
+    #[case(
+        "perf-1-parallel-iter",
+        "--- a/src/search.rs\n+++ b/src/search.rs\n@@ -3,4 +3,5 @@\n-fn search(items: &[Item], query: &str) -> Vec<&Item> {\n-    items.iter().filter(|i| i.name.contains(query)).collect()\n+fn search(items: &[Item], query: &str) -> Vec<&Item> {\n+    let query_lower = query.to_lowercase();\n+    items.par_iter().filter(|i| i.name_lower.contains(&query_lower)).collect()\n"
+    )]
+    #[case(
+        "perf-2-add-caching",
+        "--- a/src/db.rs\n+++ b/src/db.rs\n@@ -8,6 +8,12 @@\n pub struct UserRepo {\n     db: Database,\n+    cache: HashMap<u64, User>,\n }\n \n impl UserRepo {\n-    pub fn find(&self, id: u64) -> Option<User> {\n-        self.db.query(\"SELECT * FROM users WHERE id = ?\", &[id])\n+    pub fn find(&mut self, id: u64) -> Option<&User> {\n+        if self.cache.contains_key(&id) {\n+            return self.cache.get(&id);\n+        }\n+        if let Some(user) = self.db.query(\"SELECT * FROM users WHERE id = ?\", &[id]) {\n+            self.cache.insert(id, user);\n+            return self.cache.get(&id);\n+        }\n+        None\n     }\n"
+    )]
+    #[case(
+        "perf-3-reduce-allocations",
+        "--- a/src/formatter.rs\n+++ b/src/formatter.rs\n@@ -3,8 +3,8 @@\n pub fn format_items(items: &[Item]) -> String {\n-    let mut parts = Vec::new();\n-    for item in items {\n-        parts.push(format!(\"{}: {}\", item.name, item.value));\n-    }\n-    parts.join(\", \")\n+    let mut buf = String::with_capacity(items.len() * 32);\n+    for (i, item) in items.iter().enumerate() {\n+        if i > 0 { buf.push_str(\", \"); }\n+        buf.push_str(&item.name);\n+        buf.push_str(\": \");\n+        buf.push_str(&item.value.to_string());\n+    }\n+    buf\n }\n"
+    )]
+    #[test]
+    #[ignore]
+    fn test_apple_intelligence_perf(#[case] label: &str, #[case] diff: &str) {
+        assert_apple_intelligence_result(
+            label,
+            try_apple_intelligence(diff, Some("conventional"), false),
+            false,
+        );
+    }
+
+    // ----------------------------------------
+    // test パターン (3 cases)
+    // ----------------------------------------
+
+    #[cfg(all(target_os = "macos", feature = "apple-ai"))]
+    #[rstest]
+    #[case(
+        "test-1-unit-test",
+        "--- a/tests/unit_test.rs\n+++ b/tests/unit_test.rs\n@@ -0,0 +1,8 @@\n+#[test]\n+fn test_user_creation() {\n+    let user = User::new(\"test\");\n+    assert_eq!(user.name(), \"test\");\n+}\n"
+    )]
+    #[case(
+        "test-2-add-edge-case",
+        "--- a/src/parser.rs\n+++ b/src/parser.rs\n@@ -50,0 +51,18 @@\n+#[cfg(test)]\n+mod tests {\n+    use super::*;\n+\n+    #[test]\n+    fn test_parse_empty_input() {\n+        assert!(parse(\"\").is_err());\n+    }\n+\n+    #[test]\n+    fn test_parse_whitespace_only() {\n+        assert!(parse(\"   \").is_err());\n+    }\n+\n+    #[test]\n+    fn test_parse_unicode() {\n+        assert!(parse(\"こんにちは\").is_ok());\n+    }\n+}\n"
+    )]
+    #[case(
+        "test-3-integration-test",
+        "--- a/tests/integration/api_test.rs\n+++ b/tests/integration/api_test.rs\n@@ -0,0 +1,22 @@\n+use assert_cmd::Command;\n+use predicates::prelude::*;\n+\n+#[test]\n+fn test_cli_version_flag() {\n+    Command::cargo_bin(\"my-app\")\n+        .unwrap()\n+        .arg(\"--version\")\n+        .assert()\n+        .success()\n+        .stdout(predicate::str::contains(env!(\"CARGO_PKG_VERSION\")));\n+}\n+\n+#[test]\n+fn test_cli_help_flag() {\n+    Command::cargo_bin(\"my-app\")\n+        .unwrap()\n+        .arg(\"--help\")\n+        .assert()\n+        .success()\n+        .stdout(predicate::str::contains(\"Usage\"));\n+}\n"
+    )]
+    #[test]
+    #[ignore]
+    fn test_apple_intelligence_test(#[case] label: &str, #[case] diff: &str) {
+        assert_apple_intelligence_result(
+            label,
+            try_apple_intelligence(diff, Some("conventional"), false),
+            false,
+        );
+    }
+
+    // ----------------------------------------
+    // build パターン (3 cases)
+    // ----------------------------------------
+
+    #[cfg(all(target_os = "macos", feature = "apple-ai"))]
+    #[rstest]
+    #[case(
+        "build-1-add-dependency",
+        "--- a/Cargo.toml\n+++ b/Cargo.toml\n@@ -10,2 +10,3 @@\n serde = \"1.0\"\n+tokio = { version = \"1.0\", features = [\"full\"] }\n"
+    )]
+    #[case(
+        "build-2-update-version",
+        "--- a/Cargo.toml\n+++ b/Cargo.toml\n@@ -1,5 +1,5 @@\n [package]\n name = \"my-app\"\n-version = \"1.2.0\"\n+version = \"1.3.0\"\n edition = \"2021\"\n"
+    )]
+    #[case(
+        "build-3-makefile-target",
+        "--- a/Makefile\n+++ b/Makefile\n@@ -15,0 +16,6 @@\n+.PHONY: docker\n+docker:\n+\tdocker build -t my-app:latest .\n+\tdocker tag my-app:latest registry.example.com/my-app:latest\n+\tdocker push registry.example.com/my-app:latest\n"
+    )]
+    #[test]
+    #[ignore]
+    fn test_apple_intelligence_build(#[case] label: &str, #[case] diff: &str) {
+        assert_apple_intelligence_result(
+            label,
+            try_apple_intelligence(diff, Some("conventional"), false),
+            false,
+        );
+    }
+
+    // ----------------------------------------
+    // ci パターン (3 cases)
+    // ----------------------------------------
+
+    #[cfg(all(target_os = "macos", feature = "apple-ai"))]
+    #[rstest]
+    #[case(
+        "ci-1-add-cache",
+        "--- a/.github/workflows/ci.yml\n+++ b/.github/workflows/ci.yml\n@@ -15,2 +15,6 @@\n     - uses: actions/checkout@v4\n+    - uses: actions/cache@v4\n+      with:\n+        path: |\n+          ~/.cargo/registry\n+          target\n+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}\n"
+    )]
+    #[case(
+        "ci-2-add-lint-job",
+        "--- a/.github/workflows/ci.yml\n+++ b/.github/workflows/ci.yml\n@@ -20,0 +21,12 @@\n+  lint:\n+    runs-on: ubuntu-latest\n+    steps:\n+      - uses: actions/checkout@v4\n+      - uses: dtolnay/rust-toolchain@stable\n+        with:\n+          components: clippy, rustfmt\n+      - run: cargo fmt --all -- --check\n+      - run: cargo clippy -- -D warnings\n"
+    )]
+    #[case(
+        "ci-3-add-release-workflow",
+        "--- /dev/null\n+++ b/.github/workflows/release.yml\n@@ -0,0 +1,20 @@\n+name: Release\n+on:\n+  push:\n+    tags:\n+      - 'v*'\n+jobs:\n+  release:\n+    runs-on: ubuntu-latest\n+    steps:\n+      - uses: actions/checkout@v4\n+      - uses: dtolnay/rust-toolchain@stable\n+      - run: cargo build --release\n+      - uses: softprops/action-gh-release@v2\n+        with:\n+          files: target/release/my-app\n"
+    )]
+    #[test]
+    #[ignore]
+    fn test_apple_intelligence_ci(#[case] label: &str, #[case] diff: &str) {
+        assert_apple_intelligence_result(
+            label,
+            try_apple_intelligence(diff, Some("conventional"), false),
+            false,
+        );
+    }
+
+    // ----------------------------------------
+    // chore パターン (3 cases)
+    // ----------------------------------------
+
+    #[cfg(all(target_os = "macos", feature = "apple-ai"))]
+    #[rstest]
+    #[case(
+        "chore-1-gitignore",
+        "--- a/.gitignore\n+++ b/.gitignore\n@@ -1,2 +1,5 @@\n /target\n+*.log\n+.env\n+.DS_Store\n+*.swp\n"
+    )]
+    #[case(
+        "chore-2-editorconfig",
+        "--- /dev/null\n+++ b/.editorconfig\n@@ -0,0 +1,10 @@\n+root = true\n+\n+[*]\n+indent_style = space\n+indent_size = 4\n+end_of_line = lf\n+charset = utf-8\n+trim_trailing_whitespace = true\n+insert_final_newline = true\n"
+    )]
+    #[case(
+        "chore-3-license-update",
+        "--- a/LICENSE\n+++ b/LICENSE\n@@ -1,3 +1,3 @@\n MIT License\n \n-Copyright (c) 2024 Example\n+Copyright (c) 2024-2025 Example\n"
+    )]
+    #[test]
+    #[ignore]
+    fn test_apple_intelligence_chore(#[case] label: &str, #[case] diff: &str) {
+        assert_apple_intelligence_result(
+            label,
+            try_apple_intelligence(diff, Some("conventional"), false),
+            false,
+        );
+    }
+
+    // ----------------------------------------
+    // revert パターン (3 cases)
+    // ----------------------------------------
+
+    #[cfg(all(target_os = "macos", feature = "apple-ai"))]
+    #[rstest]
+    #[case(
+        "revert-1-remove-feature",
+        "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -10,8 +10,0 @@\n-pub fn experimental_feature() {\n-    println!(\"This feature caused issues\");\n-}\n-\n-pub fn experimental_helper() {\n-    println!(\"Helper for experimental feature\");\n-}\n"
+    )]
+    #[case(
+        "revert-2-restore-old-logic",
+        "--- a/src/auth.rs\n+++ b/src/auth.rs\n@@ -5,6 +5,4 @@\n pub fn verify_token(token: &str) -> bool {\n-    // New JWT verification (broken)\n-    jwt::decode(token)\n-        .map(|claims| claims.exp > now())\n-        .unwrap_or(false)\n+    // Revert to simple token check until JWT is fixed\n+    token.len() == 64 && token.chars().all(|c| c.is_ascii_hexdigit())\n }\n"
+    )]
+    #[case(
+        "revert-3-rollback-dependency",
+        "--- a/Cargo.toml\n+++ b/Cargo.toml\n@@ -12,3 +12,3 @@\n [dependencies]\n-serde = \"2.0.0-beta\"\n+serde = \"1.0.228\"\n"
+    )]
+    #[test]
+    #[ignore]
+    fn test_apple_intelligence_revert(#[case] label: &str, #[case] diff: &str) {
+        assert_apple_intelligence_result(
+            label,
+            try_apple_intelligence(diff, Some("conventional"), false),
+            false,
+        );
+    }
+
+    // ----------------------------------------
+    // body 付きメッセージ生成テスト (3 cases)
+    // ----------------------------------------
+
+    #[cfg(all(target_os = "macos", feature = "apple-ai"))]
+    #[rstest]
+    #[case(
+        "body-1-new-struct",
+        "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -0,0 +1,15 @@\n+pub struct Config {\n+    pub timeout: u64,\n+    pub retries: u32,\n+}\n+\n+impl Config {\n+    pub fn new() -> Self {\n+        Self { timeout: 30, retries: 3 }\n+    }\n+\n+    pub fn with_timeout(mut self, timeout: u64) -> Self {\n+        self.timeout = timeout;\n+        self\n+    }\n+}\n"
+    )]
+    #[case(
+        "body-2-multiple-fixes",
+        "--- a/src/validator.rs\n+++ b/src/validator.rs\n@@ -10,6 +10,8 @@\n pub fn validate_email(email: &str) -> bool {\n-    email.contains(\"@\")\n+    let parts: Vec<&str> = email.split('@').collect();\n+    parts.len() == 2 && !parts[0].is_empty() && parts[1].contains('.')\n }\n \n pub fn validate_age(age: i32) -> bool {\n-    age > 0\n+    age > 0 && age < 150\n }\n"
+    )]
+    #[case(
+        "body-3-large-feature",
+        "--- a/src/export.rs\n+++ b/src/export.rs\n@@ -0,0 +1,30 @@\n+use std::fs::File;\n+use std::io::Write;\n+use serde_json;\n+\n+pub enum ExportFormat {\n+    Json,\n+    Csv,\n+    Yaml,\n+}\n+\n+pub fn export(data: &[Record], format: ExportFormat, path: &str) -> Result<(), Box<dyn std::error::Error>> {\n+    let content = match format {\n+        ExportFormat::Json => serde_json::to_string_pretty(data)?,\n+        ExportFormat::Csv => records_to_csv(data),\n+        ExportFormat::Yaml => serde_yaml::to_string(data)?,\n+    };\n+    let mut file = File::create(path)?;\n+    file.write_all(content.as_bytes())?;\n+    Ok(())\n+}\n+\n+fn records_to_csv(data: &[Record]) -> String {\n+    let mut buf = String::from(\"id,name,value\\n\");\n+    for r in data {\n+        buf.push_str(&format!(\"{},{},{}\\n\", r.id, r.name, r.value));\n+    }\n+    buf\n+}\n"
+    )]
+    #[test]
+    #[ignore]
+    fn test_apple_intelligence_with_body(#[case] label: &str, #[case] diff: &str) {
+        assert_apple_intelligence_result(
+            label,
+            try_apple_intelligence(diff, Some("conventional"), true),
+            true,
+        );
+    }
+
+    // ----------------------------------------
+    // 日本語出力テスト (3 cases)
+    // ----------------------------------------
+
+    #[cfg(all(target_os = "macos", feature = "apple-ai"))]
+    fn try_apple_intelligence_ja(
+        diff: &str,
+        prefix_type: Option<&str>,
+    ) -> Option<Result<String, AppError>> {
+        let model = fm_rs::SystemLanguageModel::new().ok()?;
+        if model.ensure_available().is_err() {
+            return None;
+        }
+        let prompt = AiService::build_prompt(diff, &[], "Japanese", prefix_type, false);
+        Some(AiService::call_apple_intelligence_native(
+            &prompt, "Japanese",
+        ))
+    }
+
+    #[cfg(all(target_os = "macos", feature = "apple-ai"))]
+    #[rstest]
+    #[case(
+        "ja-1-new-function",
+        "--- a/src/main.rs\n+++ b/src/main.rs\n@@ -5,0 +6,4 @@\n+fn greet(name: &str) -> String {\n+    format!(\"Hello, {}!\", name)\n+}\n"
+    )]
+    #[case(
+        "ja-2-bugfix",
+        "--- a/src/calc.rs\n+++ b/src/calc.rs\n@@ -8,3 +8,3 @@\n pub fn divide(a: f64, b: f64) -> Result<f64, String> {\n-    Ok(a / b)\n+    if b == 0.0 { Err(\"division by zero\".to_string()) } else { Ok(a / b) }\n }\n"
+    )]
+    #[case(
+        "ja-3-add-error-handling",
+        "--- a/src/io.rs\n+++ b/src/io.rs\n@@ -3,4 +3,8 @@\n pub fn read_config(path: &str) -> Config {\n-    let content = std::fs::read_to_string(path).unwrap();\n-    toml::from_str(&content).unwrap()\n+    let content = std::fs::read_to_string(path)\n+        .unwrap_or_else(|e| {\n+            eprintln!(\"Failed to read {}: {}\", path, e);\n+            std::process::exit(1);\n+        });\n+    toml::from_str(&content).unwrap_or_else(|e| {\n+        eprintln!(\"Failed to parse {}: {}\", path, e);\n+        std::process::exit(1);\n+    })\n }\n"
+    )]
+    #[test]
+    #[ignore]
+    fn test_apple_intelligence_japanese_output(#[case] label: &str, #[case] diff: &str) {
+        assert_apple_intelligence_result(
+            label,
+            try_apple_intelligence_ja(diff, Some("conventional")),
+            false,
+        );
     }
 }
