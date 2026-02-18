@@ -692,7 +692,11 @@ Changes:
         }
 
         // exit code が 0 でも stderr にエラーがあれば失敗扱い
-        if !stderr_str.trim().is_empty() {
+        // ただし Codex/Claude は stderr にプロンプトエコーや詳細ログを出力するため、
+        // diff 内容に "error:" が含まれると誤検出するのでスキップ
+        if !stderr_str.trim().is_empty()
+            && !matches!(provider, AiProvider::Codex | AiProvider::Claude)
+        {
             let lower = stderr_str.to_lowercase();
             if lower.contains("file not found") || lower.contains("error:") {
                 let error_msg = Self::extract_error(&stderr_str, provider);
