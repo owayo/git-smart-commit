@@ -794,10 +794,18 @@ Changes:
     fn extract_error(stderr: &str, provider: &AiProvider) -> String {
         match provider {
             AiProvider::Gemini => {
-                // [API Error: ...] パターンを探す
+                // [API Error: ...] パターンを優先的に探す
                 for line in stderr.lines() {
                     if line.starts_with("[API Error:") {
                         return line.to_string();
+                    }
+                }
+                // "critical error occurred" パターンを探す
+                // 例: "An unexpected critical error occurred:Error: ..."
+                for line in stderr.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.contains("critical error") || trimmed.contains("Error:") {
+                        return trimmed.to_string();
                     }
                 }
                 "Gemini API request failed".to_string()
@@ -1394,6 +1402,22 @@ mod tests {
         let stderr = "[API Error: First error]\n[API Error: Second error]";
         let error = AiService::extract_error(stderr, &AiProvider::Gemini);
         assert_eq!(error, "[API Error: First error]");
+    }
+
+    #[test]
+    fn test_extract_error_gemini_critical_error() {
+        // Gemini CLI の critical error パターンを正しく抽出
+        let stderr = "Loaded cached credentials.\nError authenticating: GaxiosError: ...\nAn unexpected critical error occurred:Error: You are currently configured to use a Google Cloud Project but lack a Gemini Code Assist license.";
+        let error = AiService::extract_error(stderr, &AiProvider::Gemini);
+        assert_eq!(error, "Error authenticating: GaxiosError: ...");
+    }
+
+    #[test]
+    fn test_extract_error_gemini_license_error() {
+        // Error: で始まる行を拾う
+        let stderr = "Some debug info\nError: Missing license for Gemini\nMore details";
+        let error = AiService::extract_error(stderr, &AiProvider::Gemini);
+        assert_eq!(error, "Error: Missing license for Gemini");
     }
 
     #[test]
