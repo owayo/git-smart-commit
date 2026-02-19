@@ -313,6 +313,7 @@ impl App {
         recent_commits: &[String],
         prefix_type: Option<&str>,
         with_body: bool,
+        agent_context: Option<&str>,
     ) {
         let prompt = AiService::build_prompt(
             diff,
@@ -320,6 +321,7 @@ impl App {
             self.ai.language(),
             prefix_type,
             with_body,
+            agent_context,
         );
         println!();
         println!("{}", "=== DEBUG: AI Prompt ===".yellow().bold());
@@ -338,19 +340,20 @@ impl App {
         prefix_mode: &PrefixMode,
         is_squash: bool,
         with_body: bool,
+        agent_context: Option<&str>,
     ) {
         let (prefix_type, commits) =
             Self::get_debug_params_for_prefix_mode(prefix_mode, recent_commits, is_squash);
-        self.print_debug_prompt(diff, commits, prefix_type, with_body);
+        self.print_debug_prompt(diff, commits, prefix_type, with_body, agent_context);
     }
 
     /// メインワークフローを実行
     pub fn run(&self, cli: &Cli) -> Result<(), AppError> {
+        // claw-hooks stop hook から渡されるエージェントコンテキスト
+        let agent_context = std::env::var("CLAW_HOOKS_AGENT_MESSAGE").ok();
+
         // Gitリポジトリかどうかを確認
         self.git.verify_repository()?;
-
-        // AI CLIがインストールされているか確認
-        self.ai.verify_installation()?;
 
         // --generate-forモードは別処理（排他チェック付き）
         if cli.generate_for.is_some() {
@@ -427,8 +430,13 @@ impl App {
             }
         }
 
+        // AI CLIがインストールされているか確認
+        self.ai.verify_installation()?;
+
         // コミットメッセージを生成
         println!("{}", "Generating commit message...".cyan());
+
+        let agent_ctx = agent_context.as_deref();
 
         // デバッグモード: プロンプトを表示
         if cli.debug {
@@ -438,14 +446,19 @@ impl App {
                 &prefix_mode,
                 false,
                 cli.with_body,
+                agent_ctx,
             );
         }
-
         let mut message = match &prefix_mode {
             PrefixMode::Script(_) => {
                 // スクリプトモード: プレフィックスなしで生成（後でスクリプトのプレフィックスを適用）
-                self.ai
-                    .generate_commit_message(&diff, &[], Some("plain"), cli.with_body)?
+                self.ai.generate_commit_message(
+                    &diff,
+                    &[],
+                    Some("plain"),
+                    cli.with_body,
+                    agent_ctx,
+                )?
             }
             PrefixMode::Rule(prefix_type) | PrefixMode::Config(prefix_type) => {
                 // ルール/設定モード: 指定されたprefix_typeで生成
@@ -454,12 +467,18 @@ impl App {
                     &recent_commits,
                     Some(prefix_type),
                     cli.with_body,
+                    agent_ctx,
                 )?
             }
             PrefixMode::Auto => {
                 // 自動判定モード: 過去コミットから推論
-                self.ai
-                    .generate_commit_message(&diff, &recent_commits, None, cli.with_body)?
+                self.ai.generate_commit_message(
+                    &diff,
+                    &recent_commits,
+                    None,
+                    cli.with_body,
+                    agent_ctx,
+                )?
             }
         };
 
@@ -552,6 +571,9 @@ impl App {
             }
         }
 
+        // AI CLIがインストールされているか確認
+        self.ai.verify_installation()?;
+
         // コミットメッセージを生成
         println!("{}", "Generating commit message...".cyan());
 
@@ -563,6 +585,7 @@ impl App {
                 &prefix_mode,
                 false,
                 cli.with_body,
+                None,
             );
         }
 
@@ -570,7 +593,7 @@ impl App {
             PrefixMode::Script(_) => {
                 // スクリプトモード: プレフィックスなしで生成（後でスクリプトのプレフィックスを適用）
                 self.ai
-                    .generate_commit_message(&diff, &[], Some("plain"), cli.with_body)?
+                    .generate_commit_message(&diff, &[], Some("plain"), cli.with_body, None)?
             }
             PrefixMode::Rule(prefix_type) | PrefixMode::Config(prefix_type) => {
                 // ルール/設定モード: 指定されたprefix_typeで生成
@@ -579,12 +602,16 @@ impl App {
                     &recent_commits,
                     Some(prefix_type),
                     cli.with_body,
+                    None,
                 )?
             }
-            PrefixMode::Auto => {
-                self.ai
-                    .generate_commit_message(&diff, &recent_commits, None, cli.with_body)?
-            }
+            PrefixMode::Auto => self.ai.generate_commit_message(
+                &diff,
+                &recent_commits,
+                None,
+                cli.with_body,
+                None,
+            )?,
         };
 
         // スクリプトモードの場合はメッセージを加工
@@ -689,29 +716,42 @@ impl App {
         // プレフィックスモードを判定
         let prefix_mode = self.get_prefix_mode();
 
+        // AI CLIがインストールされているか確認
+        self.ai.verify_installation()?;
+
         // コミットメッセージを生成（差分のみから、過去コミットは参照しない）
         println!("{}", "Generating commit message...".cyan());
 
         // デバッグモード: プロンプトを表示
         if cli.debug {
-            self.debug_print_for_prefix_mode(&diff, &[], &prefix_mode, true, cli.with_body);
+            self.debug_print_for_prefix_mode(&diff, &[], &prefix_mode, true, cli.with_body, None);
         }
 
         let mut message = match &prefix_mode {
             PrefixMode::Script(_) => {
                 // スクリプトモード: プレフィックスなしで生成
                 self.ai
-                    .generate_commit_message(&diff, &[], Some("plain"), cli.with_body)?
+                    .generate_commit_message(&diff, &[], Some("plain"), cli.with_body, None)?
             }
             PrefixMode::Rule(prefix_type) | PrefixMode::Config(prefix_type) => {
                 // ルール/設定モード: 指定されたprefix_typeで生成
-                self.ai
-                    .generate_commit_message(&diff, &[], Some(prefix_type), cli.with_body)?
+                self.ai.generate_commit_message(
+                    &diff,
+                    &[],
+                    Some(prefix_type),
+                    cli.with_body,
+                    None,
+                )?
             }
             PrefixMode::Auto => {
                 // 自動判定モード: Conventional Commits形式で生成
-                self.ai
-                    .generate_commit_message(&diff, &[], Some("conventional"), cli.with_body)?
+                self.ai.generate_commit_message(
+                    &diff,
+                    &[],
+                    Some("conventional"),
+                    cli.with_body,
+                    None,
+                )?
             }
         };
 
@@ -801,6 +841,9 @@ impl App {
             return Err(AppError::NoChanges);
         }
 
+        // AI CLIがインストールされているか確認
+        self.ai.verify_installation()?;
+
         // プレフィックスモードを判定（サイレントモード）
         let prefix_mode = self.get_prefix_mode_silent();
 
@@ -818,6 +861,7 @@ impl App {
                 self.ai.language(),
                 prefix_type,
                 cli.with_body,
+                None,
             );
             eprintln!("{}", "=== DEBUG: AI Prompt ===".yellow().bold());
             eprintln!("{}", "─".repeat(50).dimmed());
@@ -834,6 +878,7 @@ impl App {
                 &[],
                 Some("plain"),
                 cli.with_body,
+                None,
             )?,
             PrefixMode::Rule(prefix_type) | PrefixMode::Config(prefix_type) => {
                 // ルール/設定モード: 指定されたprefix_typeで生成
@@ -842,6 +887,7 @@ impl App {
                     &recent_commits,
                     Some(prefix_type),
                     cli.with_body,
+                    None,
                 )?
             }
             PrefixMode::Auto => self.ai.generate_commit_message_silent(
@@ -849,6 +895,7 @@ impl App {
                 &recent_commits,
                 None,
                 cli.with_body,
+                None,
             )?,
         };
 
@@ -935,6 +982,9 @@ impl App {
             }
         }
 
+        // AI CLIがインストールされているか確認
+        self.ai.verify_installation()?;
+
         // コミットメッセージを生成
         println!("{}", "Generating commit message...".cyan());
 
@@ -946,6 +996,7 @@ impl App {
                 &prefix_mode,
                 false,
                 cli.with_body,
+                None,
             );
         }
 
@@ -953,7 +1004,7 @@ impl App {
             PrefixMode::Script(_) => {
                 // スクリプトモード: プレフィックスなしで生成
                 self.ai
-                    .generate_commit_message(&diff, &[], Some("plain"), cli.with_body)?
+                    .generate_commit_message(&diff, &[], Some("plain"), cli.with_body, None)?
             }
             PrefixMode::Rule(prefix_type) | PrefixMode::Config(prefix_type) => {
                 // ルール/設定モード: 指定されたprefix_typeで生成
@@ -962,12 +1013,18 @@ impl App {
                     &recent_commits,
                     Some(prefix_type),
                     cli.with_body,
+                    None,
                 )?
             }
             PrefixMode::Auto => {
                 // 自動判定モード: 過去コミットから推論
-                self.ai
-                    .generate_commit_message(&diff, &recent_commits, None, cli.with_body)?
+                self.ai.generate_commit_message(
+                    &diff,
+                    &recent_commits,
+                    None,
+                    cli.with_body,
+                    None,
+                )?
             }
         };
 

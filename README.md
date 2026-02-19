@@ -39,6 +39,7 @@
 - **Dry Run**: Preview generated messages without committing (`-n`)
 - **Body Support**: Generate detailed commit messages with bullet points (`-b`)
 - **Amend/Squash/Reword**: Regenerate messages for existing commits
+- **Agent Context**: Integrates with [claw-hooks](https://github.com/owayo/claw-hooks) to generate context-aware messages reflecting the agent's intent
 
 ## Requirements
 
@@ -341,6 +342,20 @@ Add to `~/.claude/settings.json`:
   }
 }
 ```
+
+## Agent Context (claw-hooks Integration)
+
+When git-sc is used with [claw-hooks](https://github.com/owayo/claw-hooks), it automatically receives context about what the coding agent was working on via the `CLAW_HOOKS_AGENT_MESSAGE` environment variable. This context is included in the AI prompt, enabling the generated commit message to reflect the high-level intent rather than just describing the raw diff.
+
+**claw-hooks** is a companion tool that manages Claude Code's hook lifecycle. When its stop hook fires, it sets `CLAW_HOOKS_AGENT_MESSAGE` with the agent's last activity summary before invoking git-sc.
+
+```bash
+# Automatically set by claw-hooks stop hook
+# CLAW_HOOKS_AGENT_MESSAGE="Refactored authentication to use JWT tokens"
+git-sc -a -y -q
+```
+
+When the environment variable is set, the prompt includes an "Agent Context" section that guides the AI to prioritize the developer's intent.
 
 ## How It Works
 

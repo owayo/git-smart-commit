@@ -257,6 +257,7 @@ impl AiService {
         language: &str,
         prefix_type: Option<&str>,
         with_body: bool,
+        agent_context: Option<&str>,
     ) -> String {
         let format_section = match prefix_type {
             Some("conventional") => CONVENTIONAL_COMMITS_GUIDE.to_string(),
@@ -312,6 +313,21 @@ Rules:
 - Keep it concise (ideally under 72 characters)"#
         };
 
+        let agent_context_section = match agent_context {
+            Some(ctx) if !ctx.is_empty() => {
+                format!(
+                    concat!(
+                        "\n<agent-context>\n{}\n</agent-context>\n\n",
+                        "IMPORTANT: Use the <agent-context> above as the primary source for understanding ",
+                        "the intent and purpose of these changes. The commit message should reflect ",
+                        "the high-level goal described in the context, not just describe the raw diff.\n",
+                    ),
+                    ctx
+                )
+            }
+            _ => String::new(),
+        };
+
         format!(
             r#"Generate a git commit message for the following changes.
 
@@ -327,11 +343,10 @@ Instructions:
 - Do NOT include any explanation, reasoning, or thinking process
 - Do NOT write phrases like "I will...", "Let me...", "Based on...", "Here is..."
 - Respond with the commit message immediately, no preamble
-
-Changes:
-```diff
+{agent_context_section}
+<changes>
 {diff}
-```"#
+</changes>"#
         )
     }
 
@@ -350,8 +365,16 @@ Changes:
         recent_commits: &[String],
         prefix_type: Option<&str>,
         with_body: bool,
+        agent_context: Option<&str>,
     ) -> Result<String, AppError> {
-        self.generate_commit_message_internal(diff, recent_commits, prefix_type, with_body, false)
+        self.generate_commit_message_internal(
+            diff,
+            recent_commits,
+            prefix_type,
+            with_body,
+            false,
+            agent_context,
+        )
     }
 
     /// サイレントモードでコミットメッセージを生成（進捗出力なし）
@@ -361,8 +384,16 @@ Changes:
         recent_commits: &[String],
         prefix_type: Option<&str>,
         with_body: bool,
+        agent_context: Option<&str>,
     ) -> Result<String, AppError> {
-        self.generate_commit_message_internal(diff, recent_commits, prefix_type, with_body, true)
+        self.generate_commit_message_internal(
+            diff,
+            recent_commits,
+            prefix_type,
+            with_body,
+            true,
+            agent_context,
+        )
     }
 
     /// 内部実装: コミットメッセージ生成
@@ -373,9 +404,16 @@ Changes:
         prefix_type: Option<&str>,
         with_body: bool,
         silent: bool,
+        agent_context: Option<&str>,
     ) -> Result<String, AppError> {
-        let prompt =
-            Self::build_prompt(diff, recent_commits, &self.language, prefix_type, with_body);
+        let prompt = Self::build_prompt(
+            diff,
+            recent_commits,
+            &self.language,
+            prefix_type,
+            with_body,
+            agent_context,
+        );
         let mut last_error = None;
 
         for provider in &self.providers {
@@ -1010,7 +1048,8 @@ mod tests {
     fn test_build_prompt_prefix_types(#[case] prefix_type: Option<&str>, #[case] expected: &str) {
         let diff = "test diff";
         let recent_commits: Vec<String> = vec![];
-        let prompt = AiService::build_prompt(diff, &recent_commits, "Japanese", prefix_type, false);
+        let prompt =
+            AiService::build_prompt(diff, &recent_commits, "Japanese", prefix_type, false, None);
         assert!(
             prompt.contains(expected),
             "Prompt should contain '{}' for prefix_type {:?}",
@@ -1023,8 +1062,14 @@ mod tests {
     fn test_build_prompt_custom_prefix() {
         let diff = "test diff";
         let recent_commits: Vec<String> = vec![];
-        let prompt =
-            AiService::build_prompt(diff, &recent_commits, "Japanese", Some("JIRA-123: "), false);
+        let prompt = AiService::build_prompt(
+            diff,
+            &recent_commits,
+            "Japanese",
+            Some("JIRA-123: "),
+            false,
+            None,
+        );
         assert!(prompt.contains("Use the following prefix format: JIRA-123:"));
     }
 
@@ -1032,7 +1077,7 @@ mod tests {
     fn test_build_prompt_auto_mode_empty_commits() {
         let diff = "test diff";
         let recent_commits: Vec<String> = vec![];
-        let prompt = AiService::build_prompt(diff, &recent_commits, "Japanese", None, false);
+        let prompt = AiService::build_prompt(diff, &recent_commits, "Japanese", None, false, None);
         assert!(prompt.contains("No recent commits found"));
         assert!(prompt.contains("Conventional Commits format"));
     }
@@ -1044,7 +1089,7 @@ mod tests {
             "feat: add new feature".to_string(),
             "fix: resolve bug".to_string(),
         ];
-        let prompt = AiService::build_prompt(diff, &recent_commits, "Japanese", None, false);
+        let prompt = AiService::build_prompt(diff, &recent_commits, "Japanese", None, false, None);
         assert!(prompt.contains("Recent commit messages in this repository"));
         assert!(prompt.contains("1. feat: add new feature"));
         assert!(prompt.contains("2. fix: resolve bug"));
@@ -1061,9 +1106,10 @@ mod tests {
             "English",
             Some("conventional"),
             false,
+            None,
         );
         assert!(prompt.contains(diff));
-        assert!(prompt.contains("```diff"));
+        assert!(prompt.contains("<changes>"));
     }
 
     #[test]
@@ -1077,6 +1123,7 @@ mod tests {
             "Japanese",
             Some("conventional"),
             false,
+            None,
         );
         assert!(prompt_ja.contains("Japanese"));
 
@@ -1086,6 +1133,7 @@ mod tests {
             "English",
             Some("conventional"),
             false,
+            None,
         );
         assert!(prompt_en.contains("English"));
     }
@@ -1100,6 +1148,7 @@ mod tests {
             "Japanese",
             Some("conventional"),
             true,
+            None,
         );
         // Body モードでは body 関連の指示が含まれる
         assert!(prompt.contains("Body"));
@@ -1118,6 +1167,7 @@ mod tests {
             "Japanese",
             Some("conventional"),
             false,
+            None,
         );
         // 通常モードでは single line の指示が含まれる
         assert!(prompt.contains("single line"));
@@ -1128,10 +1178,66 @@ mod tests {
     fn test_build_prompt_body_with_auto_mode() {
         let diff = "test diff";
         let recent_commits = vec!["feat: previous commit".to_string()];
-        let prompt = AiService::build_prompt(diff, &recent_commits, "English", None, true);
+        let prompt = AiService::build_prompt(diff, &recent_commits, "English", None, true, None);
         // Auto モードでも body 指示が含まれる
         assert!(prompt.contains("Body"));
         assert!(prompt.contains("bullet point"));
+    }
+
+    #[test]
+    fn test_build_prompt_with_agent_context() {
+        let diff = "test diff";
+        let recent_commits: Vec<String> = vec![];
+        let prompt = AiService::build_prompt(
+            diff,
+            &recent_commits,
+            "Japanese",
+            Some("conventional"),
+            false,
+            Some("Refactored the authentication module to use JWT tokens"),
+        );
+        assert!(prompt.contains("<agent-context>"));
+        assert!(prompt.contains("</agent-context>"));
+        assert!(prompt.contains("Refactored the authentication module to use JWT tokens"));
+        assert!(prompt.contains("IMPORTANT: Use the <agent-context> above as the primary source"));
+        // Agent context should appear before Changes section
+        let ctx_pos = prompt.find("<agent-context>").unwrap();
+        let changes_pos = prompt.find("<changes>").unwrap();
+        assert!(
+            ctx_pos < changes_pos,
+            "Agent context should appear before Changes section"
+        );
+    }
+
+    #[test]
+    fn test_build_prompt_without_agent_context() {
+        let diff = "test diff";
+        let recent_commits: Vec<String> = vec![];
+        let prompt = AiService::build_prompt(
+            diff,
+            &recent_commits,
+            "Japanese",
+            Some("conventional"),
+            false,
+            None,
+        );
+        assert!(!prompt.contains("<agent-context>"));
+    }
+
+    #[test]
+    fn test_build_prompt_with_empty_agent_context() {
+        let diff = "test diff";
+        let recent_commits: Vec<String> = vec![];
+        let prompt = AiService::build_prompt(
+            diff,
+            &recent_commits,
+            "Japanese",
+            Some("conventional"),
+            false,
+            Some(""),
+        );
+        // Empty agent context should not add the section
+        assert!(!prompt.contains("<agent-context>"));
     }
 
     #[test]
@@ -1773,7 +1879,7 @@ ERROR: Your access token could not be refreshed because your refresh token was a
         if model.ensure_available().is_err() {
             return None;
         }
-        let prompt = AiService::build_prompt(diff, &[], "English", prefix_type, with_body);
+        let prompt = AiService::build_prompt(diff, &[], "English", prefix_type, with_body, None);
         Some(AiService::call_apple_intelligence_native(
             &prompt, "English",
         ))
@@ -2170,7 +2276,7 @@ ERROR: Your access token could not be refreshed because your refresh token was a
         if model.ensure_available().is_err() {
             return None;
         }
-        let prompt = AiService::build_prompt(diff, &[], "Japanese", prefix_type, false);
+        let prompt = AiService::build_prompt(diff, &[], "Japanese", prefix_type, false, None);
         Some(AiService::call_apple_intelligence_native(
             &prompt, "Japanese",
         ))

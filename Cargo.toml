@@ -10,18 +10,18 @@ license = "MIT"
 apple-ai = ["fm-rs"]
 
 [dependencies]
-clap = { version = "4.5.58", features = ["derive"] }
+clap = { version = "4.5.59", features = ["derive"] }
 anyhow = "1.0.101"
 thiserror = "2.0.18"
 regex = "1.12.3"
 colored = "3.1.1"
 serde = { version = "1.0.228", features = ["derive"] }
-toml = "1.0.0"
+toml = "1.0.3"
 dirs = "6.0.0"
 ignore = "0.4.25"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-fm-rs = { version = "0.1.4", optional = true }
+fm-rs = { version = "0.1.5", optional = true }
 
 [dev-dependencies]
 rstest = "0.26.1"

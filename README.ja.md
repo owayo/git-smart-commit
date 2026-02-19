@@ -39,6 +39,7 @@
 - **ドライラン**: コミットせずにメッセージをプレビュー（`-n`）
 - **本文サポート**: 箇条書き本文付きの詳細なコミットメッセージを生成（`-b`）
 - **Amend/Squash/Reword**: 既存コミットのメッセージを再生成
+- **エージェントコンテキスト**: [claw-hooks](https://github.com/owayo/claw-hooks) と連携し、エージェントの意図を反映したコンテキストを考慮したメッセージを生成
 
 ## 動作要件
 
@@ -341,6 +342,20 @@ auto_push = true
   }
 }
 ```
+
+## エージェントコンテキスト（claw-hooks 連携）
+
+git-sc を [claw-hooks](https://github.com/owayo/claw-hooks) と併用すると、コーディングエージェントが何を行っていたかのコンテキストが `CLAW_HOOKS_AGENT_MESSAGE` 環境変数経由で自動的に渡されます。このコンテキストはAIプロンプトに含まれ、生の差分の説明ではなく、変更の意図を反映したコミットメッセージの生成を可能にします。
+
+**claw-hooks** は Claude Code のフックライフサイクルを管理するコンパニオンツールです。stop hook が発火する際、エージェントの最後のアクティビティサマリーを `CLAW_HOOKS_AGENT_MESSAGE` にセットしてから git-sc を呼び出します。
+
+```bash
+# claw-hooks の stop hook が自動的にセットします
+# CLAW_HOOKS_AGENT_MESSAGE="認証モジュールをJWTトークン方式にリファクタリング"
+git-sc -a -y -q
+```
+
+環境変数がセットされている場合、プロンプトに「Agent Context」セクションが追加され、AIが開発者の意図を優先するようガイドされます。
 
 ## 動作の仕組み
 

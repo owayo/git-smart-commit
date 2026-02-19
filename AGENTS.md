@@ -70,6 +70,10 @@ Each provider is called via CLI subprocess:
 
 When a provider fails, it enters cooldown (default: 60 minutes) and the next provider is tried.
 
+### Agent Context
+
+When invoked from a coding agent, `App::run()` reads the `CLAW_HOOKS_AGENT_MESSAGE` environment variable and passes it to `AiService::build_prompt()` as `agent_context`. This context is injected into the AI prompt before the diff section, guiding the AI to reflect the developer's high-level intent in the commit message.
+
 ## Configuration Files
 
 | File | Scope |
@@ -86,14 +90,25 @@ cargo test test_name          # Run specific test
 cargo test -- --nocapture     # Show println! output
 ```
 
-Tests are organized with `#[cfg(test)]` modules in each source file.
+- Unit tests: `#[cfg(test)]` modules in each source file
+- Integration tests: `tests/cli_integration.rs` (CLI behavior via assert_cmd)
 
 ## Dependencies
 
+### Runtime
 - **clap**: CLI argument parsing with derive macros
 - **anyhow/thiserror**: Error handling
 - **serde/toml**: Configuration parsing
 - **colored**: Terminal output styling
 - **regex**: Commit format detection
 - **ignore**: Gitignore-style pattern matching
+- **dirs**: Platform-specific directory paths
+- **fm-rs** (optional, macOS): Apple Intelligence Foundation Models FFI
+
+### Dev
+- **rstest**: Parameterized test framework
+- **pretty_assertions**: Readable diff output for test assertions
+- **tempfile**: Temporary file/directory management for tests
+- **assert_cmd**: CLI integration testing
+- **predicates**: Assertion matchers for assert_cmd
 
