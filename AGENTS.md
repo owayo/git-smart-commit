@@ -24,6 +24,7 @@ make clean      # Clean build artifacts
 git-sc              # Generate message for staged changes
 git-sc -a -y        # Stage all and commit without confirmation
 git-sc -n           # Dry run (preview only)
+git-sc -a -y -q     # Quiet mode (suppress progress logs for hooks/scripts)
 git-sc --debug      # Show AI prompt and command being executed
 git-sc --amend      # Regenerate last commit message
 git-sc --squash main # Squash commits since main branch
@@ -72,7 +73,7 @@ When a provider fails, it enters cooldown (default: 60 minutes) and the next pro
 
 ### Agent Context
 
-When invoked from a coding agent, `App::run()` reads the `CLAW_HOOKS_AGENT_MESSAGE` environment variable and passes it to `AiService::build_prompt()` as `agent_context`. This context is injected into the AI prompt before the diff section, guiding the AI to reflect the developer's high-level intent in the commit message.
+When invoked from a coding agent, `App::run()` reads the `CLAW_HOOKS_AGENT_MESSAGE` environment variable and passes it to `AiService::build_prompt()` as `agent_context`. This context is injected into the AI prompt before the diff section, guiding the AI to reflect the developer's high-level intent in the commit message. The context is applied across standard generation and `--amend` / `--reword` / `--squash` / `--generate-for` workflows.
 
 ## Configuration Files
 
@@ -111,4 +112,3 @@ cargo test -- --nocapture     # Show println! output
 - **tempfile**: Temporary file/directory management for tests
 - **assert_cmd**: CLI integration testing
 - **predicates**: Assertion matchers for assert_cmd
-

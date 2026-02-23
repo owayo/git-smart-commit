@@ -37,6 +37,7 @@
 - **Format Detection**: Detects commit format from recent commits (Conventional, Bracket, Emoji, etc.)
 - **Interactive**: Prompts for confirmation before committing (skip with `-y`)
 - **Dry Run**: Preview generated messages without committing (`-n`)
+- **Quiet Mode**: Suppresses progress output for hook/scripting use (`-q`)
 - **Body Support**: Generate detailed commit messages with bullet points (`-b`)
 - **Amend/Squash/Reword**: Regenerate messages for existing commits
 - **Agent Context**: Integrates with [claw-hooks](https://github.com/owayo/claw-hooks) to generate context-aware messages reflecting the agent's intent
@@ -165,6 +166,11 @@ git-sc -n
 | `--debug` | `-d` | Show prompts sent to AI |
 | `--help` | `-h` | Print help |
 | `--version` | `-V` | Print version |
+
+`--quiet` behavior:
+- Suppresses progress, preview, and success/cancel messages in normal/amend/squash/reword flows
+- Keeps error output visible
+- In `--generate-for` mode, still prints only the generated commit message (for piping/scripting)
 
 ### Examples
 
@@ -356,6 +362,7 @@ git-sc -a -y -q
 ```
 
 When the environment variable is set, the prompt includes an "Agent Context" section that guides the AI to prioritize the developer's intent.
+This applies to standard commit generation as well as `--amend`, `--reword`, `--squash`, and `--generate-for`.
 
 ## How It Works
 
@@ -406,4 +413,3 @@ See [Releases](https://github.com/owayo/git-smart-commit/releases) for version h
 ## License
 
 [MIT](LICENSE)
-

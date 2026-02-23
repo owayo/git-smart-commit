@@ -347,6 +347,66 @@ impl App {
         self.print_debug_prompt(diff, commits, prefix_type, with_body, agent_context);
     }
 
+    fn print_recent_commits_for_auto(&self, cli: &Cli, recent_commits: &[String]) {
+        if cli.quiet {
+            return;
+        }
+
+        if recent_commits.is_empty() {
+            println!(
+                "{} {}",
+                "No recent commits found.".cyan(),
+                "Using Conventional Commits format.".yellow()
+            );
+        } else {
+            println!("{}", "Recent commits (for format reference):".cyan());
+            for commit in recent_commits {
+                println!("  {}", commit.dimmed());
+            }
+        }
+    }
+
+    fn print_generated_message(&self, cli: &Cli, message: &str) {
+        if cli.quiet {
+            return;
+        }
+
+        println!();
+        println!("{}", "Generated commit message:".green().bold());
+        println!("{}", "─".repeat(50).dimmed());
+        println!("{}", message);
+        println!("{}", "─".repeat(50).dimmed());
+        println!();
+    }
+
+    fn generate_message(
+        &self,
+        cli: &Cli,
+        diff: &str,
+        recent_commits: &[String],
+        prefix_type: Option<&str>,
+        with_body: bool,
+        agent_context: Option<&str>,
+    ) -> Result<String, AppError> {
+        if cli.quiet {
+            self.ai.generate_commit_message_silent(
+                diff,
+                recent_commits,
+                prefix_type,
+                with_body,
+                agent_context,
+            )
+        } else {
+            self.ai.generate_commit_message(
+                diff,
+                recent_commits,
+                prefix_type,
+                with_body,
+                agent_context,
+            )
+        }
+    }
+
     /// メインワークフローを実行
     pub fn run(&self, cli: &Cli) -> Result<(), AppError> {
         // claw-hooks stop hook から渡されるエージェントコンテキスト
@@ -367,22 +427,22 @@ impl App {
             if cli.squash.is_some() {
                 return Err(AppError::ConflictingOptions("squash".to_string()));
             }
-            return self.run_generate_for(cli);
+            return self.run_generate_for(cli, agent_context.as_deref());
         }
 
         // --rewordモードは別処理
         if cli.reword.is_some() {
-            return self.run_reword(cli);
+            return self.run_reword(cli, agent_context.as_deref());
         }
 
         // --amendモードは別処理
         if cli.amend {
-            return self.run_amend(cli);
+            return self.run_amend(cli, agent_context.as_deref());
         }
 
         // --squashモードは別処理
         if cli.squash.is_some() {
-            return self.run_squash(cli);
+            return self.run_squash(cli, agent_context.as_deref());
         }
 
         // --allフラグがあれば全変更をステージング
@@ -409,32 +469,27 @@ impl App {
         };
 
         // プレフィックスモードを判定
-        let prefix_mode = self.get_prefix_mode();
+        let prefix_mode = if cli.quiet {
+            self.get_prefix_mode_silent()
+        } else {
+            self.get_prefix_mode()
+        };
 
         // フォーマット検出用に直近のコミットを取得（Autoモードの場合のみ表示）
         let recent_commits = self.git.get_recent_commits(5)?;
 
         // Autoモードの場合のみ参照用に直近のコミットを表示
         if matches!(prefix_mode, PrefixMode::Auto) {
-            if recent_commits.is_empty() {
-                println!(
-                    "{} {}",
-                    "No recent commits found.".cyan(),
-                    "Using Conventional Commits format.".yellow()
-                );
-            } else {
-                println!("{}", "Recent commits (for format reference):".cyan());
-                for commit in &recent_commits {
-                    println!("  {}", commit.dimmed());
-                }
-            }
+            self.print_recent_commits_for_auto(cli, &recent_commits);
         }
 
         // AI CLIがインストールされているか確認
         self.ai.verify_installation()?;
 
         // コミットメッセージを生成
-        println!("{}", "Generating commit message...".cyan());
+        if !cli.quiet {
+            println!("{}", "Generating commit message...".cyan());
+        }
 
         let agent_ctx = agent_context.as_deref();
 
@@ -452,17 +507,12 @@ impl App {
         let mut message = match &prefix_mode {
             PrefixMode::Script(_) => {
                 // スクリプトモード: プレフィックスなしで生成（後でスクリプトのプレフィックスを適用）
-                self.ai.generate_commit_message(
-                    &diff,
-                    &[],
-                    Some("plain"),
-                    cli.with_body,
-                    agent_ctx,
-                )?
+                self.generate_message(cli, &diff, &[], Some("plain"), cli.with_body, agent_ctx)?
             }
             PrefixMode::Rule(prefix_type) | PrefixMode::Config(prefix_type) => {
                 // ルール/設定モード: 指定されたprefix_typeで生成
-                self.ai.generate_commit_message(
+                self.generate_message(
+                    cli,
                     &diff,
                     &recent_commits,
                     Some(prefix_type),
@@ -472,13 +522,7 @@ impl App {
             }
             PrefixMode::Auto => {
                 // 自動判定モード: 過去コミットから推論
-                self.ai.generate_commit_message(
-                    &diff,
-                    &recent_commits,
-                    None,
-                    cli.with_body,
-                    agent_ctx,
-                )?
+                self.generate_message(cli, &diff, &recent_commits, None, cli.with_body, agent_ctx)?
             }
         };
 
@@ -487,37 +531,42 @@ impl App {
             match result {
                 ScriptResult::Prefix(prefix) => {
                     message = self.apply_prefix(&message, &prefix);
-                    println!("{}", format!("Applied prefix: {}", prefix.trim()).cyan());
+                    if !cli.quiet {
+                        println!("{}", format!("Applied prefix: {}", prefix.trim()).cyan());
+                    }
                 }
                 ScriptResult::Empty => {
                     message = self.strip_type_prefix(&message);
-                    println!("{}", "No prefix applied (script returned empty).".cyan());
+                    if !cli.quiet {
+                        println!("{}", "No prefix applied (script returned empty).".cyan());
+                    }
                 }
                 ScriptResult::Failed => {
                     // AI生成のメッセージをそのまま使用
-                    println!("{}", "Using AI-generated format.".cyan());
+                    if !cli.quiet {
+                        println!("{}", "Using AI-generated format.".cyan());
+                    }
                 }
             }
         }
 
         // 生成されたメッセージを表示
-        println!();
-        println!("{}", "Generated commit message:".green().bold());
-        println!("{}", "─".repeat(50).dimmed());
-        println!("{}", message);
-        println!("{}", "─".repeat(50).dimmed());
-        println!();
+        self.print_generated_message(cli, &message);
 
         // ドライランモードの処理
         if cli.dry_run {
-            println!("{}", "Dry run mode - no commit was made.".yellow());
+            if !cli.quiet {
+                println!("{}", "Dry run mode - no commit was made.".yellow());
+            }
             return Ok(());
         }
 
         // 確認してコミット
         if cli.auto_confirm || self.confirm_commit()? {
             self.git.commit(&message)?;
-            println!("{}", "✓ Commit created successfully!".green().bold());
+            if !cli.quiet {
+                println!("{}", "✓ Commit created successfully!".green().bold());
+            }
             if self.nano_buddy {
                 crate::notify::notify_commit_message(&message);
             }
@@ -525,10 +574,14 @@ impl App {
             // auto-push が有効な場合は push も実行
             if self.git.is_auto_push_enabled(self.auto_push) {
                 self.git.push()?;
-                println!("{}", "✓ Pushed to remote successfully!".green().bold());
+                if !cli.quiet {
+                    println!("{}", "✓ Pushed to remote successfully!".green().bold());
+                }
             }
         } else {
-            println!("{}", "Commit cancelled.".yellow());
+            if !cli.quiet {
+                println!("{}", "Commit cancelled.".yellow());
+            }
             return Err(AppError::UserCancelled);
         }
 
@@ -536,11 +589,13 @@ impl App {
     }
 
     /// amendワークフローを実行
-    fn run_amend(&self, cli: &Cli) -> Result<(), AppError> {
-        println!(
-            "{}",
-            "Amend mode: regenerating message for last commit...".cyan()
-        );
+    fn run_amend(&self, cli: &Cli, agent_context: Option<&str>) -> Result<(), AppError> {
+        if !cli.quiet {
+            println!(
+                "{}",
+                "Amend mode: regenerating message for last commit...".cyan()
+            );
+        }
 
         // 直前のコミットのdiffを取得
         let diff = self.git.get_last_commit_diff()?;
@@ -549,7 +604,11 @@ impl App {
         }
 
         // プレフィックスモードを判定
-        let prefix_mode = self.get_prefix_mode();
+        let prefix_mode = if cli.quiet {
+            self.get_prefix_mode_silent()
+        } else {
+            self.get_prefix_mode()
+        };
 
         // フォーマット検出用に直近のコミットを取得（amendするコミットはスキップ）
         let recent_commits = self.git.get_recent_commits(6)?;
@@ -557,25 +616,16 @@ impl App {
 
         // Autoモードの場合のみ参照用に直近のコミットを表示
         if matches!(prefix_mode, PrefixMode::Auto) {
-            if recent_commits.is_empty() {
-                println!(
-                    "{} {}",
-                    "No recent commits found.".cyan(),
-                    "Using Conventional Commits format.".yellow()
-                );
-            } else {
-                println!("{}", "Recent commits (for format reference):".cyan());
-                for commit in &recent_commits {
-                    println!("  {}", commit.dimmed());
-                }
-            }
+            self.print_recent_commits_for_auto(cli, &recent_commits);
         }
 
         // AI CLIがインストールされているか確認
         self.ai.verify_installation()?;
 
         // コミットメッセージを生成
-        println!("{}", "Generating commit message...".cyan());
+        if !cli.quiet {
+            println!("{}", "Generating commit message...".cyan());
+        }
 
         // デバッグモード: プロンプトを表示
         if cli.debug {
@@ -585,32 +635,33 @@ impl App {
                 &prefix_mode,
                 false,
                 cli.with_body,
-                None,
+                agent_context,
             );
         }
 
         let mut message = match &prefix_mode {
             PrefixMode::Script(_) => {
                 // スクリプトモード: プレフィックスなしで生成（後でスクリプトのプレフィックスを適用）
-                self.ai
-                    .generate_commit_message(&diff, &[], Some("plain"), cli.with_body, None)?
+                self.generate_message(cli, &diff, &[], Some("plain"), cli.with_body, agent_context)?
             }
             PrefixMode::Rule(prefix_type) | PrefixMode::Config(prefix_type) => {
                 // ルール/設定モード: 指定されたprefix_typeで生成
-                self.ai.generate_commit_message(
+                self.generate_message(
+                    cli,
                     &diff,
                     &recent_commits,
                     Some(prefix_type),
                     cli.with_body,
-                    None,
+                    agent_context,
                 )?
             }
-            PrefixMode::Auto => self.ai.generate_commit_message(
+            PrefixMode::Auto => self.generate_message(
+                cli,
                 &diff,
                 &recent_commits,
                 None,
                 cli.with_body,
-                None,
+                agent_context,
             )?,
         };
 
@@ -619,42 +670,49 @@ impl App {
             match result {
                 ScriptResult::Prefix(prefix) => {
                     message = self.apply_prefix(&message, &prefix);
-                    println!("{}", format!("Applied prefix: {}", prefix.trim()).cyan());
+                    if !cli.quiet {
+                        println!("{}", format!("Applied prefix: {}", prefix.trim()).cyan());
+                    }
                 }
                 ScriptResult::Empty => {
                     message = self.strip_type_prefix(&message);
-                    println!("{}", "No prefix applied (script returned empty).".cyan());
+                    if !cli.quiet {
+                        println!("{}", "No prefix applied (script returned empty).".cyan());
+                    }
                 }
                 ScriptResult::Failed => {
                     // AI生成のメッセージをそのまま使用
-                    println!("{}", "Using AI-generated format.".cyan());
+                    if !cli.quiet {
+                        println!("{}", "Using AI-generated format.".cyan());
+                    }
                 }
             }
         }
 
         // 生成されたメッセージを表示
-        println!();
-        println!("{}", "Generated commit message:".green().bold());
-        println!("{}", "─".repeat(50).dimmed());
-        println!("{}", message);
-        println!("{}", "─".repeat(50).dimmed());
-        println!();
+        self.print_generated_message(cli, &message);
 
         // ドライランモードの処理
         if cli.dry_run {
-            println!("{}", "Dry run mode - commit was not amended.".yellow());
+            if !cli.quiet {
+                println!("{}", "Dry run mode - commit was not amended.".yellow());
+            }
             return Ok(());
         }
 
         // 確認してamend
         if cli.auto_confirm || self.confirm_amend()? {
             self.git.amend_commit(&message)?;
-            println!("{}", "✓ Commit amended successfully!".green().bold());
+            if !cli.quiet {
+                println!("{}", "✓ Commit amended successfully!".green().bold());
+            }
             if self.nano_buddy {
                 crate::notify::notify_commit_message(&message);
             }
         } else {
-            println!("{}", "Amend cancelled.".yellow());
+            if !cli.quiet {
+                println!("{}", "Amend cancelled.".yellow());
+            }
             return Err(AppError::UserCancelled);
         }
 
@@ -662,7 +720,7 @@ impl App {
     }
 
     /// squashワークフローを実行
-    fn run_squash(&self, cli: &Cli) -> Result<(), AppError> {
+    fn run_squash(&self, cli: &Cli, agent_context: Option<&str>) -> Result<(), AppError> {
         // ベースブランチを取得（必須）
         let base_branch = cli.squash.as_ref().ok_or(AppError::NoBaseBranch)?;
 
@@ -674,7 +732,9 @@ impl App {
             )));
         }
 
-        println!("{}", "Squash mode: combining commits into one...".cyan());
+        if !cli.quiet {
+            println!("{}", "Squash mode: combining commits into one...".cyan());
+        }
 
         // 現在のブランチを取得
         let current_branch = self
@@ -687,14 +747,16 @@ impl App {
             return Err(AppError::OnBaseBranch);
         }
 
-        println!(
-            "{}",
-            format!(
-                "Base branch: {} → Current branch: {}",
-                base_branch, current_branch
-            )
-            .cyan()
-        );
+        if !cli.quiet {
+            println!(
+                "{}",
+                format!(
+                    "Base branch: {} → Current branch: {}",
+                    base_branch, current_branch
+                )
+                .cyan()
+            );
+        }
 
         // merge-baseを取得
         let merge_base = self.git.get_merge_base(base_branch, "HEAD")?;
@@ -705,7 +767,9 @@ impl App {
             return Err(AppError::NoCommitsToSquash);
         }
 
-        println!("{}", format!("Commits to squash: {}", commit_count).cyan());
+        if !cli.quiet {
+            println!("{}", format!("Commits to squash: {}", commit_count).cyan());
+        }
 
         // ベースからの差分を取得
         let diff = self.git.get_diff_from_base(&merge_base)?;
@@ -714,43 +778,57 @@ impl App {
         }
 
         // プレフィックスモードを判定
-        let prefix_mode = self.get_prefix_mode();
+        let prefix_mode = if cli.quiet {
+            self.get_prefix_mode_silent()
+        } else {
+            self.get_prefix_mode()
+        };
 
         // AI CLIがインストールされているか確認
         self.ai.verify_installation()?;
 
         // コミットメッセージを生成（差分のみから、過去コミットは参照しない）
-        println!("{}", "Generating commit message...".cyan());
+        if !cli.quiet {
+            println!("{}", "Generating commit message...".cyan());
+        }
 
         // デバッグモード: プロンプトを表示
         if cli.debug {
-            self.debug_print_for_prefix_mode(&diff, &[], &prefix_mode, true, cli.with_body, None);
+            self.debug_print_for_prefix_mode(
+                &diff,
+                &[],
+                &prefix_mode,
+                true,
+                cli.with_body,
+                agent_context,
+            );
         }
 
         let mut message = match &prefix_mode {
             PrefixMode::Script(_) => {
                 // スクリプトモード: プレフィックスなしで生成
-                self.ai
-                    .generate_commit_message(&diff, &[], Some("plain"), cli.with_body, None)?
+                self.generate_message(cli, &diff, &[], Some("plain"), cli.with_body, agent_context)?
             }
             PrefixMode::Rule(prefix_type) | PrefixMode::Config(prefix_type) => {
                 // ルール/設定モード: 指定されたprefix_typeで生成
-                self.ai.generate_commit_message(
+                self.generate_message(
+                    cli,
                     &diff,
                     &[],
                     Some(prefix_type),
                     cli.with_body,
-                    None,
+                    agent_context,
                 )?
             }
             PrefixMode::Auto => {
                 // 自動判定モード: Conventional Commits形式で生成
-                self.ai.generate_commit_message(
+                self.generate_message(
+                    cli,
                     &diff,
                     &[],
                     Some("conventional"),
                     cli.with_body,
-                    None,
+                    agent_context,
                 )?
             }
         };
@@ -760,29 +838,32 @@ impl App {
             match result {
                 ScriptResult::Prefix(prefix) => {
                     message = self.apply_prefix(&message, &prefix);
-                    println!("{}", format!("Applied prefix: {}", prefix.trim()).cyan());
+                    if !cli.quiet {
+                        println!("{}", format!("Applied prefix: {}", prefix.trim()).cyan());
+                    }
                 }
                 ScriptResult::Empty => {
                     message = self.strip_type_prefix(&message);
-                    println!("{}", "No prefix applied (script returned empty).".cyan());
+                    if !cli.quiet {
+                        println!("{}", "No prefix applied (script returned empty).".cyan());
+                    }
                 }
                 ScriptResult::Failed => {
-                    println!("{}", "Using AI-generated format.".cyan());
+                    if !cli.quiet {
+                        println!("{}", "Using AI-generated format.".cyan());
+                    }
                 }
             }
         }
 
         // 生成されたメッセージを表示
-        println!();
-        println!("{}", "Generated commit message:".green().bold());
-        println!("{}", "─".repeat(50).dimmed());
-        println!("{}", message);
-        println!("{}", "─".repeat(50).dimmed());
-        println!();
+        self.print_generated_message(cli, &message);
 
         // ドライランモードの処理
         if cli.dry_run {
-            println!("{}", "Dry run mode - no squash was performed.".yellow());
+            if !cli.quiet {
+                println!("{}", "Dry run mode - no squash was performed.".yellow());
+            }
             return Ok(());
         }
 
@@ -791,12 +872,14 @@ impl App {
             // soft resetしてコミット
             self.git.soft_reset_to(&merge_base)?;
             self.git.commit(&message)?;
-            println!(
-                "{}",
-                format!("✓ {} commits squashed successfully!", commit_count)
-                    .green()
-                    .bold()
-            );
+            if !cli.quiet {
+                println!(
+                    "{}",
+                    format!("✓ {} commits squashed successfully!", commit_count)
+                        .green()
+                        .bold()
+                );
+            }
             if self.nano_buddy {
                 crate::notify::notify_commit_message(&message);
             }
@@ -804,10 +887,14 @@ impl App {
             // auto-push が有効な場合は push も実行
             if self.git.is_auto_push_enabled(self.auto_push) {
                 self.git.push()?;
-                println!("{}", "✓ Pushed to remote successfully!".green().bold());
+                if !cli.quiet {
+                    println!("{}", "✓ Pushed to remote successfully!".green().bold());
+                }
             }
         } else {
-            println!("{}", "Squash cancelled.".yellow());
+            if !cli.quiet {
+                println!("{}", "Squash cancelled.".yellow());
+            }
             return Err(AppError::UserCancelled);
         }
 
@@ -815,7 +902,7 @@ impl App {
     }
 
     /// generate-forワークフローを実行（標準出力にメッセージのみ出力）
-    fn run_generate_for(&self, cli: &Cli) -> Result<(), AppError> {
+    fn run_generate_for(&self, cli: &Cli, agent_context: Option<&str>) -> Result<(), AppError> {
         let hashes = cli
             .generate_for
             .as_ref()
@@ -861,7 +948,7 @@ impl App {
                 self.ai.language(),
                 prefix_type,
                 cli.with_body,
-                None,
+                agent_context,
             );
             eprintln!("{}", "=== DEBUG: AI Prompt ===".yellow().bold());
             eprintln!("{}", "─".repeat(50).dimmed());
@@ -878,7 +965,7 @@ impl App {
                 &[],
                 Some("plain"),
                 cli.with_body,
-                None,
+                agent_context,
             )?,
             PrefixMode::Rule(prefix_type) | PrefixMode::Config(prefix_type) => {
                 // ルール/設定モード: 指定されたprefix_typeで生成
@@ -887,7 +974,7 @@ impl App {
                     &recent_commits,
                     Some(prefix_type),
                     cli.with_body,
-                    None,
+                    agent_context,
                 )?
             }
             PrefixMode::Auto => self.ai.generate_commit_message_silent(
@@ -895,7 +982,7 @@ impl App {
                 &recent_commits,
                 None,
                 cli.with_body,
-                None,
+                agent_context,
             )?,
         };
 
@@ -921,7 +1008,7 @@ impl App {
     }
 
     /// rewordワークフローを実行
-    fn run_reword(&self, cli: &Cli) -> Result<(), AppError> {
+    fn run_reword(&self, cli: &Cli, agent_context: Option<&str>) -> Result<(), AppError> {
         let hash = cli
             .reword
             .as_ref()
@@ -931,14 +1018,16 @@ impl App {
         // 短いハッシュを取得して表示用に使用
         let short_hash = if hash.len() > 7 { &hash[..7] } else { &hash };
 
-        println!(
-            "{}",
-            format!(
-                "Reword mode: regenerating message for commit {}...",
-                short_hash
-            )
-            .cyan()
-        );
+        if !cli.quiet {
+            println!(
+                "{}",
+                format!(
+                    "Reword mode: regenerating message for commit {}...",
+                    short_hash
+                )
+                .cyan()
+            );
+        }
 
         // マージコミットが含まれていないか確認
         if self.git.has_merge_commits_in_range_by_hash(&hash)? {
@@ -956,11 +1045,17 @@ impl App {
 
         // 現在のコミットメッセージを表示
         let current_message = self.git.get_commit_message_by_hash(&hash)?;
-        println!("{}", "Current commit message:".cyan());
-        println!("  {}", current_message.dimmed());
+        if !cli.quiet {
+            println!("{}", "Current commit message:".cyan());
+            println!("  {}", current_message.dimmed());
+        }
 
         // プレフィックスモードを判定
-        let prefix_mode = self.get_prefix_mode();
+        let prefix_mode = if cli.quiet {
+            self.get_prefix_mode_silent()
+        } else {
+            self.get_prefix_mode()
+        };
 
         // フォーマット検出用に直近のコミットを取得（対象コミットより新しいものを除く）
         let recent_commits = self.git.get_recent_commits(5 + n)?;
@@ -968,25 +1063,16 @@ impl App {
 
         // Autoモードの場合のみ参照用に直近のコミットを表示
         if matches!(prefix_mode, PrefixMode::Auto) {
-            if recent_commits.is_empty() {
-                println!(
-                    "{} {}",
-                    "No recent commits found.".cyan(),
-                    "Using Conventional Commits format.".yellow()
-                );
-            } else {
-                println!("{}", "Recent commits (for format reference):".cyan());
-                for commit in &recent_commits {
-                    println!("  {}", commit.dimmed());
-                }
-            }
+            self.print_recent_commits_for_auto(cli, &recent_commits);
         }
 
         // AI CLIがインストールされているか確認
         self.ai.verify_installation()?;
 
         // コミットメッセージを生成
-        println!("{}", "Generating commit message...".cyan());
+        if !cli.quiet {
+            println!("{}", "Generating commit message...".cyan());
+        }
 
         // デバッグモード: プロンプトを表示
         if cli.debug {
@@ -996,34 +1082,35 @@ impl App {
                 &prefix_mode,
                 false,
                 cli.with_body,
-                None,
+                agent_context,
             );
         }
 
         let mut message = match &prefix_mode {
             PrefixMode::Script(_) => {
                 // スクリプトモード: プレフィックスなしで生成
-                self.ai
-                    .generate_commit_message(&diff, &[], Some("plain"), cli.with_body, None)?
+                self.generate_message(cli, &diff, &[], Some("plain"), cli.with_body, agent_context)?
             }
             PrefixMode::Rule(prefix_type) | PrefixMode::Config(prefix_type) => {
                 // ルール/設定モード: 指定されたprefix_typeで生成
-                self.ai.generate_commit_message(
+                self.generate_message(
+                    cli,
                     &diff,
                     &recent_commits,
                     Some(prefix_type),
                     cli.with_body,
-                    None,
+                    agent_context,
                 )?
             }
             PrefixMode::Auto => {
                 // 自動判定モード: 過去コミットから推論
-                self.ai.generate_commit_message(
+                self.generate_message(
+                    cli,
                     &diff,
                     &recent_commits,
                     None,
                     cli.with_body,
-                    None,
+                    agent_context,
                 )?
             }
         };
@@ -1033,50 +1120,60 @@ impl App {
             match result {
                 ScriptResult::Prefix(prefix) => {
                     message = self.apply_prefix(&message, &prefix);
-                    println!("{}", format!("Applied prefix: {}", prefix.trim()).cyan());
+                    if !cli.quiet {
+                        println!("{}", format!("Applied prefix: {}", prefix.trim()).cyan());
+                    }
                 }
                 ScriptResult::Empty => {
                     message = self.strip_type_prefix(&message);
-                    println!("{}", "No prefix applied (script returned empty).".cyan());
+                    if !cli.quiet {
+                        println!("{}", "No prefix applied (script returned empty).".cyan());
+                    }
                 }
                 ScriptResult::Failed => {
-                    println!("{}", "Using AI-generated format.".cyan());
+                    if !cli.quiet {
+                        println!("{}", "Using AI-generated format.".cyan());
+                    }
                 }
             }
         }
 
         // 生成されたメッセージを表示
-        println!();
-        println!("{}", "Generated commit message:".green().bold());
-        println!("{}", "─".repeat(50).dimmed());
-        println!("{}", message);
-        println!("{}", "─".repeat(50).dimmed());
-        println!();
+        self.print_generated_message(cli, &message);
 
         // ドライランモードの処理
         if cli.dry_run {
-            println!("{}", "Dry run mode - commit was not reworded.".yellow());
+            if !cli.quiet {
+                println!("{}", "Dry run mode - commit was not reworded.".yellow());
+            }
             return Ok(());
         }
 
         // 確認してreword実行
         if cli.auto_confirm || self.confirm_reword(short_hash)? {
             self.git.reword_commit_by_hash(&hash, &message)?;
-            println!(
-                "{}",
-                format!("✓ Commit {} reworded successfully!", short_hash)
-                    .green()
-                    .bold()
-            );
+            if !cli.quiet {
+                println!(
+                    "{}",
+                    format!("✓ Commit {} reworded successfully!", short_hash)
+                        .green()
+                        .bold()
+                );
+            }
             if self.nano_buddy {
                 crate::notify::notify_commit_message(&message);
             }
-            println!(
-                "{}",
-                "Note: You may need to force push (git push --force) if already pushed.".yellow()
-            );
+            if !cli.quiet {
+                println!(
+                    "{}",
+                    "Note: You may need to force push (git push --force) if already pushed."
+                        .yellow()
+                );
+            }
         } else {
-            println!("{}", "Reword cancelled.".yellow());
+            if !cli.quiet {
+                println!("{}", "Reword cancelled.".yellow());
+            }
             return Err(AppError::UserCancelled);
         }
 
