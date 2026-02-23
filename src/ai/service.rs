@@ -582,6 +582,12 @@ Instructions:
             println!();
         }
 
+        // Claude Code はネスト実行を CLAUDECODE 環境変数で検出してブロックするため、
+        // git-sc から Claude を呼ぶ場合は除去する
+        if matches!(provider, AiProvider::Claude) {
+            cmd.env_remove("CLAUDECODE");
+        }
+
         // stdin でプロンプトを渡すプロバイダー: codex, claude
         // -p 引数で渡す: gemini
         // 一時ファイル経由: opencode
