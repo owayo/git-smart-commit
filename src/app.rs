@@ -29,6 +29,18 @@ fn is_valid_prefix_type(prefix_type: &str) -> bool {
     VALID_PREFIX_TYPES.contains(&prefix_type)
 }
 
+/// ScriptResult をチェックし、有効な prefix_type 名ならば PrefixMode::Rule に変換する。
+/// それ以外は PrefixMode::Script として返す。
+fn resolve_script_result(result: ScriptResult) -> PrefixMode {
+    if let ScriptResult::Prefix(ref s) = result {
+        let trimmed = s.trim();
+        if is_valid_prefix_type(trimmed) {
+            return PrefixMode::Rule(trimmed.to_string());
+        }
+    }
+    PrefixMode::Script(result)
+}
+
 /// アプリケーションのメインオーケストレーター
 pub struct App {
     git: GitService,
@@ -201,7 +213,16 @@ impl App {
                         }
 
                         if let Some(r) = result {
-                            return PrefixMode::Script(r);
+                            let mode = resolve_script_result(r);
+                            if !silent {
+                                if let PrefixMode::Rule(ref pt) = mode {
+                                    println!(
+                                        "{}",
+                                        format!("  → interpreted as prefix_type: {}", pt).cyan()
+                                    );
+                                }
+                            }
+                            return mode;
                         }
                     }
                 }
@@ -1480,5 +1501,69 @@ mod tests {
         assert!(VALID_PREFIX_TYPES.contains(&"emoji"));
         assert!(VALID_PREFIX_TYPES.contains(&"plain"));
         assert!(VALID_PREFIX_TYPES.contains(&"none"));
+    }
+
+    // ============================================================
+    // resolve_script_result のテスト
+    // (スクリプトのPrefix結果をルールモードとして解釈する機能)
+    // ============================================================
+
+    #[rstest]
+    #[case("conventional")]
+    #[case("bracket")]
+    #[case("colon")]
+    #[case("emoji")]
+    #[case("plain")]
+    #[case("none")]
+    fn test_resolve_script_result_valid_prefix_type_returns_rule(#[case] prefix_type: &str) {
+        let result = ScriptResult::Prefix(prefix_type.to_string());
+        let mode = resolve_script_result(result);
+        match mode {
+            PrefixMode::Rule(pt) => assert_eq!(pt, prefix_type),
+            _ => panic!("Expected PrefixMode::Rule, got something else"),
+        }
+    }
+
+    #[rstest]
+    #[case("conventional\n")]
+    #[case("  bracket  ")]
+    #[case("\temoji\t")]
+    fn test_resolve_script_result_trims_whitespace(#[case] raw_value: &str) {
+        let result = ScriptResult::Prefix(raw_value.to_string());
+        let mode = resolve_script_result(result);
+        match mode {
+            PrefixMode::Rule(pt) => assert_eq!(pt, raw_value.trim()),
+            _ => panic!("Expected PrefixMode::Rule after trimming, got something else"),
+        }
+    }
+
+    #[rstest]
+    #[case("TICKET-123 ")]
+    #[case("[BUG] ")]
+    #[case("feat: ")]
+    #[case("some random prefix")]
+    #[case("CONVENTIONAL")] // 大文字は無効
+    #[case("")]
+    fn test_resolve_script_result_non_prefix_type_returns_script(#[case] prefix_value: &str) {
+        let result = ScriptResult::Prefix(prefix_value.to_string());
+        let mode = resolve_script_result(result);
+        match mode {
+            PrefixMode::Script(ScriptResult::Prefix(s)) => assert_eq!(s, prefix_value),
+            _ => panic!("Expected PrefixMode::Script(Prefix), got something else"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_script_result_empty_returns_script() {
+        let result = ScriptResult::Empty;
+        let mode = resolve_script_result(result);
+        assert!(matches!(mode, PrefixMode::Script(ScriptResult::Empty)));
+    }
+
+    #[test]
+    fn test_resolve_script_result_failed_returns_script() {
+        let result = ScriptResult::Failed;
+        let mode = resolve_script_result(result);
+        assert!(matches!(mode, PrefixMode::Script(ScriptResult::Failed)));
     }
 }

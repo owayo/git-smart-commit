@@ -296,6 +296,14 @@ url_pattern = "^https://gitlab\\.example\\.com/"
 script = "/path/to/prefix-generate.py"
 ```
 
+プレフィックススクリプトが有効な `prefix_type` 名（`conventional`, `bracket`, `emoji` 等）を返した場合、リテラルなプレフィックス文字列ではなくルールモードとして解釈されます。これにより、ブランチ名やリモートURLに応じてコミットフォーマットを動的に切り替えることができます。
+
+```bash
+#!/bin/bash
+# 例: "conventional" を返すと Conventional Commits 形式が適用される
+echo "conventional"
+```
+
 ## 差分の処理
 
 - 空白のみの変更は除外
