@@ -88,9 +88,9 @@ fn default_provider_cooldown_minutes() -> u64 {
     60
 }
 
-/// デフォルトのプロバイダータイムアウト（30秒）
+/// デフォルトのプロバイダータイムアウト（60秒）
 fn default_provider_timeout_seconds() -> u64 {
-    30
+    60
 }
 
 /// デフォルトの言語
@@ -331,7 +331,7 @@ provider_cooldown_minutes = 60
 
 # Provider timeout (seconds) per call
 # If a provider takes longer than this, it will be killed and the next provider tried
-provider_timeout_seconds = 30
+provider_timeout_seconds = 60
 
 # Commit message prefix format
 # Available: "conventional", "bracket", "colon", "emoji", "plain", "none"
@@ -399,7 +399,7 @@ mod tests {
         assert!(config.prefix_scripts.is_empty());
         assert!(config.prefix_rules.is_empty());
         assert_eq!(config.provider_cooldown_minutes, 60);
-        assert_eq!(config.provider_timeout_seconds, 30);
+        assert_eq!(config.provider_timeout_seconds, 60);
     }
 
     #[test]
@@ -827,7 +827,7 @@ language = "Japanese"
     #[test]
     fn test_merge_with_timeout_override() {
         let mut global = Config {
-            provider_timeout_seconds: 30,
+            provider_timeout_seconds: 60,
             ..Default::default()
         };
 
@@ -950,7 +950,7 @@ claude = "haiku"
     #[test]
     fn test_merge_with_timeout_zero_overrides() {
         let mut global = Config {
-            provider_timeout_seconds: 30,
+            provider_timeout_seconds: 60,
             ..Default::default()
         };
 
@@ -960,7 +960,7 @@ claude = "haiku"
         };
 
         global.merge_with(project);
-        // 0はデフォルト(30)と異なるため上書きされる
+        // 0はデフォルト(60)と異なるため上書きされる
         assert_eq!(global.provider_timeout_seconds, 0);
     }
 

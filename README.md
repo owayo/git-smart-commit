@@ -248,7 +248,7 @@ opencode = "opencode/minimax-m2.1-free"
 provider_cooldown_minutes = 60
 
 # Provider timeout (seconds) per call
-provider_timeout_seconds = 30
+provider_timeout_seconds = 60
 ```
 
 ### Configuration Options
@@ -261,7 +261,7 @@ provider_timeout_seconds = 30
 | `auto_push` | Auto-push after commit | `false` |
 | `models.*` | Model for each provider | See config |
 | `provider_cooldown_minutes` | Failed provider cooldown | `60` |
-| `provider_timeout_seconds` | Provider call timeout | `30` |
+| `provider_timeout_seconds` | Provider call timeout | `60` |
 | `prefix_rules` | URL-based prefix format | `[]` |
 | `prefix_scripts` | External prefix scripts | `[]` |
 

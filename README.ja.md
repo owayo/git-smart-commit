@@ -248,7 +248,7 @@ opencode = "opencode/minimax-m2.1-free"
 provider_cooldown_minutes = 60
 
 # プロバイダータイムアウト（秒）
-provider_timeout_seconds = 30
+provider_timeout_seconds = 60
 ```
 
 ### 設定オプション
@@ -261,7 +261,7 @@ provider_timeout_seconds = 30
 | `auto_push` | コミット後に自動プッシュ | `false` |
 | `models.*` | 各プロバイダーのモデル | 設定参照 |
 | `provider_cooldown_minutes` | 失敗プロバイダーのクールダウン | `60` |
-| `provider_timeout_seconds` | プロバイダー呼び出しのタイムアウト | `30` |
+| `provider_timeout_seconds` | プロバイダー呼び出しのタイムアウト | `60` |
 | `prefix_rules` | URLベースのプレフィックス形式 | `[]` |
 | `prefix_scripts` | 外部プレフィックススクリプト | `[]` |
 

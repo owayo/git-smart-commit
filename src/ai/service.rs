@@ -1371,7 +1371,7 @@ mod tests {
         assert_eq!(service.models.codex, "gpt-5.1-codex-mini");
         assert_eq!(service.models.claude, "haiku");
         assert_eq!(service.models.opencode, "");
-        assert_eq!(service.timeout_seconds, 30);
+        assert_eq!(service.timeout_seconds, 60);
     }
 
     #[test]
