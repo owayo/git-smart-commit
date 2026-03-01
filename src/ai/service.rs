@@ -347,6 +347,9 @@ Instructions:
 - Write the commit message in {language}
 {body_instructions}
 - Be specific about what changed
+- Do NOT end with a period or any punctuation (no ".", "。", etc.)
+- Do NOT use past tense or polite/formal endings (no "しました", "ました", "した", "です", etc.)
+- Use short, direct noun phrases or imperative form (e.g., "追加", "修正", "変更", NOT "追加しました", "修正した")
 - Output ONLY the commit message as plain text
 - Do NOT use any markdown formatting (no **, *, `, #, etc.)
 - Do NOT include any explanation, reasoning, or thinking process
