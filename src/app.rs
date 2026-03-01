@@ -23,10 +23,42 @@ pub enum PrefixMode {
 
 /// 有効な prefix_type 値
 const VALID_PREFIX_TYPES: &[&str] = &["conventional", "bracket", "colon", "emoji", "plain", "none"];
+const CONVENTIONAL_TYPES: &[&str] = &[
+    "feat", "fix", "docs", "style", "refactor", "perf", "test", "build", "ci", "chore", "revert",
+];
 
 /// prefix_type が有効かどうかを検証
 fn is_valid_prefix_type(prefix_type: &str) -> bool {
     VALID_PREFIX_TYPES.contains(&prefix_type)
+}
+
+/// Conventional Commits の type プレフィックスを検出し、本文を返す
+fn extract_conventional_body(message: &str) -> Option<&str> {
+    let first_line_end = message.find('\n').unwrap_or(message.len());
+    let first_line = &message[..first_line_end];
+    let colon_pos = first_line.find(':')?;
+    let mut header = &first_line[..colon_pos];
+
+    // Breaking change マーカー `!` を許可
+    header = header.strip_suffix('!').unwrap_or(header);
+
+    let commit_type = if let Some((ty, scope)) = header.split_once('(') {
+        if !scope.ends_with(')') || scope.len() <= 1 {
+            return None;
+        }
+        ty
+    } else {
+        header
+    };
+
+    let is_conventional = CONVENTIONAL_TYPES
+        .iter()
+        .any(|known| known.eq_ignore_ascii_case(commit_type));
+    if !is_conventional {
+        return None;
+    }
+
+    Some(message[colon_pos + 1..].trim_start())
 }
 
 /// ScriptResult をチェックし、有効な prefix_type 名ならば PrefixMode::Rule に変換する。
@@ -277,20 +309,19 @@ impl App {
 
     /// コミットメッセージにプレフィックスを適用
     fn apply_prefix(&self, message: &str, prefix: &str) -> String {
-        // Conventional Commits形式（type: message）の場合、typeを削除してprefixに置き換え
-        if let Some(colon_pos) = message.find(':') {
-            let body = message[colon_pos + 1..].trim_start();
+        // Conventional Commits形式（type: message）の場合のみ type を削除して置き換える
+        if let Some(body) = extract_conventional_body(message) {
             format!("{}{}", prefix, body)
         } else {
-            // コロンがない場合はそのまま結合
+            // Conventional Commits 形式でない場合はそのまま結合
             format!("{}{}", prefix, message)
         }
     }
 
     /// コミットメッセージから型プレフィックスを削除（本文のみ取得）
     fn strip_type_prefix(&self, message: &str) -> String {
-        if let Some(colon_pos) = message.find(':') {
-            message[colon_pos + 1..].trim_start().to_string()
+        if let Some(body) = extract_conventional_body(message) {
+            body.to_string()
         } else {
             message.to_string()
         }
@@ -387,8 +418,10 @@ impl App {
         }
     }
 
-    fn print_generated_message(&self, cli: &Cli, message: &str) {
+    fn print_generated_message(&self, cli: &Cli, message: &str, provider_name: &str) {
         if cli.quiet {
+            // quietモードでもプロバイダー名とコミットメッセージは出力する
+            println!("[{}] {}", provider_name, message);
             return;
         }
 
@@ -408,7 +441,7 @@ impl App {
         prefix_type: Option<&str>,
         with_body: bool,
         agent_context: Option<&str>,
-    ) -> Result<String, AppError> {
+    ) -> Result<(String, &'static str), AppError> {
         if cli.quiet {
             self.ai.generate_commit_message_silent(
                 diff,
@@ -525,7 +558,7 @@ impl App {
                 agent_ctx,
             );
         }
-        let mut message = match &prefix_mode {
+        let (mut message, provider_name) = match &prefix_mode {
             PrefixMode::Script(_) => {
                 // スクリプトモード: プレフィックスなしで生成（後でスクリプトのプレフィックスを適用）
                 self.generate_message(cli, &diff, &[], Some("plain"), cli.with_body, agent_ctx)?
@@ -572,7 +605,7 @@ impl App {
         }
 
         // 生成されたメッセージを表示
-        self.print_generated_message(cli, &message);
+        self.print_generated_message(cli, &message, provider_name);
 
         // ドライランモードの処理
         if cli.dry_run {
@@ -585,7 +618,9 @@ impl App {
         // 確認してコミット
         if cli.auto_confirm || self.confirm_commit()? {
             self.git.commit(&message)?;
-            if !cli.quiet {
+            if cli.quiet {
+                println!("Committed");
+            } else {
                 println!("{}", "✓ Commit created successfully!".green().bold());
             }
             if self.nano_buddy {
@@ -595,7 +630,9 @@ impl App {
             // auto-push が有効な場合は push も実行
             if self.git.is_auto_push_enabled(self.auto_push) {
                 self.git.push()?;
-                if !cli.quiet {
+                if cli.quiet {
+                    println!("Pushed");
+                } else {
                     println!("{}", "✓ Pushed to remote successfully!".green().bold());
                 }
             }
@@ -660,7 +697,7 @@ impl App {
             );
         }
 
-        let mut message = match &prefix_mode {
+        let (mut message, provider_name) = match &prefix_mode {
             PrefixMode::Script(_) => {
                 // スクリプトモード: プレフィックスなしで生成（後でスクリプトのプレフィックスを適用）
                 self.generate_message(cli, &diff, &[], Some("plain"), cli.with_body, agent_context)?
@@ -711,7 +748,7 @@ impl App {
         }
 
         // 生成されたメッセージを表示
-        self.print_generated_message(cli, &message);
+        self.print_generated_message(cli, &message, provider_name);
 
         // ドライランモードの処理
         if cli.dry_run {
@@ -724,7 +761,9 @@ impl App {
         // 確認してamend
         if cli.auto_confirm || self.confirm_amend()? {
             self.git.amend_commit(&message)?;
-            if !cli.quiet {
+            if cli.quiet {
+                println!("Amended");
+            } else {
                 println!("{}", "✓ Commit amended successfully!".green().bold());
             }
             if self.nano_buddy {
@@ -825,7 +864,7 @@ impl App {
             );
         }
 
-        let mut message = match &prefix_mode {
+        let (mut message, provider_name) = match &prefix_mode {
             PrefixMode::Script(_) => {
                 // スクリプトモード: プレフィックスなしで生成
                 self.generate_message(cli, &diff, &[], Some("plain"), cli.with_body, agent_context)?
@@ -878,7 +917,7 @@ impl App {
         }
 
         // 生成されたメッセージを表示
-        self.print_generated_message(cli, &message);
+        self.print_generated_message(cli, &message, provider_name);
 
         // ドライランモードの処理
         if cli.dry_run {
@@ -893,7 +932,9 @@ impl App {
             // soft resetしてコミット
             self.git.soft_reset_to(&merge_base)?;
             self.git.commit(&message)?;
-            if !cli.quiet {
+            if cli.quiet {
+                println!("Squashed");
+            } else {
                 println!(
                     "{}",
                     format!("✓ {} commits squashed successfully!", commit_count)
@@ -908,7 +949,9 @@ impl App {
             // auto-push が有効な場合は push も実行
             if self.git.is_auto_push_enabled(self.auto_push) {
                 self.git.push()?;
-                if !cli.quiet {
+                if cli.quiet {
+                    println!("Pushed");
+                } else {
                     println!("{}", "✓ Pushed to remote successfully!".green().bold());
                 }
             }
@@ -980,7 +1023,7 @@ impl App {
         }
 
         // コミットメッセージを生成（サイレントモード）
-        let mut message = match &prefix_mode {
+        let (mut message, _provider_name) = match &prefix_mode {
             PrefixMode::Script(_) => self.ai.generate_commit_message_silent(
                 &combined_diff,
                 &[],
@@ -1107,7 +1150,7 @@ impl App {
             );
         }
 
-        let mut message = match &prefix_mode {
+        let (mut message, provider_name) = match &prefix_mode {
             PrefixMode::Script(_) => {
                 // スクリプトモード: プレフィックスなしで生成
                 self.generate_message(cli, &diff, &[], Some("plain"), cli.with_body, agent_context)?
@@ -1160,7 +1203,7 @@ impl App {
         }
 
         // 生成されたメッセージを表示
-        self.print_generated_message(cli, &message);
+        self.print_generated_message(cli, &message, provider_name);
 
         // ドライランモードの処理
         if cli.dry_run {
@@ -1173,7 +1216,9 @@ impl App {
         // 確認してreword実行
         if cli.auto_confirm || self.confirm_reword(short_hash)? {
             self.git.reword_commit_by_hash(&hash, &message)?;
-            if !cli.quiet {
+            if cli.quiet {
+                println!("Reworded");
+            } else {
                 println!(
                     "{}",
                     format!("✓ Commit {} reworded successfully!", short_hash)
@@ -1250,8 +1295,7 @@ mod tests {
     impl TestHelper {
         /// apply_prefixのテスト用ラッパー
         fn apply_prefix(message: &str, prefix: &str) -> String {
-            if let Some(colon_pos) = message.find(':') {
-                let body = message[colon_pos + 1..].trim_start();
+            if let Some(body) = extract_conventional_body(message) {
                 format!("{}{}", prefix, body)
             } else {
                 format!("{}{}", prefix, message)
@@ -1260,8 +1304,8 @@ mod tests {
 
         /// strip_type_prefixのテスト用ラッパー
         fn strip_type_prefix(message: &str) -> String {
-            if let Some(colon_pos) = message.find(':') {
-                message[colon_pos + 1..].trim_start().to_string()
+            if let Some(body) = extract_conventional_body(message) {
+                body.to_string()
             } else {
                 message.to_string()
             }
@@ -1274,6 +1318,7 @@ mod tests {
 
     #[rstest]
     #[case("feat: add new feature", "TICKET-123 ", "TICKET-123 add new feature")]
+    #[case("feat!: breaking change", "TICKET-123 ", "TICKET-123 breaking change")]
     #[case("fix: bug fix", "[BUG] ", "[BUG] bug fix")]
     #[case("docs: update readme", "📝 ", "📝 update readme")]
     fn test_apply_prefix_with_conventional_commits(
@@ -1328,12 +1373,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_apply_prefix_non_conventional_colon_message() {
+        let message = "Refactor module: improve parser";
+        let result = TestHelper::apply_prefix(message, "TICKET-1 ");
+        assert_eq!(result, "TICKET-1 Refactor module: improve parser");
+    }
+
     // ============================================================
     // strip_type_prefix のテスト
     // ============================================================
 
     #[rstest]
     #[case("feat: add new feature", "add new feature")]
+    #[case("feat!: breaking change", "breaking change")]
     #[case("fix: bug fix", "bug fix")]
     #[case("docs: update readme", "update readme")]
     #[case("refactor: improve code", "improve code")]
@@ -1346,6 +1399,7 @@ mod tests {
 
     #[rstest]
     #[case("feat(auth): implement login", "implement login")]
+    #[case("feat(auth)!: remove legacy auth flow", "remove legacy auth flow")]
     #[case("fix(api): resolve rate limiting", "resolve rate limiting")]
     fn test_strip_type_prefix_with_scope(#[case] message: &str, #[case] expected: &str) {
         let result = TestHelper::strip_type_prefix(message);
@@ -1375,6 +1429,13 @@ mod tests {
     fn test_strip_type_prefix_empty_body() {
         let result = TestHelper::strip_type_prefix("feat:");
         assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_strip_type_prefix_non_conventional_colon_message() {
+        let message = "Refactor module: improve parser";
+        let result = TestHelper::strip_type_prefix(message);
+        assert_eq!(result, message);
     }
 
     // ============================================================

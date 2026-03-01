@@ -359,4 +359,21 @@ mod tests {
         let path = result.unwrap();
         assert!(path.to_str().unwrap().contains(".providers-state"));
     }
+
+    #[test]
+    fn test_reorder_providers_mixed_case() {
+        let mut state = State::default();
+        state.record_failure("gemini"); // "gemini" として保存
+
+        let providers = vec![
+            "Gemini".to_string(),
+            "Claude".to_string(),
+            "Codex".to_string(),
+        ];
+
+        let reordered = state.reorder_providers(providers, 60);
+        assert_eq!(reordered[0], "Claude");
+        assert_eq!(reordered[1], "Codex");
+        assert_eq!(reordered[2], "Gemini");
+    }
 }

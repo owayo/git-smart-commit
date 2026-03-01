@@ -304,7 +304,7 @@ fn test_quiet_dry_run_with_ai_generation_suppresses_provider_output() {
         .current_dir(dir.path())
         .assert()
         .success()
-        .stdout(predicate::str::is_empty())
+        .stdout(predicate::str::contains("feat:"))
         .stderr(predicate::str::is_empty());
 }
 
@@ -322,7 +322,7 @@ fn test_quiet_amend_dry_run_with_ai_generation_suppresses_provider_output() {
         .current_dir(dir.path())
         .assert()
         .success()
-        .stdout(predicate::str::is_empty())
+        .stdout(predicate::str::contains("feat:"))
         .stderr(predicate::str::is_empty());
 }
 
@@ -347,7 +347,7 @@ fn test_quiet_reword_dry_run_with_ai_generation_suppresses_provider_output() {
         .current_dir(dir.path())
         .assert()
         .success()
-        .stdout(predicate::str::is_empty())
+        .stdout(predicate::str::contains("feat:"))
         .stderr(predicate::str::is_empty());
 }
 
@@ -380,7 +380,7 @@ fn test_quiet_squash_dry_run_with_ai_generation_suppresses_provider_output() {
         .current_dir(dir.path())
         .assert()
         .success()
-        .stdout(predicate::str::is_empty())
+        .stdout(predicate::str::contains("feat:"))
         .stderr(predicate::str::is_empty());
 }
 
@@ -469,4 +469,16 @@ fn test_agent_context_is_included_in_generate_for_debug_prompt() {
         .assert()
         .success()
         .stderr(predicate::str::contains("agent-intent-generate-for"));
+}
+
+#[test]
+fn test_generate_for_with_reword_conflict() {
+    let dir = setup_git_repo_with_commit();
+
+    git_sc!()
+        .args(["--generate-for", "HEAD", "--reword", "HEAD"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--generate-for"));
 }

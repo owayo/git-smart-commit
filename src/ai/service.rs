@@ -34,7 +34,7 @@ pub enum AiProvider {
 }
 
 impl AiProvider {
-    fn name(&self) -> &'static str {
+    pub fn name(&self) -> &'static str {
         match self {
             AiProvider::Gemini => "Gemini CLI",
             AiProvider::Codex => "Codex CLI",
@@ -359,6 +359,7 @@ Instructions:
     /// - Some(other): カスタム形式
     ///
     /// with_body: true の場合、本文（body）付きのコミットメッセージを生成
+    /// 返り値: (メッセージ, プロバイダー名)
     pub fn generate_commit_message(
         &self,
         diff: &str,
@@ -366,7 +367,7 @@ Instructions:
         prefix_type: Option<&str>,
         with_body: bool,
         agent_context: Option<&str>,
-    ) -> Result<String, AppError> {
+    ) -> Result<(String, &'static str), AppError> {
         self.generate_commit_message_internal(
             diff,
             recent_commits,
@@ -378,6 +379,7 @@ Instructions:
     }
 
     /// サイレントモードでコミットメッセージを生成（進捗出力なし）
+    /// 返り値: (メッセージ, プロバイダー名)
     pub fn generate_commit_message_silent(
         &self,
         diff: &str,
@@ -385,7 +387,7 @@ Instructions:
         prefix_type: Option<&str>,
         with_body: bool,
         agent_context: Option<&str>,
-    ) -> Result<String, AppError> {
+    ) -> Result<(String, &'static str), AppError> {
         self.generate_commit_message_internal(
             diff,
             recent_commits,
@@ -397,6 +399,7 @@ Instructions:
     }
 
     /// 内部実装: コミットメッセージ生成
+    /// 返り値: (メッセージ, プロバイダー名)
     fn generate_commit_message_internal(
         &self,
         diff: &str,
@@ -405,7 +408,7 @@ Instructions:
         with_body: bool,
         silent: bool,
         agent_context: Option<&str>,
-    ) -> Result<String, AppError> {
+    ) -> Result<(String, &'static str), AppError> {
         let prompt = Self::build_prompt(
             diff,
             recent_commits,
@@ -450,7 +453,7 @@ Instructions:
                         )));
                         continue;
                     }
-                    return Ok(message);
+                    return Ok((message, provider.name()));
                 }
                 Err(e) => {
                     if !silent {
@@ -2310,5 +2313,40 @@ ERROR: Your access token could not be refreshed because your refresh token was a
             try_apple_intelligence_ja(diff, Some("conventional")),
             false,
         );
+    }
+
+    // ============================================================
+    // clean_message: コードブロック2行のエッジケース
+    // ============================================================
+
+    #[test]
+    fn test_clean_message_code_block_two_lines() {
+        // ちょうど2行のコードブロック（開始と終了のフェンスのみ）
+        let message = "```\n```";
+        let result = AiService::clean_message(message);
+        // lines.len() == 2 → message.to_string() が返る
+        // ensure_body_separator: 2行目 "```" は空でない → 空行挿入
+        assert_eq!(result, "```\n\n```");
+    }
+
+    #[test]
+    fn test_clean_message_partial_fence() {
+        // 開始フェンスのみで終了フェンスなし
+        let message = "```\nfeat: add feature";
+        let result = AiService::clean_message(message);
+        // starts_with("```") は true だが ends_with("```") は false
+        assert_eq!(result, "```\n\nfeat: add feature");
+    }
+
+    // ============================================================
+    // ensure_body_separator: 空白のみの2行目
+    // ============================================================
+
+    #[test]
+    fn test_ensure_body_separator_whitespace_only_second_line() {
+        let message = "feat: msg\n   \nbody text";
+        let result = AiService::ensure_body_separator(message);
+        // 2行目が "   " → trim().is_empty() == true → そのまま返す
+        assert_eq!(result, message);
     }
 }

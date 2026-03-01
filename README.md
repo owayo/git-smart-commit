@@ -298,6 +298,8 @@ script = "/path/to/prefix-generate.py"
 
 If a prefix script returns a valid `prefix_type` name (e.g. `conventional`, `bracket`, `emoji`, etc.) instead of a literal prefix string, git-sc interprets it as a Rule mode. This allows scripts to dynamically select the commit format based on branch name or remote URL.
 
+If a prefix script returns empty output (exit `0` with no text), git-sc keeps the generated message as-is, except it removes a leading Conventional Commit type prefix (for example `feat:`, `fix(scope):`, `feat!:`) when present.
+
 ```bash
 #!/bin/bash
 # Example: return "conventional" to use Conventional Commits format

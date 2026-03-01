@@ -61,6 +61,9 @@ src/
 | `Config` | Hierarchical config: global (~/.config/git-sc/config.toml) + project (.git-sc) |
 | `ProviderState` | Tracks failed providers with 1-hour cooldown |
 
+Prefix script behavior note:
+- If a prefix script returns empty output, `App` preserves the generated message and removes only a leading Conventional Commits type prefix (`feat:`, `fix(scope):`, `feat!:` etc.) when present.
+
 ### AI Provider Implementation
 
 Each provider is called via CLI subprocess:

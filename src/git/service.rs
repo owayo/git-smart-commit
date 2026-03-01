@@ -1547,4 +1547,41 @@ index 555..666 100644
         let result = GitService::truncate_diff("");
         assert_eq!(result, "");
     }
+
+    #[test]
+    fn test_truncate_diff_no_newlines_content() {
+        // 改行なしで制限超過の場合、rfind('\n')がNoneを返しelse分岐に入る
+        let diff: String = "a".repeat(MAX_DIFF_CHARS + 500);
+        let result = GitService::truncate_diff(&diff);
+        assert!(result.contains("... (diff truncated: exceeded 10000 characters)"));
+        // rfind('\n') == None なので、truncated全体 + トランケートメッセージ
+        assert!(result.starts_with(&"a".repeat(MAX_DIFF_CHARS)));
+    }
+
+    // ============================================================
+    // filter_ignored_files: diff前のプリアンブルテスト
+    // ============================================================
+
+    #[test]
+    fn test_filter_ignored_files_with_preamble() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let ignore_path = temp_dir.path().join(".git-sc-ignore");
+        std::fs::write(&ignore_path, "*.lock\n").unwrap();
+
+        let mut builder = GitignoreBuilder::new(temp_dir.path());
+        builder.add(&ignore_path);
+        let ignore = builder.build().unwrap();
+
+        // diff --git ヘッダーの前にプリアンブルテキストがある場合
+        let diff = "some preamble\nanother preamble line\ndiff --git a/src/main.rs b/src/main.rs\nindex 123..456 100644\n--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1 +1,2 @@\n+new line";
+
+        let result = GitService::filter_ignored_files(diff, &ignore);
+        // プリアンブルが保存されていること
+        assert!(result.contains("some preamble"));
+        assert!(result.contains("another preamble line"));
+        // diffブロックも保存されていること
+        assert!(result.contains("src/main.rs"));
+    }
 }

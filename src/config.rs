@@ -946,4 +946,38 @@ claude = "haiku"
         // false doesn't override true
         assert!(global.nano_buddy);
     }
+
+    #[test]
+    fn test_merge_with_timeout_zero_overrides() {
+        let mut global = Config {
+            provider_timeout_seconds: 30,
+            ..Default::default()
+        };
+
+        let project = Config {
+            provider_timeout_seconds: 0,
+            ..Default::default()
+        };
+
+        global.merge_with(project);
+        // 0はデフォルト(30)と異なるため上書きされる
+        assert_eq!(global.provider_timeout_seconds, 0);
+    }
+
+    #[test]
+    fn test_merge_with_cooldown_zero_overrides() {
+        let mut global = Config {
+            provider_cooldown_minutes: 60,
+            ..Default::default()
+        };
+
+        let project = Config {
+            provider_cooldown_minutes: 0,
+            ..Default::default()
+        };
+
+        global.merge_with(project);
+        // 0はデフォルト(60)と異なるため上書きされる
+        assert_eq!(global.provider_cooldown_minutes, 0);
+    }
 }

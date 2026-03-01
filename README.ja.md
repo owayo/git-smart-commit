@@ -298,6 +298,8 @@ script = "/path/to/prefix-generate.py"
 
 プレフィックススクリプトが有効な `prefix_type` 名（`conventional`, `bracket`, `emoji` 等）を返した場合、リテラルなプレフィックス文字列ではなくルールモードとして解釈されます。これにより、ブランチ名やリモートURLに応じてコミットフォーマットを動的に切り替えることができます。
 
+プレフィックススクリプトが空文字を返した場合（exit `0` かつ標準出力なし）、git-sc は生成メッセージをそのまま使います。ただし先頭が Conventional Commits の type プレフィックス（例: `feat:`, `fix(scope):`, `feat!:`）の場合のみ、そのプレフィックスを除去します。
+
 ```bash
 #!/bin/bash
 # 例: "conventional" を返すと Conventional Commits 形式が適用される
