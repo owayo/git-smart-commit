@@ -50,6 +50,9 @@ pub enum AppError {
 
     #[error("--generate-for と --{0} は同時に使用できません")]
     ConflictingOptions(String),
+
+    #[error("無効な引数: {0}")]
+    InvalidArgument(String),
 }
 
 #[cfg(test)]

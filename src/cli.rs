@@ -66,6 +66,10 @@ pub struct Cli {
     /// Suppress progress messages (useful for scripting/hooks)
     #[arg(short = 'q', long = "quiet")]
     pub quiet: bool,
+
+    /// Specify AI provider to use (e.g., gemini, codex, claude, opencode, apple-intelligence)
+    #[arg(short = 'p', long = "provider")]
+    pub provider: Option<String>,
 }
 
 #[cfg(test)]
@@ -90,6 +94,7 @@ mod tests {
         assert!(cli.language.is_none());
         assert!(!cli.debug);
         assert!(!cli.quiet);
+        assert!(cli.provider.is_none());
     }
 
     #[test]
@@ -337,6 +342,26 @@ mod tests {
         assert!(cli.stage_all);
         assert!(cli.auto_confirm);
         assert!(cli.quiet);
+    }
+
+    #[test]
+    fn test_cli_provider_short() {
+        let cli = Cli::parse_from(["git-sc", "-p", "gemini"]);
+        assert_eq!(cli.provider, Some("gemini".to_string()));
+    }
+
+    #[test]
+    fn test_cli_provider_long() {
+        let cli = Cli::parse_from(["git-sc", "--provider", "claude"]);
+        assert_eq!(cli.provider, Some("claude".to_string()));
+    }
+
+    #[test]
+    fn test_cli_provider_with_other_options() {
+        let cli = Cli::parse_from(["git-sc", "-p", "codex", "-a", "-y"]);
+        assert_eq!(cli.provider, Some("codex".to_string()));
+        assert!(cli.stage_all);
+        assert!(cli.auto_confirm);
     }
 
     #[test]

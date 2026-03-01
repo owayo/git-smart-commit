@@ -3,7 +3,7 @@ use std::io::{self, Write};
 use colored::Colorize;
 use regex::Regex;
 
-use crate::ai::AiService;
+use crate::ai::{AiProvider, AiService};
 use crate::cli::Cli;
 use crate::config::{Config, PrefixRuleConfig, PrefixScriptConfig};
 use crate::error::AppError;
@@ -107,6 +107,17 @@ impl App {
         // CLIで言語が指定されていれば上書き
         if let Some(ref lang) = cli.language {
             ai.set_language(lang.clone());
+        }
+
+        // CLIでプロバイダーが指定されていれば上書き
+        if let Some(ref provider_name) = cli.provider {
+            let provider = AiProvider::from_str(provider_name).ok_or_else(|| {
+                AppError::InvalidArgument(format!(
+                    "Unknown provider '{}'. Valid providers: gemini, codex, claude, opencode, apple-intelligence",
+                    provider_name
+                ))
+            })?;
+            ai.set_provider_override(provider);
         }
 
         Ok(Self {

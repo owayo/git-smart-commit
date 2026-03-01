@@ -60,7 +60,7 @@ impl AiProvider {
     }
 
     /// 文字列からプロバイダーを解析
-    fn from_str(s: &str) -> Option<Self> {
+    pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "gemini" => Some(AiProvider::Gemini),
             "codex" => Some(AiProvider::Codex),
@@ -80,6 +80,7 @@ pub struct AiService {
     cooldown_minutes: u64,
     timeout_seconds: u64,
     debug: bool,
+    provider_override: bool,
 }
 
 impl AiService {
@@ -127,6 +128,7 @@ impl AiService {
             cooldown_minutes: config.provider_cooldown_minutes,
             timeout_seconds: config.provider_timeout_seconds,
             debug: false,
+            provider_override: false,
         }
     }
 
@@ -139,12 +141,19 @@ impl AiService {
             cooldown_minutes: 60, // デフォルト1時間
             timeout_seconds: 30,  // デフォルト30秒
             debug: false,
+            provider_override: false,
         }
     }
 
     /// デバッグモードを設定
     pub fn set_debug(&mut self, debug: bool) {
         self.debug = debug;
+    }
+
+    /// プロバイダーを手動指定で上書き（フォールバックなし、失敗記録スキップ）
+    pub fn set_provider_override(&mut self, provider: AiProvider) {
+        self.providers = vec![provider];
+        self.provider_override = true;
     }
 
     /// デバッグ用にコマンド文字列をフォーマット
@@ -464,8 +473,10 @@ Instructions:
                             e.to_string().red()
                         );
                     }
-                    // 失敗を記録して次回の優先度を下げる
-                    self.record_provider_failure(provider);
+                    // 手動指定時は失敗記録をスキップ
+                    if !self.provider_override {
+                        self.record_provider_failure(provider);
+                    }
                     last_error = Some(e);
                 }
             }
@@ -1045,6 +1056,25 @@ mod tests {
         let mut service = AiService::new();
         service.set_language("English".to_string());
         assert_eq!(service.language, "English");
+    }
+
+    #[test]
+    fn test_set_provider_override() {
+        let mut service = AiService::new();
+        service.set_provider_override(AiProvider::Claude);
+        assert_eq!(service.providers.len(), 1);
+        assert!(matches!(service.providers[0], AiProvider::Claude));
+        assert!(service.provider_override);
+    }
+
+    #[test]
+    fn test_set_provider_override_replaces_all() {
+        let mut service = AiService::new();
+        let original_len = service.providers.len();
+        assert!(original_len > 1);
+        service.set_provider_override(AiProvider::Gemini);
+        assert_eq!(service.providers.len(), 1);
+        assert!(matches!(service.providers[0], AiProvider::Gemini));
     }
 
     #[rstest]

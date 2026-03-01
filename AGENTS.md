@@ -26,6 +26,7 @@ git-sc -a -y        # Stage all and commit without confirmation
 git-sc -n           # Dry run (preview only)
 git-sc -a -y -q     # Quiet mode (suppress progress logs for hooks/scripts)
 git-sc --debug      # Show AI prompt and command being executed
+git-sc -p claude    # Use specific AI provider (gemini, codex, claude, opencode, apple-intelligence)
 git-sc --amend      # Regenerate last commit message
 git-sc --squash main # Squash commits since main branch
 ```
