@@ -65,6 +65,10 @@ src/
 Prefix script behavior note:
 - If a prefix script returns empty output, `App` preserves the generated message and removes only a leading Conventional Commits type prefix (`feat:`, `fix(scope):`, `feat!:` etc.) when present.
 
+Reword safety note:
+- `GitService` validates that a `--reword` target hash is in the current `HEAD` history before merge-range checks and position calculation.
+- If the hash exists but is outside the current history (e.g., another branch), reword fails with `Invalid reword target`.
+
 ### AI Provider Implementation
 
 Each provider is called via CLI subprocess:

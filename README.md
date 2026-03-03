@@ -152,6 +152,10 @@ git-sc -n
 | `--reword` | | Regenerate message for specific commit |
 | `--generate-for` | `-g` | Generate from commit diff (output only) |
 
+`--reword` note:
+- Only accepts commits reachable from the current `HEAD` history.
+- Passing a hash from another branch (not in current history) fails with `Invalid reword target`.
+
 #### Settings
 
 | Option | Short | Description |

@@ -9,10 +9,14 @@ pub enum AppError {
     #[error("変更が見つかりません。コミットメッセージを生成するには変更を加えてください。")]
     NoChanges,
 
-    #[error("ステージ済みの変更がありません。'git add'でファイルをステージするか、-aフラグをつけて実行してください。")]
+    #[error(
+        "ステージ済みの変更がありません。'git add'でファイルをステージするか、-aフラグをつけて実行してください。"
+    )]
     NoStagedChanges,
 
-    #[error("AI CLIがインストールされていません。gemini、codex、またはclaudeのいずれかをインストールしてください。")]
+    #[error(
+        "AI CLIがインストールされていません。gemini、codex、またはclaudeのいずれかをインストールしてください。"
+    )]
     NoAiProviderInstalled,
 
     #[error("{0}")]
@@ -30,13 +34,17 @@ pub enum AppError {
     #[error("ベースブランチが見つかりません。--base オプションで指定してください。")]
     NoBaseBranch,
 
-    #[error("squash対象のコミットがありません。現在のブランチにベースからの変更がないか確認してください。")]
+    #[error(
+        "squash対象のコミットがありません。現在のブランチにベースからの変更がないか確認してください。"
+    )]
     NoCommitsToSquash,
 
     #[error("ベースブランチ上では squash できません。フィーチャーブランチに切り替えてください。")]
     OnBaseBranch,
 
-    #[error("指定範囲にマージコミットが含まれています。rewordはマージコミットを含む範囲では使用できません。")]
+    #[error(
+        "指定範囲にマージコミットが含まれています。rewordはマージコミットを含む範囲では使用できません。"
+    )]
     HasMergeCommits,
 
     #[error("rebase中にコンフリクトが発生しました。rebaseを中止しました。")]

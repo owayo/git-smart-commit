@@ -291,6 +291,46 @@ fn test_quiet_reword_invalid_hash_suppresses_progress_output() {
 }
 
 #[test]
+fn test_quiet_reword_hash_outside_head_history_fails() {
+    let dir = setup_git_repo_with_commit();
+    let path = setup_fake_opencode_path(&dir);
+
+    let branch_output = std::process::Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let base_branch = String::from_utf8_lossy(&branch_output.stdout)
+        .trim()
+        .to_string();
+
+    std::process::Command::new("git")
+        .args(["checkout", "-b", "feature/reword-outside"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    commit_change(&dir, "# Test\nfeature\n", "feature commit");
+    let outside_hash = head_hash(&dir);
+
+    std::process::Command::new("git")
+        .args(["checkout", &base_branch])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    git_sc!()
+        .args(["--quiet", "--reword", &outside_hash, "--dry-run"])
+        .env("PATH", path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Invalid reword target"));
+}
+
+#[test]
 fn test_quiet_dry_run_with_ai_generation_suppresses_provider_output() {
     let dir = setup_git_repo_with_commit();
     let path = setup_fake_opencode_path(&dir);

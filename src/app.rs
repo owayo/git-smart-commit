@@ -212,61 +212,54 @@ impl App {
 
         // 1. プレフィックススクリプトをチェック（最優先、正規表現マッチ）
         for script_config in &self.prefix_scripts {
-            if let Ok(re) = Regex::new(&script_config.url_pattern) {
-                if re.is_match(&remote_url) {
+            if let Ok(re) = Regex::new(&script_config.url_pattern)
+                && re.is_match(&remote_url)
+            {
+                if !silent {
+                    println!(
+                        "{}",
+                        format!("Running prefix script for {}...", script_config.url_pattern)
+                            .cyan()
+                    );
+                }
+                if let Some(branch_name) = &branch {
+                    let result =
+                        self.git
+                            .run_prefix_script(&script_config.script, &remote_url, branch_name);
+
+                    // スクリプト実行結果を出力
                     if !silent {
-                        println!(
-                            "{}",
-                            format!("Running prefix script for {}...", script_config.url_pattern)
-                                .cyan()
-                        );
+                        match &result {
+                            Some(ScriptResult::Prefix(prefix)) => {
+                                println!("{}", format!("  → prefix: {:?}", prefix.trim()).green());
+                            }
+                            Some(ScriptResult::Empty) => {
+                                println!(
+                                    "{}",
+                                    "  → prefix: (empty, no prefix will be added)".yellow()
+                                );
+                            }
+                            Some(ScriptResult::Failed) => {
+                                println!(
+                                    "{}",
+                                    "  → script exited with non-zero status (exit 1), using AI-generated message".yellow()
+                                );
+                            }
+                            None => {
+                                println!("{}", "  → script execution failed".red());
+                            }
+                        }
                     }
-                    if let Some(branch_name) = &branch {
-                        let result = self.git.run_prefix_script(
-                            &script_config.script,
-                            &remote_url,
-                            branch_name,
-                        );
 
-                        // スクリプト実行結果を出力
-                        if !silent {
-                            match &result {
-                                Some(ScriptResult::Prefix(prefix)) => {
-                                    println!(
-                                        "{}",
-                                        format!("  → prefix: {:?}", prefix.trim()).green()
-                                    );
-                                }
-                                Some(ScriptResult::Empty) => {
-                                    println!(
-                                        "{}",
-                                        "  → prefix: (empty, no prefix will be added)".yellow()
-                                    );
-                                }
-                                Some(ScriptResult::Failed) => {
-                                    println!(
-                                        "{}",
-                                        "  → script exited with non-zero status (exit 1), using AI-generated message".yellow()
-                                    );
-                                }
-                                None => {
-                                    println!("{}", "  → script execution failed".red());
-                                }
-                            }
+                    if let Some(r) = result {
+                        let mode = resolve_script_result(r);
+                        if !silent && let PrefixMode::Rule(ref pt) = mode {
+                            println!(
+                                "{}",
+                                format!("  → interpreted as prefix_type: {}", pt).cyan()
+                            );
                         }
-
-                        if let Some(r) = result {
-                            let mode = resolve_script_result(r);
-                            if !silent {
-                                if let PrefixMode::Rule(ref pt) = mode {
-                                    println!(
-                                        "{}",
-                                        format!("  → interpreted as prefix_type: {}", pt).cyan()
-                                    );
-                                }
-                            }
-                            return mode;
-                        }
+                        return mode;
                     }
                 }
             }
@@ -274,20 +267,20 @@ impl App {
 
         // 2. プレフィックスルールをチェック（正規表現マッチ）
         for rule_config in &self.prefix_rules {
-            if let Ok(re) = Regex::new(&rule_config.url_pattern) {
-                if re.is_match(&remote_url) {
-                    if !silent {
-                        println!(
-                            "{}",
-                            format!(
-                                "Using prefix rule for {}: {}",
-                                rule_config.url_pattern, rule_config.prefix_type
-                            )
-                            .cyan()
-                        );
-                    }
-                    return PrefixMode::Rule(rule_config.prefix_type.clone());
+            if let Ok(re) = Regex::new(&rule_config.url_pattern)
+                && re.is_match(&remote_url)
+            {
+                if !silent {
+                    println!(
+                        "{}",
+                        format!(
+                            "Using prefix rule for {}: {}",
+                            rule_config.url_pattern, rule_config.prefix_type
+                        )
+                        .cyan()
+                    );
                 }
+                return PrefixMode::Rule(rule_config.prefix_type.clone());
             }
         }
 

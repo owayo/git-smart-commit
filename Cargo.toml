@@ -1,7 +1,7 @@
 [package]
 name = "git-sc"
 version = "26.3.100"
-edition = "2021"
+edition = "2024"
 authors = ["owayo <yoheiowa@gmail.com>"]
 description = "AI-powered smart commit message generator with multi-provider fallback"
 license = "MIT"

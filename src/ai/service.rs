@@ -202,8 +202,7 @@ impl AiService {
                 };
                 format!(
                     "opencode run 'Follow the instructions in the attached file exactly. Output only the commit message.'{} -f '{}' --print-logs",
-                    model_arg,
-                    file_display
+                    model_arg, file_display
                 )
             }
             AiProvider::AppleIntelligence => {
@@ -631,16 +630,14 @@ Instructions:
         })?;
 
         // Write prompt to stdin (codex, claude)
-        if uses_stdin {
-            if let Some(mut stdin) = child.stdin.take() {
-                stdin.write_all(prompt.as_bytes()).map_err(|e| {
-                    // 一時ファイルをクリーンアップ
-                    if let Some(ref path) = temp_file_path {
-                        let _ = fs::remove_file(path);
-                    }
-                    AppError::AiProviderError(format!("Failed to write prompt: {}", e))
-                })?;
-            }
+        if uses_stdin && let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(prompt.as_bytes()).map_err(|e| {
+                // 一時ファイルをクリーンアップ
+                if let Some(ref path) = temp_file_path {
+                    let _ = fs::remove_file(path);
+                }
+                AppError::AiProviderError(format!("Failed to write prompt: {}", e))
+            })?;
         }
 
         // stdout/stderr をスレッドで読み取り（デバッグ時はリアルタイム表示）

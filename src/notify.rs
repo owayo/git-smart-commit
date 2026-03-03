@@ -9,7 +9,7 @@ mod macos {
     type CFRef = *const c_void;
 
     #[link(name = "CoreFoundation", kind = "framework")]
-    extern "C" {
+    unsafe extern "C" {
         fn CFNotificationCenterGetDistributedCenter() -> CFRef;
         fn CFNotificationCenterPostNotification(
             center: CFRef,

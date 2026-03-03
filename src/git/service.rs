@@ -310,7 +310,7 @@ impl GitService {
 
     /// 全ての変更をステージング
     pub fn stage_all(&self) -> Result<(), AppError> {
-        // Windows: "nul" はWindowsの予約デバイス名
+        // Windows環境では "nul" は予約デバイス名
         // AIプロバイダー呼び出し時に意図せず "nul" ファイルが作成されることがあるため、
         // nul ファイルの削除 + ステージング除外の二重防御を行う
         #[cfg(windows)]
@@ -321,7 +321,7 @@ impl GitService {
             }
         }
 
-        // Windows: "nul" を除外してステージング（pathspecの除外指定を使用）
+        // Windows環境では "nul" を除外してステージング（pathspecの除外指定を使用）
         #[cfg(windows)]
         let args: &[&str] = &["add", "-A", "--", ".", ":!nul"];
         #[cfg(not(windows))]
@@ -339,7 +339,7 @@ impl GitService {
             ));
         }
 
-        // Windows: 万が一 nul がステージされていた場合はアンステージ
+        // Windows環境で万が一 nul がステージされていた場合はアンステージ
         #[cfg(windows)]
         {
             let _ = Command::new("git")
@@ -435,11 +435,7 @@ impl GitService {
 
         if output.status.success() {
             let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if url.is_empty() {
-                None
-            } else {
-                Some(url)
-            }
+            if url.is_empty() { None } else { Some(url) }
         } else {
             None
         }
@@ -497,7 +493,7 @@ impl GitService {
                 Some(ScriptResult::Prefix(prefix))
             }
         } else {
-            // exit 1: AI生成のメッセージをそのまま使用
+            // 終了コード1: AI生成のメッセージをそのまま使用
             Some(ScriptResult::Failed)
         }
     }
@@ -662,8 +658,8 @@ impl GitService {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
-    /// 指定されたコミットハッシュがHEADから何個前かを取得
-    pub fn get_commit_position_by_hash(&self, hash: &str) -> Result<usize, AppError> {
+    /// reword対象として有効なコミットか確認（現在のHEAD履歴上に存在するか）
+    fn validate_reword_target_hash(&self, hash: &str) -> Result<(), AppError> {
         // まずコミットハッシュが有効か確認
         let verify_output = Command::new("git")
             .args(["rev-parse", "--verify", hash])
@@ -674,6 +670,35 @@ impl GitService {
         if !verify_output.status.success() {
             return Err(AppError::InvalidCommitHash(hash.to_string()));
         }
+
+        // 履歴外のコミットをreword対象にすると誤ったコミット位置が算出されるため、祖先関係を厳密に確認
+        let ancestor_output = Command::new("git")
+            .args(["merge-base", "--is-ancestor", hash, "HEAD"])
+            .current_dir(&self.repo_path)
+            .output()
+            .map_err(|e| AppError::GitError(e.to_string()))?;
+
+        match ancestor_output.status.code() {
+            Some(0) => Ok(()),
+            Some(1) => Err(AppError::InvalidRewordTarget),
+            _ => {
+                let stderr = String::from_utf8_lossy(&ancestor_output.stderr)
+                    .trim()
+                    .to_string();
+                if stderr.is_empty() {
+                    Err(AppError::GitError(
+                        "Failed to verify reword target ancestry".to_string(),
+                    ))
+                } else {
+                    Err(AppError::GitError(stderr))
+                }
+            }
+        }
+    }
+
+    /// 指定されたコミットハッシュがHEADから何個前かを取得
+    pub fn get_commit_position_by_hash(&self, hash: &str) -> Result<usize, AppError> {
+        self.validate_reword_target_hash(hash)?;
 
         // HEADからそのコミットまでのコミット数をカウント
         // git rev-list --count hash..HEAD で hash から HEAD までのコミット数を取得
@@ -702,16 +727,7 @@ impl GitService {
 
     /// 指定されたコミットハッシュからHEADまでにマージコミットが含まれているかチェック
     pub fn has_merge_commits_in_range_by_hash(&self, hash: &str) -> Result<bool, AppError> {
-        // まずコミットハッシュが有効か確認
-        let verify_output = Command::new("git")
-            .args(["rev-parse", "--verify", hash])
-            .current_dir(&self.repo_path)
-            .output()
-            .map_err(|e| AppError::GitError(e.to_string()))?;
-
-        if !verify_output.status.success() {
-            return Err(AppError::InvalidCommitHash(hash.to_string()));
-        }
+        self.validate_reword_target_hash(hash)?;
 
         // マージコミットは親が2つ以上ある
         let output = Command::new("git")
@@ -745,7 +761,7 @@ impl GitService {
             return Err(AppError::InvalidRewordTarget);
         }
 
-        // n=1 の場合は --amend を使用
+        // n=1 の場合は amend で処理
         if n == 1 {
             return self.amend_commit_message(new_message);
         }
@@ -761,19 +777,19 @@ impl GitService {
         std::fs::write(&msg_file, new_message)
             .map_err(|e| AppError::GitError(format!("Failed to create temp file: {}", e)))?;
 
-        // GIT_SEQUENCE_EDITOR: 最初のpickをrewordに変更
+        // GIT_SEQUENCE_EDITOR: 最初の pick を reword に変更
         // シェル経由で実行するために sh -c でラップする
         let sequence_editor = if cfg!(windows) {
-            // Windows: PowerShellを使用
+            // Windows環境では PowerShell を使用
             "powershell -Command \"(Get-Content $args[0]) -replace '^pick', 'reword' | Set-Content $args[0]\"".to_string()
         } else {
-            // Unix: sedを使用（macOSとLinux両対応）
+            // Unix系環境では sed を使用（macOS/Linux対応）
             // sh -c でラップし、-- の後に $1 を渡す
             "sh -c 'sed -i.bak '\"'\"'1s/^pick/reword/'\"'\"' \"$1\" && rm -f \"$1.bak\"' --"
                 .to_string()
         };
 
-        // GIT_EDITOR: 一時ファイルの内容をコピー
+        // GIT_EDITOR: 一時ファイルの内容をコミットメッセージへ反映
         let editor = if cfg!(windows) {
             format!(
                 "powershell -Command \"Copy-Item '{}' $args[0]\"",
