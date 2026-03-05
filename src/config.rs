@@ -980,4 +980,27 @@ claude = "haiku"
         // 0はデフォルト(60)と異なるため上書きされる
         assert_eq!(global.provider_cooldown_minutes, 0);
     }
+
+    #[test]
+    fn test_from_str_valid() {
+        let toml_str = r#"
+providers = ["gemini", "claude"]
+language = "ja"
+"#;
+        let config = Config::from_str(toml_str).unwrap();
+        assert_eq!(config.providers, vec!["gemini", "claude"]);
+        assert_eq!(config.language, "ja");
+    }
+
+    #[test]
+    fn test_from_str_invalid_toml() {
+        let result = Config::from_str("invalid[[[toml");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_from_str_minimal() {
+        let config = Config::from_str("").unwrap();
+        assert_eq!(config.language, "Japanese");
+    }
 }

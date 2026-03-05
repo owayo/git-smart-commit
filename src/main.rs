@@ -19,7 +19,7 @@ use init::InitCommand;
 fn main() {
     let cli = Cli::parse();
 
-    // Handle subcommands first
+    // サブコマンドを先に処理
     if let Some(ref cmd) = cli.command {
         match cmd {
             Command::Init { force } => match InitCommand::execute(*force) {

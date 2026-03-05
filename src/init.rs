@@ -1,6 +1,6 @@
-//! Init command module for git-sc
+//! git-sc initコマンドモジュール
 //!
-//! Generates configuration file with sample settings.
+//! サンプル設定付きの設定ファイルを生成する
 
 use std::fs;
 use std::io::{self, Write};
@@ -9,47 +9,48 @@ use std::path::{Path, PathBuf};
 use crate::config::Config;
 use crate::error::AppError;
 
-/// Init command for generating configuration file
+/// 設定ファイル生成用のinitコマンド
 pub struct InitCommand;
 
 impl InitCommand {
-    /// Execute the init command to generate configuration file
+    /// initコマンドを実行して設定ファイルを生成
     ///
-    /// # Arguments
-    /// * `force` - If true, overwrite existing file without confirmation
+    /// # 引数
+    /// * `force` - trueの場合、確認なしで既存ファイルを上書き
     ///
-    /// # Returns
-    /// * `Ok(PathBuf)` - Path to the generated file
-    /// * `Err(AppError)` - If generation fails
+    /// # 戻り値
+    /// * `Ok(PathBuf)` - 生成されたファイルのパス
+    /// * `Err(AppError)` - 生成に失敗した場合
     pub fn execute(force: bool) -> Result<PathBuf, AppError> {
-        let config_dir = Config::config_dir().ok_or_else(|| {
-            AppError::ConfigError("Unable to determine config directory".to_string())
-        })?;
+        let config_dir = Config::config_dir()
+            .ok_or_else(|| AppError::ConfigError("設定ディレクトリを特定できません".to_string()))?;
 
         let config_path = Config::global_config_path()?;
 
-        // Check if file exists
+        // ファイルが既に存在するかチェック
         if config_path.exists() && !force {
-            // Ask for confirmation
+            // 上書き確認
             if !Self::confirm_overwrite(&config_path)? {
-                return Err(AppError::ConfigError("Operation cancelled".to_string()));
+                return Err(AppError::ConfigError(
+                    "操作がキャンセルされました".to_string(),
+                ));
             }
         }
 
-        // Create directory if it doesn't exist
+        // ディレクトリが存在しなければ作成
         fs::create_dir_all(&config_dir).map_err(|e| {
             AppError::ConfigError(format!(
-                "Failed to create directory {}: {}",
+                "ディレクトリの作成に失敗しました {}: {}",
                 config_dir.display(),
                 e
             ))
         })?;
 
-        // Write config file
+        // 設定ファイルを書き込み
         let content = Config::default_config_content();
         fs::write(&config_path, content).map_err(|e| {
             AppError::ConfigError(format!(
-                "Failed to write config file {}: {}",
+                "設定ファイルの書き込みに失敗しました {}: {}",
                 config_path.display(),
                 e
             ))
@@ -58,10 +59,10 @@ impl InitCommand {
         Ok(config_path)
     }
 
-    /// Ask user for confirmation to overwrite existing file
+    /// 既存ファイルの上書き確認をユーザーに求める
     fn confirm_overwrite(path: &Path) -> Result<bool, AppError> {
         eprint!(
-            "Config file already exists at {}. Overwrite? [y/N]: ",
+            "設定ファイルが既に存在します: {}。上書きしますか？ [y/N]: ",
             path.display()
         );
         io::stderr()

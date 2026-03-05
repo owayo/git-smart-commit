@@ -1600,4 +1600,61 @@ index 555..666 100644
         // diffブロックも保存されていること
         assert!(result.contains("src/main.rs"));
     }
+
+    #[test]
+    fn test_apply_all_filters_text_only() {
+        let gs = GitService::default();
+        let diff = "diff --git a/src/main.rs b/src/main.rs\n--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        let result = gs.apply_all_filters(diff);
+        assert!(result.contains("src/main.rs"));
+        assert!(result.contains("+new"));
+    }
+
+    #[test]
+    fn test_apply_all_filters_binary_excluded() {
+        let gs = GitService::default();
+        let diff = "diff --git a/image.png b/image.png\nnew file mode 100644\nBinary files /dev/null and b/image.png differ\ndiff --git a/src/main.rs b/src/main.rs\n--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        let result = gs.apply_all_filters(diff);
+        assert!(result.contains("[Binary]"));
+        assert!(result.contains("+new"));
+    }
+
+    #[test]
+    fn test_apply_all_filters_empty() {
+        let gs = GitService::default();
+        let result = gs.apply_all_filters("");
+        assert!(result.is_empty());
+    }
+
+    // ============================================================
+    // extract_file_path_from_diff_header: ルートファイルのテスト
+    // ============================================================
+
+    #[test]
+    fn test_extract_file_path_root_file() {
+        let header = "diff --git a/Cargo.toml b/Cargo.toml";
+        assert_eq!(
+            GitService::extract_file_path_from_diff_header(header),
+            Some("Cargo.toml")
+        );
+    }
+
+    // ============================================================
+    // get_commit_message_by_hash のテスト
+    // ============================================================
+
+    #[test]
+    fn test_get_commit_message_by_hash_head() {
+        let service = GitService::new();
+        let result = service.get_commit_message_by_hash("HEAD");
+        assert!(result.is_ok());
+        assert!(!result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_get_commit_message_by_hash_invalid() {
+        let service = GitService::new();
+        let result = service.get_commit_message_by_hash("0000000000000000000000000000000000000000");
+        assert!(result.is_err());
+    }
 }

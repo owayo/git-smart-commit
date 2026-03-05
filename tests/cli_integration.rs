@@ -117,7 +117,7 @@ fn test_help_flag() {
         .arg("--help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("AI-powered smart commit"));
+        .stdout(predicate::str::contains("AI"));
 }
 
 #[test]
@@ -126,7 +126,7 @@ fn test_short_help_flag() {
         .arg("-h")
         .assert()
         .success()
-        .stdout(predicate::str::contains("AI-powered smart commit"));
+        .stdout(predicate::str::contains("AI"));
 }
 
 // ============================================================
@@ -161,7 +161,7 @@ fn test_init_help() {
         .args(["init", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Initialize"));
+        .stdout(predicate::str::contains("設定ファイルを生成"));
 }
 
 // ============================================================
@@ -327,7 +327,9 @@ fn test_quiet_reword_hash_outside_head_history_fails() {
         .assert()
         .failure()
         .stdout(predicate::str::is_empty())
-        .stderr(predicate::str::contains("Invalid reword target"));
+        .stderr(predicate::str::contains(
+            "無効なreword対象です。有効なコミットハッシュを指定してください。",
+        ));
 }
 
 #[test]

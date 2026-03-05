@@ -1,4 +1,4 @@
-// Git operations module
+// Git操作モジュール
 pub mod service;
 
 pub use service::{GitService, ScriptResult};

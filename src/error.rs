@@ -50,7 +50,7 @@ pub enum AppError {
     #[error("rebase中にコンフリクトが発生しました。rebaseを中止しました。")]
     RebaseConflict,
 
-    #[error("Invalid reword target. Please specify a valid commit hash.")]
+    #[error("無効なreword対象です。有効なコミットハッシュを指定してください。")]
     InvalidRewordTarget,
 
     #[error("無効なコミットハッシュ: {0}")]
@@ -191,7 +191,7 @@ mod tests {
         let err = AppError::InvalidRewordTarget;
         assert_eq!(
             err.to_string(),
-            "Invalid reword target. Please specify a valid commit hash."
+            "無効なreword対象です。有効なコミットハッシュを指定してください。"
         );
     }
 
@@ -207,6 +207,30 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "--generate-for と --amend は同時に使用できません"
+        );
+    }
+
+    #[test]
+    fn test_error_invalid_argument() {
+        let err = AppError::InvalidArgument("Unknown provider 'foo'".to_string());
+        assert_eq!(err.to_string(), "無効な引数: Unknown provider 'foo'");
+    }
+
+    #[test]
+    fn test_error_conflicting_options_squash() {
+        let err = AppError::ConflictingOptions("squash".to_string());
+        assert_eq!(
+            err.to_string(),
+            "--generate-for と --squash は同時に使用できません"
+        );
+    }
+
+    #[test]
+    fn test_error_conflicting_options_reword() {
+        let err = AppError::ConflictingOptions("reword".to_string());
+        assert_eq!(
+            err.to_string(),
+            "--generate-for と --reword は同時に使用できません"
         );
     }
 }

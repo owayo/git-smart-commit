@@ -1,17 +1,17 @@
 use clap::{Parser, Subcommand};
 
-/// Subcommands for git-sc
+/// git-sc のサブコマンド
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    /// Initialize configuration file at ~/.config/git-sc/config.toml
+    /// ~/.config/git-sc/config.toml に設定ファイルを生成
     Init {
-        /// Force overwrite existing config file without prompting
+        /// 確認なしで既存の設定ファイルを上書き
         #[arg(long)]
         force: bool,
     },
 }
 
-/// AI-powered smart commit message generator using coding agents (Gemini CLI, Codex CLI, or Claude Code)
+/// AI コーディングエージェントによるスマートコミットメッセージ生成ツール (Gemini CLI, Codex CLI, Claude Code)
 #[derive(Parser, Debug)]
 #[command(name = "git-sc")]
 #[command(
@@ -19,55 +19,55 @@ pub enum Command {
 )]
 #[command(version)]
 pub struct Cli {
-    /// Subcommand (e.g., init)
+    /// サブコマンド (例: init)
     #[command(subcommand)]
     pub command: Option<Command>,
 
-    /// Skip confirmation prompt and commit directly
+    /// 確認プロンプトをスキップして直接コミット
     #[arg(short = 'y', long = "yes")]
     pub auto_confirm: bool,
 
-    /// Show generated message without committing
+    /// コミットせずに生成されたメッセージのみ表示
     #[arg(short = 'n', long = "dry-run")]
     pub dry_run: bool,
 
-    /// Stage all changes including unstaged and commit
+    /// 未ステージの変更を含む全変更をステージしてコミット
     #[arg(short = 'a', long = "all")]
     pub stage_all: bool,
 
-    /// Amend the last commit with a newly generated message
+    /// 直前のコミットメッセージをAI生成で書き換え
     #[arg(long = "amend")]
     pub amend: bool,
 
-    /// Squash all commits in branch into one with a new message (specify base branch)
+    /// ブランチ内の全コミットを1つにsquash（ベースブランチを指定）
     #[arg(long = "squash", value_name = "BASE")]
     pub squash: Option<String>,
 
-    /// Regenerate commit message for specified commit hash (uses git rebase)
+    /// 指定コミットハッシュのメッセージを再生成（git rebase使用）
     #[arg(long = "reword", value_name = "HASH")]
     pub reword: Option<String>,
 
-    /// Generate message from diff of specified commit hash(es) (output only, multiple allowed)
+    /// 指定コミットハッシュのdiffからメッセージ生成（出力のみ、複数指定可）
     #[arg(short = 'g', long = "generate-for", value_name = "HASH", num_args = 1..)]
     pub generate_for: Option<Vec<String>>,
 
-    /// Generate commit message with body
+    /// 本文（body）付きのコミットメッセージを生成
     #[arg(short = 'b', long = "body")]
     pub with_body: bool,
 
-    /// Language for commit message (overrides config file)
+    /// コミットメッセージの言語（設定ファイルより優先）
     #[arg(short = 'l', long = "lang")]
     pub language: Option<String>,
 
-    /// Debug mode (show prompt sent to AI)
+    /// デバッグモード（AIに送信するプロンプトを表示）
     #[arg(short = 'd', long = "debug")]
     pub debug: bool,
 
-    /// Suppress progress messages (useful for scripting/hooks)
+    /// 進捗メッセージを抑制（スクリプト/hooks向け）
     #[arg(short = 'q', long = "quiet")]
     pub quiet: bool,
 
-    /// Specify AI provider to use (e.g., gemini, codex, claude, opencode, apple-intelligence)
+    /// 使用するAIプロバイダーを指定 (例: gemini, codex, claude, opencode, apple-intelligence)
     #[arg(short = 'p', long = "provider")]
     pub provider: Option<String>,
 }

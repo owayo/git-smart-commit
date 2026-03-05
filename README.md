@@ -154,12 +154,13 @@ git-sc -n
 
 `--reword` note:
 - Only accepts commits reachable from the current `HEAD` history.
-- Passing a hash from another branch (not in current history) fails with `Invalid reword target`.
+- Passing a hash from another branch (not in current history) fails with an error.
 
 #### Settings
 
 | Option | Short | Description |
 |--------|-------|-------------|
+| `--provider` | `-p` | Use specific AI provider (gemini, codex, claude, opencode, apple-intelligence) |
 | `--lang` | `-l` | Override commit message language |
 
 #### Debug & Info

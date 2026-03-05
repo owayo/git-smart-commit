@@ -67,7 +67,7 @@ Prefix script behavior note:
 
 Reword safety note:
 - `GitService` validates that a `--reword` target hash is in the current `HEAD` history before merge-range checks and position calculation.
-- If the hash exists but is outside the current history (e.g., another branch), reword fails with `Invalid reword target`.
+- If the hash exists but is outside the current history (e.g., another branch), reword fails with an error.
 
 ### AI Provider Implementation
 

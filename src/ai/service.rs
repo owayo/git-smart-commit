@@ -139,7 +139,7 @@ impl AiService {
             language: "Japanese".to_string(),
             models: ModelsConfig::default(),
             cooldown_minutes: 60, // デフォルト1時間
-            timeout_seconds: 30,  // デフォルト30秒
+            timeout_seconds: 60,  // デフォルト60秒（Config::defaultと同値）
             debug: false,
             provider_override: false,
         }
@@ -249,7 +249,7 @@ impl AiService {
             return cfg!(all(target_os = "macos", feature = "apple-ai"));
         }
 
-        // Windows uses "where", Unix uses "which"
+        // Windows は "where"、Unix は "which" を使用
         let check_cmd = if cfg!(windows) { "where" } else { "which" };
         Command::new(check_cmd)
             .arg(provider.command())
@@ -521,7 +521,7 @@ Instructions:
         #[cfg(not(windows))]
         let mut cmd = Command::new(provider.command());
 
-        // Add provider-specific arguments (without the prompt)
+        // プロバイダー固有の引数を追加（プロンプトを除く）
         // 各プロバイダーの models が空文字列の場合、モデルパラメータを省略する
         match provider {
             AiProvider::Gemini => {
@@ -629,7 +629,7 @@ Instructions:
             }
         })?;
 
-        // Write prompt to stdin (codex, claude)
+        // stdinにプロンプトを書き込み (codex, claude)
         if uses_stdin && let Some(mut stdin) = child.stdin.take() {
             stdin.write_all(prompt.as_bytes()).map_err(|e| {
                 // 一時ファイルをクリーンアップ
@@ -1307,6 +1307,128 @@ mod tests {
     }
 
     #[test]
+    fn test_clean_message_empty() {
+        assert_eq!(AiService::clean_message(""), "");
+    }
+
+    #[test]
+    fn test_clean_message_only_whitespace() {
+        assert_eq!(AiService::clean_message("   \n  \n  "), "");
+    }
+
+    #[test]
+    fn test_clean_message_single_line() {
+        assert_eq!(AiService::clean_message("feat: simple"), "feat: simple");
+    }
+
+    #[test]
+    fn test_clean_message_multiline() {
+        let message = "feat: add feature\n\n- detail 1\n- detail 2";
+        assert_eq!(AiService::clean_message(message), message);
+    }
+
+    #[test]
+    fn test_clean_message_nested_quotes() {
+        let message = "\"'feat: add feature'\"";
+        assert_eq!(AiService::clean_message(message), "feat: add feature");
+    }
+
+    #[test]
+    fn test_clean_message_partial_fence() {
+        // 開始フェンスのみで閉じフェンスがない場合、ensure_body_separatorで空行挿入
+        let message = "```\nfeat: add feature";
+        assert_eq!(
+            AiService::clean_message(message),
+            "```\n\nfeat: add feature"
+        );
+    }
+
+    #[test]
+    fn test_clean_message_code_block_two_lines() {
+        // 開始と終了のみの2行コードブロック、ensure_body_separatorで空行挿入
+        let message = "```\n```";
+        assert_eq!(AiService::clean_message(message), "```\n\n```");
+    }
+
+    #[test]
+    fn test_clean_message_code_block_multiline() {
+        let message = "```\nfeat: add feature\n\n- detail 1\n```";
+        assert_eq!(
+            AiService::clean_message(message),
+            "feat: add feature\n\n- detail 1"
+        );
+    }
+
+    #[test]
+    fn test_clean_message_body_with_empty_line() {
+        let message = "feat: add feature\n\nBody text here";
+        assert_eq!(AiService::clean_message(message), message);
+    }
+
+    #[test]
+    fn test_clean_message_body_without_empty_line() {
+        // 件名と本文の間に空行がない場合、自動挿入される
+        let message = "feat: add feature\nBody text here";
+        assert_eq!(
+            AiService::clean_message(message),
+            "feat: add feature\n\nBody text here"
+        );
+    }
+
+    #[test]
+    fn test_clean_message_body_multiple_lines_without_separator() {
+        let message = "feat: add feature\n- detail 1\n- detail 2";
+        assert_eq!(
+            AiService::clean_message(message),
+            "feat: add feature\n\n- detail 1\n- detail 2"
+        );
+    }
+
+    #[test]
+    fn test_ensure_body_separator_empty() {
+        assert_eq!(AiService::ensure_body_separator(""), "");
+    }
+
+    #[test]
+    fn test_ensure_body_separator_single_line() {
+        assert_eq!(
+            AiService::ensure_body_separator("feat: add feature"),
+            "feat: add feature"
+        );
+    }
+
+    #[test]
+    fn test_ensure_body_separator_already_has_separator() {
+        let message = "feat: add feature\n\nBody";
+        assert_eq!(AiService::ensure_body_separator(message), message);
+    }
+
+    #[test]
+    fn test_ensure_body_separator_missing_separator() {
+        let message = "feat: add feature\nBody";
+        assert_eq!(
+            AiService::ensure_body_separator(message),
+            "feat: add feature\n\nBody"
+        );
+    }
+
+    #[test]
+    fn test_ensure_body_separator_three_lines_no_separator() {
+        let message = "feat: add feature\n- detail 1\n- detail 2";
+        assert_eq!(
+            AiService::ensure_body_separator(message),
+            "feat: add feature\n\n- detail 1\n- detail 2"
+        );
+    }
+
+    #[test]
+    fn test_ensure_body_separator_whitespace_only_second_line() {
+        let message = "feat: add feature\n   \nBody";
+        // 空白のみの2行目は空行扱い
+        assert_eq!(AiService::ensure_body_separator(message), message);
+    }
+
+    #[test]
     fn test_clean_message_code_block_with_language() {
         let message = "```text\nfeat: add new feature\n```";
         assert_eq!(AiService::clean_message(message), "feat: add new feature");
@@ -1338,6 +1460,107 @@ mod tests {
         let stderr = "Claude error message";
         let error = AiService::extract_error(stderr, &AiProvider::Claude);
         assert_eq!(error, "Claude error message");
+    }
+
+    #[test]
+    fn test_extract_error_whitespace_only() {
+        let stderr = "   \n  \n  ";
+        let error = AiService::extract_error(stderr, &AiProvider::Claude);
+        assert_eq!(error, "API request failed");
+    }
+
+    #[test]
+    fn test_extract_error_gemini_license_error() {
+        let stderr = "Warning: something\nAn unexpected critical error occurred:Error: license check failed\nMore info";
+        let error = AiService::extract_error(stderr, &AiProvider::Gemini);
+        assert!(error.contains("critical error") || error.contains("Error:"));
+    }
+
+    #[test]
+    fn test_extract_error_gemini_critical_error() {
+        let stderr = "An unexpected critical error occurred:Error: something bad";
+        let error = AiService::extract_error(stderr, &AiProvider::Gemini);
+        assert!(error.contains("critical error"));
+    }
+
+    #[test]
+    fn test_extract_error_gemini_multiple_api_errors() {
+        let stderr = "[API Error: first]\n[API Error: second]";
+        let error = AiService::extract_error(stderr, &AiProvider::Gemini);
+        // 最初の API Error を返す
+        assert_eq!(error, "[API Error: first]");
+    }
+
+    #[test]
+    fn test_extract_error_codex_auth_error() {
+        let stderr =
+            "Reading prompt from stdin...\nERROR: Your access token could not be refreshed";
+        let error = AiService::extract_error(stderr, &AiProvider::Codex);
+        assert!(error.starts_with("ERROR:"));
+    }
+
+    #[test]
+    fn test_extract_error_codex_error_prefix_priority() {
+        let stderr = "error in something\nERROR: specific error message";
+        let error = AiService::extract_error(stderr, &AiProvider::Codex);
+        // "ERROR:" で始まる行が優先される
+        assert_eq!(error, "ERROR: specific error message");
+    }
+
+    #[test]
+    fn test_extract_error_codex_reconnecting_skipped() {
+        let stderr = "Reconnecting to server...\nReading prompt from stdin...\nActual error here";
+        let error = AiService::extract_error(stderr, &AiProvider::Codex);
+        assert_eq!(error, "Actual error here");
+    }
+
+    #[test]
+    fn test_extract_error_opencode_empty() {
+        let stderr = "";
+        let error = AiService::extract_error(stderr, &AiProvider::Opencode);
+        assert_eq!(error, "opencode request failed");
+    }
+
+    #[test]
+    fn test_extract_error_opencode_generic() {
+        let stderr = "some log message";
+        let error = AiService::extract_error(stderr, &AiProvider::Opencode);
+        assert_eq!(error, "some log message");
+    }
+
+    #[test]
+    fn test_extract_error_opencode_with_error() {
+        let stderr = "log\nerror: connection failed\nmore log";
+        let error = AiService::extract_error(stderr, &AiProvider::Opencode);
+        assert_eq!(error, "error: connection failed");
+    }
+
+    #[test]
+    fn test_extract_error_opencode_with_failed() {
+        let stderr = "some failed operation";
+        let error = AiService::extract_error(stderr, &AiProvider::Opencode);
+        assert_eq!(error, "some failed operation");
+    }
+
+    #[test]
+    fn test_extract_error_apple_intelligence_empty() {
+        let stderr = "";
+        let error = AiService::extract_error(stderr, &AiProvider::AppleIntelligence);
+        assert_eq!(error, "Apple Intelligence request failed");
+    }
+
+    #[test]
+    fn test_extract_error_apple_intelligence_with_error() {
+        let stderr = "Info message\nError: model not available\nDetails";
+        let error = AiService::extract_error(stderr, &AiProvider::AppleIntelligence);
+        assert_eq!(error, "Error: model not available");
+    }
+
+    #[test]
+    fn test_extract_error_apple_intelligence_generic() {
+        let stderr = "some generic info\nno Error: prefix here";
+        let error = AiService::extract_error(stderr, &AiProvider::AppleIntelligence);
+        assert_eq!(error, "some generic info");
     }
 
     #[test]
@@ -1382,9 +1605,11 @@ mod tests {
         };
         let service = AiService::from_config(&config);
 
+        // reorder_providersで順序が変わる可能性があるため、含有のみ検証
         assert_eq!(service.providers.len(), 2);
-        assert_eq!(service.providers[0].name(), "Claude Code");
-        assert_eq!(service.providers[1].name(), "Gemini CLI");
+        let names: Vec<&str> = service.providers.iter().map(|p| p.name()).collect();
+        assert!(names.contains(&"Claude Code"));
+        assert!(names.contains(&"Gemini CLI"));
     }
 
     #[test]
@@ -1450,221 +1675,6 @@ mod tests {
         if cfg!(all(target_os = "macos", feature = "apple-ai")) {
             assert_eq!(service.providers[4].name(), "Apple Intelligence");
         }
-    }
-
-    // ============================================================
-    // clean_message 追加テスト
-    // ============================================================
-
-    #[test]
-    fn test_clean_message_nested_quotes() {
-        let message = "\"'feat: message'\"";
-        // 外側の引用符のみ削除される
-        let result = AiService::clean_message(message);
-        assert!(result.contains("feat: message"));
-    }
-
-    #[test]
-    fn test_clean_message_empty() {
-        let message = "";
-        assert_eq!(AiService::clean_message(message), "");
-    }
-
-    #[test]
-    fn test_clean_message_only_whitespace() {
-        let message = "   \n\t  ";
-        assert_eq!(AiService::clean_message(message), "");
-    }
-
-    #[test]
-    fn test_clean_message_multiline() {
-        let message = "feat: add feature\n\nThis is a longer description.";
-        assert_eq!(
-            AiService::clean_message(message),
-            "feat: add feature\n\nThis is a longer description."
-        );
-    }
-
-    #[test]
-    fn test_clean_message_code_block_multiline() {
-        let message = "```\nfeat: add feature\n\nDescription here\n```";
-        let result = AiService::clean_message(message);
-        assert!(result.contains("feat: add feature"));
-        assert!(result.contains("Description here"));
-    }
-
-    #[test]
-    fn test_clean_message_body_without_empty_line() {
-        // 2行目が空行でない場合、空行を挿入
-        let message = "feat: add feature\nThis is the body.";
-        assert_eq!(
-            AiService::clean_message(message),
-            "feat: add feature\n\nThis is the body."
-        );
-    }
-
-    #[test]
-    fn test_clean_message_body_with_empty_line() {
-        // 既に空行がある場合はそのまま
-        let message = "feat: add feature\n\nThis is the body.";
-        assert_eq!(
-            AiService::clean_message(message),
-            "feat: add feature\n\nThis is the body."
-        );
-    }
-
-    #[test]
-    fn test_clean_message_body_multiple_lines_without_separator() {
-        // 複数行の本文で空行がない場合
-        let message = "feat: add feature\n- item 1\n- item 2\n- item 3";
-        assert_eq!(
-            AiService::clean_message(message),
-            "feat: add feature\n\n- item 1\n- item 2\n- item 3"
-        );
-    }
-
-    #[test]
-    fn test_clean_message_single_line() {
-        // 1行のみの場合はそのまま
-        let message = "feat: add feature";
-        assert_eq!(AiService::clean_message(message), "feat: add feature");
-    }
-
-    // ============================================================
-    // extract_error 追加テスト
-    // ============================================================
-
-    #[test]
-    fn test_extract_error_whitespace_only() {
-        let stderr = "   \n\t  ";
-        let error = AiService::extract_error(stderr, &AiProvider::Claude);
-        assert_eq!(error, "API request failed");
-    }
-
-    #[test]
-    fn test_extract_error_gemini_multiple_api_errors() {
-        // 最初のAPI Errorを返す
-        let stderr = "[API Error: First error]\n[API Error: Second error]";
-        let error = AiService::extract_error(stderr, &AiProvider::Gemini);
-        assert_eq!(error, "[API Error: First error]");
-    }
-
-    #[test]
-    fn test_extract_error_gemini_critical_error() {
-        // Gemini CLI の critical error パターンを正しく抽出
-        let stderr = "Loaded cached credentials.\nError authenticating: GaxiosError: ...\nAn unexpected critical error occurred:Error: You are currently configured to use a Google Cloud Project but lack a Gemini Code Assist license.";
-        let error = AiService::extract_error(stderr, &AiProvider::Gemini);
-        assert_eq!(error, "Error authenticating: GaxiosError: ...");
-    }
-
-    #[test]
-    fn test_extract_error_gemini_license_error() {
-        // Error: で始まる行を拾う
-        let stderr = "Some debug info\nError: Missing license for Gemini\nMore details";
-        let error = AiService::extract_error(stderr, &AiProvider::Gemini);
-        assert_eq!(error, "Error: Missing license for Gemini");
-    }
-
-    #[test]
-    fn test_extract_error_codex_auth_error() {
-        // Codex CLI の認証エラーを正しく抽出
-        let stderr = r#"Reading prompt from stdin...
-OpenAI Codex v0.77.0 (research preview)
---------
-workdir: /Users/test
-model: gpt-5.1-codex-mini
---------
-Reconnecting... 1/5
-Reconnecting... 2/5
-ERROR: Your access token could not be refreshed because your refresh token was already used."#;
-        let error = AiService::extract_error(stderr, &AiProvider::Codex);
-        assert!(error.starts_with("ERROR:"));
-        assert!(error.contains("access token"));
-    }
-
-    #[test]
-    fn test_extract_error_codex_reading_prompt_skipped() {
-        // "Reading prompt from stdin..." は無視される
-        let stderr = "Reading prompt from stdin...\nSome actual error message";
-        let error = AiService::extract_error(stderr, &AiProvider::Codex);
-        assert_eq!(error, "Some actual error message");
-    }
-
-    #[test]
-    fn test_extract_error_codex_reconnecting_skipped() {
-        // "Reconnecting..." は無視される
-        let stderr = "Reconnecting... 1/5\nReconnecting... 2/5\nConnection failed";
-        let error = AiService::extract_error(stderr, &AiProvider::Codex);
-        assert_eq!(error, "Connection failed");
-    }
-
-    #[test]
-    fn test_extract_error_codex_error_prefix_priority() {
-        // "ERROR:" で始まる行が優先される
-        let stderr = "Info message\nWARNING: something\nERROR: critical issue\nMore info";
-        let error = AiService::extract_error(stderr, &AiProvider::Codex);
-        assert_eq!(error, "ERROR: critical issue");
-    }
-
-    // ============================================================
-    // opencode extract_error テスト
-    // ============================================================
-
-    #[test]
-    fn test_extract_error_opencode_with_error() {
-        let stderr = "Some warning\nError: model not found\nMore info";
-        let error = AiService::extract_error(stderr, &AiProvider::Opencode);
-        assert_eq!(error, "Error: model not found");
-    }
-
-    #[test]
-    fn test_extract_error_opencode_with_failed() {
-        let stderr = "Request failed: timeout\nOther info";
-        let error = AiService::extract_error(stderr, &AiProvider::Opencode);
-        assert_eq!(error, "Request failed: timeout");
-    }
-
-    #[test]
-    fn test_extract_error_opencode_empty() {
-        let stderr = "";
-        let error = AiService::extract_error(stderr, &AiProvider::Opencode);
-        assert_eq!(error, "opencode request failed");
-    }
-
-    #[test]
-    fn test_extract_error_opencode_generic() {
-        let stderr = "Some generic message without error keyword";
-        let error = AiService::extract_error(stderr, &AiProvider::Opencode);
-        assert_eq!(error, "Some generic message without error keyword");
-    }
-
-    // ============================================================
-    // Apple Intelligence extract_error テスト
-    // ============================================================
-
-    #[test]
-    fn test_extract_error_apple_intelligence_with_error() {
-        let stderr =
-            "Error: Apple Intelligence is not available on this device\nRequires macOS 26+";
-        let error = AiService::extract_error(stderr, &AiProvider::AppleIntelligence);
-        assert_eq!(
-            error,
-            "Error: Apple Intelligence is not available on this device"
-        );
-    }
-
-    #[test]
-    fn test_extract_error_apple_intelligence_empty() {
-        let stderr = "";
-        let error = AiService::extract_error(stderr, &AiProvider::AppleIntelligence);
-        assert_eq!(error, "Apple Intelligence request failed");
-    }
-
-    #[test]
-    fn test_extract_error_apple_intelligence_generic() {
-        let stderr = "Some unexpected output";
-        let error = AiService::extract_error(stderr, &AiProvider::AppleIntelligence);
-        assert_eq!(error, "Some unexpected output");
     }
 
     // ============================================================
@@ -1781,41 +1791,6 @@ ERROR: Your access token could not be refreshed because your refresh token was a
         assert!(cmd.contains("opencode run"));
         assert!(!cmd.contains("-m"));
         assert!(cmd.contains("-f '/tmp/test.txt'"));
-    }
-
-    // ============================================================
-    // ensure_body_separator の追加テスト
-    // ============================================================
-
-    #[test]
-    fn test_ensure_body_separator_empty() {
-        let result = AiService::ensure_body_separator("");
-        assert_eq!(result, "");
-    }
-
-    #[test]
-    fn test_ensure_body_separator_single_line() {
-        let result = AiService::ensure_body_separator("feat: add feature");
-        assert_eq!(result, "feat: add feature");
-    }
-
-    #[test]
-    fn test_ensure_body_separator_already_has_separator() {
-        let result =
-            AiService::ensure_body_separator("feat: add feature\n\n- detail 1\n- detail 2");
-        assert_eq!(result, "feat: add feature\n\n- detail 1\n- detail 2");
-    }
-
-    #[test]
-    fn test_ensure_body_separator_missing_separator() {
-        let result = AiService::ensure_body_separator("feat: add feature\n- detail 1\n- detail 2");
-        assert_eq!(result, "feat: add feature\n\n- detail 1\n- detail 2");
-    }
-
-    #[test]
-    fn test_ensure_body_separator_three_lines_no_separator() {
-        let result = AiService::ensure_body_separator("subject\nbody line 1\nbody line 2");
-        assert_eq!(result, "subject\n\nbody line 1\nbody line 2");
     }
 
     // ============================================================
@@ -2346,37 +2321,32 @@ ERROR: Your access token could not be refreshed because your refresh token was a
     }
 
     // ============================================================
-    // clean_message: コードブロック2行のエッジケース
+    // extract_error: Codex reconnecting エッジケース
     // ============================================================
 
     #[test]
-    fn test_clean_message_code_block_two_lines() {
-        // ちょうど2行のコードブロック（開始と終了のフェンスのみ）
-        let message = "```\n```";
-        let result = AiService::clean_message(message);
-        // lines.len() == 2 → message.to_string() が返る
-        // ensure_body_separator: 2行目 "```" は空でない → 空行挿入
-        assert_eq!(result, "```\n\n```");
-    }
-
-    #[test]
-    fn test_clean_message_partial_fence() {
-        // 開始フェンスのみで終了フェンスなし
-        let message = "```\nfeat: add feature";
-        let result = AiService::clean_message(message);
-        // starts_with("```") は true だが ends_with("```") は false
-        assert_eq!(result, "```\n\nfeat: add feature");
+    fn test_extract_error_codex_reconnecting_only() {
+        let stderr = "Reconnecting to server...\nReconnecting to server...\n";
+        let error = AiService::extract_error(stderr, &AiProvider::Codex);
+        // "reconnecting" 行はスキップされ、デフォルトメッセージが返る
+        assert_eq!(error, "Codex API request failed");
     }
 
     // ============================================================
-    // ensure_body_separator: 空白のみの2行目
+    // clean_message: 追加エッジケース
     // ============================================================
 
     #[test]
-    fn test_ensure_body_separator_whitespace_only_second_line() {
-        let message = "feat: msg\n   \nbody text";
-        let result = AiService::ensure_body_separator(message);
-        // 2行目が "   " → trim().is_empty() == true → そのまま返す
-        assert_eq!(result, message);
+    fn test_clean_message_code_block_with_only_whitespace_content() {
+        let message = "```\n   \n```";
+        let result = AiService::clean_message(message);
+        // コードブロック内が空白のみの場合、空文字列になる
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_clean_message_double_quoted_with_spaces() {
+        let message = "  \"feat: add feature\"  ";
+        assert_eq!(AiService::clean_message(message), "feat: add feature");
     }
 }

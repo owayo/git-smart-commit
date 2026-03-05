@@ -1631,4 +1631,82 @@ mod tests {
         let mode = resolve_script_result(result);
         assert!(matches!(mode, PrefixMode::Script(ScriptResult::Failed)));
     }
+
+    #[test]
+    fn test_extract_conventional_body_basic() {
+        assert_eq!(
+            extract_conventional_body("feat: add feature"),
+            Some("add feature")
+        );
+        assert_eq!(extract_conventional_body("fix: bug fix"), Some("bug fix"));
+    }
+
+    #[test]
+    fn test_extract_conventional_body_with_scope() {
+        assert_eq!(
+            extract_conventional_body("feat(ui): add button"),
+            Some("add button")
+        );
+        assert_eq!(
+            extract_conventional_body("fix(core): resolve crash"),
+            Some("resolve crash")
+        );
+    }
+
+    #[test]
+    fn test_extract_conventional_body_breaking_change() {
+        assert_eq!(
+            extract_conventional_body("feat!: breaking change"),
+            Some("breaking change")
+        );
+        assert_eq!(
+            extract_conventional_body("feat(api)!: remove endpoint"),
+            Some("remove endpoint")
+        );
+    }
+
+    #[test]
+    fn test_extract_conventional_body_non_conventional() {
+        assert_eq!(extract_conventional_body("Update README"), None);
+        assert_eq!(extract_conventional_body("random: not conventional"), None);
+    }
+
+    #[test]
+    fn test_extract_conventional_body_invalid_scope() {
+        // 空スコープ
+        assert_eq!(extract_conventional_body("feat(): add feature"), None);
+        // 閉じ括弧なし
+        assert_eq!(extract_conventional_body("feat(ui: add feature"), None);
+    }
+
+    #[test]
+    fn test_extract_conventional_body_with_multiline() {
+        let msg = "feat: add feature\n\nDetailed body";
+        assert_eq!(
+            extract_conventional_body(msg),
+            Some("add feature\n\nDetailed body")
+        );
+    }
+
+    #[test]
+    fn test_extract_conventional_body_case_insensitive() {
+        assert_eq!(
+            extract_conventional_body("FEAT: uppercase"),
+            Some("uppercase")
+        );
+        assert_eq!(
+            extract_conventional_body("Fix: capitalized"),
+            Some("capitalized")
+        );
+    }
+
+    #[test]
+    fn test_extract_conventional_body_no_colon() {
+        assert_eq!(extract_conventional_body("feat add feature"), None);
+    }
+
+    #[test]
+    fn test_extract_conventional_body_empty() {
+        assert_eq!(extract_conventional_body(""), None);
+    }
 }

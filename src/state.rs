@@ -376,4 +376,41 @@ mod tests {
         assert_eq!(reordered[1], "Codex");
         assert_eq!(reordered[2], "Gemini");
     }
+
+    #[test]
+    fn test_state_roundtrip_serialization() {
+        let mut state = State::default();
+        state.record_failure("gemini");
+        state.record_failure("claude");
+
+        let serialized = toml::to_string_pretty(&state).unwrap();
+        let deserialized: State = toml::from_str(&serialized).unwrap();
+
+        assert_eq!(
+            state.provider_failures.len(),
+            deserialized.provider_failures.len()
+        );
+        assert!(deserialized.provider_failures.contains_key("gemini"));
+        assert!(deserialized.provider_failures.contains_key("claude"));
+    }
+
+    #[test]
+    fn test_state_empty_roundtrip() {
+        let state = State::default();
+        let serialized = toml::to_string_pretty(&state).unwrap();
+        let deserialized: State = toml::from_str(&serialized).unwrap();
+        assert!(deserialized.provider_failures.is_empty());
+    }
+
+    #[test]
+    fn test_record_failure_multiple_providers() {
+        let mut state = State::default();
+        state.record_failure("gemini");
+        state.record_failure("claude");
+        state.record_failure("codex");
+
+        assert_eq!(state.provider_failures.len(), 3);
+        let demoted = state.get_demoted_providers(60);
+        assert_eq!(demoted.len(), 3);
+    }
 }

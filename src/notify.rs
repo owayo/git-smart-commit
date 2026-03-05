@@ -1,4 +1,4 @@
-//! NanoBuddy notification via DistributedNotificationCenter.
+//! NanoBuddy通知（DistributedNotificationCenter経由）
 
 #[cfg(target_os = "macos")]
 mod macos {
@@ -49,8 +49,8 @@ mod macos {
     }
 }
 
-/// Notify NanoBuddy with a commit message (displays in speech bubble).
-/// Only the first line of the message is sent.
+/// コミットメッセージをNanoBuddyに通知（吹き出しに表示）
+/// メッセージの1行目のみ送信される
 pub fn notify_commit_message(message: &str) {
     let first_line = message.lines().next().unwrap_or(message);
 
