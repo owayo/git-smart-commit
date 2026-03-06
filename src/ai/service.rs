@@ -519,28 +519,54 @@ Instructions:
     /// 特定のAIプロバイダーを呼び出し
     fn call_provider(&self, provider: &AiProvider, prompt: &str) -> Result<String, AppError> {
         // opencode は一時ファイル経由でプロンプトを渡す（stdinサポートが不明確なため）
-        let temp_file_path = if matches!(provider, AiProvider::Opencode) {
+        // TempFile の RAII ガードにより、どのパスで return しても自動クリーンアップされる
+        let temp_file = if matches!(provider, AiProvider::Opencode) {
             let temp_dir = std::env::temp_dir();
-            let temp_file = temp_dir.join(format!("git-sc-prompt-{}.txt", std::process::id()));
-            // sync_all で確実にディスクにフラッシュ（Windows の遅延書き込み対策）
-            let mut file = File::create(&temp_file).map_err(|e| {
-                AppError::AiProviderError(format!("Failed to create temp file: {}", e))
-            })?;
-            file.write_all(prompt.as_bytes()).map_err(|e| {
-                AppError::AiProviderError(format!("Failed to write temp file: {}", e))
-            })?;
-            file.sync_all().map_err(|e| {
-                AppError::AiProviderError(format!("Failed to sync temp file: {}", e))
-            })?;
-            drop(file); // 明示的にファイルハンドルを閉じる
-            Some(temp_file)
+            let temp_path = temp_dir.join(format!("git-sc-prompt-{}.txt", std::process::id()));
+            Some(TempFile::create_with_content(temp_path, prompt.as_bytes())?)
         } else {
             None
         };
 
+        // プロバイダー固有のコマンドを構築
+        let (mut cmd, uses_stdin) =
+            self.build_provider_command(provider, prompt, temp_file.as_ref())?;
+
+        // デバッグモード: 実行するコマンドを表示
+        if self.debug {
+            self.print_debug_command(provider, prompt, temp_file.as_ref());
+        }
+
+        // プロセスを起動
+        let mut child = cmd.spawn().map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                AppError::AiProviderError(format!("{} not found", provider.name()))
+            } else {
+                AppError::AiProviderError(e.to_string())
+            }
+        })?;
+
+        // stdin にプロンプトを書き込み (codex, claude)
+        Self::write_stdin_prompt(&mut child, uses_stdin, prompt)?;
+
+        // stdout/stderr をスレッドで読み取り、タイムアウト付きで完了を待機
+        let (exit_status, stdout_str, stderr_str) =
+            self.run_process_with_timeout(&mut child, provider)?;
+
+        // 出力を検証してメッセージを返す
+        Self::process_provider_output(provider, exit_status, &stdout_str, &stderr_str)
+    }
+
+    /// プロバイダー固有の Command を構築する。
+    /// 返り値: (Command, stdin を使用するか)
+    fn build_provider_command(
+        &self,
+        provider: &AiProvider,
+        prompt: &str,
+        temp_file: Option<&TempFile>,
+    ) -> Result<(Command, bool), AppError> {
         // Windows: cmd /C 経由で実行する（npm等でインストールされた .cmd ラッパーに対応するため）
         // Rust の Command::new() は .cmd/.bat ファイルを直接実行できないため、cmd /C が必要
-        // nul ファイル問題は stage_all() 側で防御済み
         #[cfg(windows)]
         let mut cmd = {
             let mut c = Command::new("cmd");
@@ -550,9 +576,9 @@ Instructions:
         #[cfg(not(windows))]
         let mut cmd = Command::new(provider.command());
 
-        // プロバイダー固有の引数を追加（プロンプトを除く）
+        // プロバイダー固有の引数を追加
         // 各プロバイダーの models が空文字列の場合、モデルパラメータを省略する
-        match provider {
+        let uses_stdin = match provider {
             AiProvider::Gemini => {
                 if !self.models.gemini.is_empty() {
                     cmd.args(["-m", &self.models.gemini]);
@@ -561,26 +587,29 @@ Instructions:
                     cmd.arg("--debug");
                 }
                 cmd.args(["-p", prompt]);
+                false
             }
             AiProvider::Codex => {
                 cmd.arg("exec");
                 if !self.models.codex.is_empty() {
                     cmd.args(["--model", &self.models.codex]);
                 }
+                true
             }
             AiProvider::Claude => {
                 if !self.models.claude.is_empty() {
                     cmd.args(["--model", &self.models.claude]);
                 }
                 cmd.arg("-p");
+                true
             }
             AiProvider::Opencode => {
                 // opencode run "message" [-m "provider:model"] -f <temp_file>
                 // プロンプトは一時ファイル経由で渡す（ファイル内に全指示を含む）
-                if let Some(ref path) = temp_file_path {
+                if let Some(tf) = temp_file {
                     // Windows: バックスラッシュをフォワードスラッシュに正規化
                     // cmd /C 経由やCLIツール間でのパス受け渡しの互換性対策
-                    let path_str = path.to_str().unwrap_or("").replace('\\', "/");
+                    let path_str = tf.path().to_str().unwrap_or("").replace('\\', "/");
                     cmd.args([
                         "run",
                         "Follow the instructions in the attached file exactly. Output only the commit message.",
@@ -594,6 +623,7 @@ Instructions:
                         cmd.arg("--print-logs");
                     }
                 }
+                false
             }
             AiProvider::AppleIntelligence => {
                 // fm-rs feature 有効時はネイティブ呼び出しのため、ここには到達しない
@@ -603,41 +633,13 @@ Instructions:
             }
         };
 
-        // デバッグモード: 実行するコマンドを表示
-        if self.debug {
-            let cmd_str =
-                self.format_command_for_debug(provider, prompt, temp_file_path.as_deref());
-            println!();
-            println!("{}", "=== DEBUG: AI Provider Command ===".yellow().bold());
-            println!("{}", "─".repeat(50).dimmed());
-            println!("{}", cmd_str.cyan());
-            // 一時ファイル使用時はファイル情報を表示
-            if let Some(ref path) = temp_file_path {
-                match fs::metadata(path) {
-                    Ok(meta) => println!(
-                        "  {} temp_file: {} ({} bytes)",
-                        "✓".green(),
-                        path.display(),
-                        meta.len()
-                    ),
-                    Err(e) => println!("  {} temp_file: {} ({})", "✗".red(), path.display(), e),
-                }
-            }
-            println!("{}", "─".repeat(50).dimmed());
-            println!();
-        }
-
         // Claude Code はネスト実行を CLAUDECODE 環境変数で検出してブロックするため、
         // git-sc から Claude を呼ぶ場合は除去する
         if matches!(provider, AiProvider::Claude) {
             cmd.env_remove("CLAUDECODE");
         }
 
-        // stdin でプロンプトを渡すプロバイダー: codex, claude
-        // -p 引数で渡す: gemini
-        // 一時ファイル経由: opencode
-        // apple-intelligence: ネイティブ呼び出し（ここには到達しない）
-        let uses_stdin = matches!(provider, AiProvider::Codex | AiProvider::Claude);
+        // stdin/stdout/stderr のパイプ設定
         if uses_stdin {
             cmd.stdin(Stdio::piped());
         } else {
@@ -646,31 +648,59 @@ Instructions:
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        let mut child = cmd.spawn().map_err(|e| {
-            // 一時ファイルをクリーンアップ
-            if let Some(ref path) = temp_file_path {
-                let _ = fs::remove_file(path);
-            }
-            if e.kind() == std::io::ErrorKind::NotFound {
-                AppError::AiProviderError(format!("{} not found", provider.name()))
-            } else {
-                AppError::AiProviderError(e.to_string())
-            }
-        })?;
+        Ok((cmd, uses_stdin))
+    }
 
-        // stdinにプロンプトを書き込み (codex, claude)
-        if uses_stdin && let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(prompt.as_bytes()).map_err(|e| {
-                // 一時ファイルをクリーンアップ
-                if let Some(ref path) = temp_file_path {
-                    let _ = fs::remove_file(path);
-                }
-                AppError::AiProviderError(format!("Failed to write prompt: {}", e))
-            })?;
+    /// デバッグモード: 実行するコマンド情報を表示
+    fn print_debug_command(
+        &self,
+        provider: &AiProvider,
+        prompt: &str,
+        temp_file: Option<&TempFile>,
+    ) {
+        let cmd_str =
+            self.format_command_for_debug(provider, prompt, temp_file.map(|tf| tf.path()));
+        println!();
+        println!("{}", "=== DEBUG: AI Provider Command ===".yellow().bold());
+        println!("{}", "─".repeat(50).dimmed());
+        println!("{}", cmd_str.cyan());
+        // 一時ファイル使用時はファイル情報を表示
+        if let Some(tf) = temp_file {
+            match fs::metadata(tf.path()) {
+                Ok(meta) => println!(
+                    "  {} temp_file: {} ({} bytes)",
+                    "✓".green(),
+                    tf.path().display(),
+                    meta.len()
+                ),
+                Err(e) => println!("  {} temp_file: {} ({})", "✗".red(), tf.path().display(), e),
+            }
         }
+        println!("{}", "─".repeat(50).dimmed());
+        println!();
+    }
 
-        // stdout/stderr をスレッドで読み取り（デバッグ時はリアルタイム表示）
-        // try_wait ループでタイムアウトを監視
+    /// stdin にプロンプトを書き込む (codex, claude 用)
+    fn write_stdin_prompt(
+        child: &mut Child,
+        uses_stdin: bool,
+        prompt: &str,
+    ) -> Result<(), AppError> {
+        if uses_stdin && let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(prompt.as_bytes())
+                .map_err(|e| AppError::AiProviderError(format!("Failed to write prompt: {}", e)))?;
+        }
+        Ok(())
+    }
+
+    /// stdout/stderr をスレッドで読み取り、タイムアウト付きでプロセス完了を待機する。
+    /// 返り値: (ExitStatus, stdout, stderr)
+    fn run_process_with_timeout(
+        &self,
+        child: &mut Child,
+        provider: &AiProvider,
+    ) -> Result<(ExitStatus, String, String), AppError> {
         let is_debug = self.debug;
 
         if is_debug {
@@ -732,9 +762,6 @@ Instructions:
                     if start.elapsed() > timeout {
                         let _ = child.kill();
                         let _ = child.wait();
-                        if let Some(ref path) = temp_file_path {
-                            let _ = fs::remove_file(path);
-                        }
                         return Err(AppError::AiProviderError(format!(
                             "{} timed out after {} seconds",
                             provider.name(),
@@ -744,9 +771,6 @@ Instructions:
                     std::thread::sleep(std::time::Duration::from_millis(100));
                 }
                 Err(e) => {
-                    if let Some(ref path) = temp_file_path {
-                        let _ = fs::remove_file(path);
-                    }
                     return Err(AppError::AiProviderError(format!(
                         "Failed to wait for process: {}",
                         e
@@ -768,13 +792,18 @@ Instructions:
             println!();
         }
 
-        // 一時ファイルをクリーンアップ
-        if let Some(ref path) = temp_file_path {
-            let _ = fs::remove_file(path);
-        }
+        Ok((exit_status, stdout_str, stderr_str))
+    }
 
+    /// プロバイダーの出力を検証し、クリーンアップ済みのメッセージを返す
+    fn process_provider_output(
+        provider: &AiProvider,
+        exit_status: ExitStatus,
+        stdout_str: &str,
+        stderr_str: &str,
+    ) -> Result<String, AppError> {
         if !exit_status.success() {
-            let error_msg = Self::extract_error(&stderr_str, provider);
+            let error_msg = Self::extract_error(stderr_str, provider);
             return Err(AppError::AiProviderError(error_msg));
         }
 
@@ -786,7 +815,7 @@ Instructions:
         {
             let lower = stderr_str.to_lowercase();
             if lower.contains("file not found") || lower.contains("error:") {
-                let error_msg = Self::extract_error(&stderr_str, provider);
+                let error_msg = Self::extract_error(stderr_str, provider);
                 return Err(AppError::AiProviderError(error_msg));
             }
         }

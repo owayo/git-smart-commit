@@ -32,20 +32,73 @@ impl GitService {
         }
     }
 
-    /// Gitリポジトリのルートディレクトリを取得
-    fn get_git_root(&self) -> Option<PathBuf> {
+    // ============================================================
+    // git コマンド実行ヘルパー
+    // ============================================================
+
+    /// git コマンドを実行し、成功時は stdout（trim済み）を返す
+    fn run_git(&self, args: &[&str]) -> Result<String, AppError> {
         let output = Command::new("git")
-            .args(["rev-parse", "--show-toplevel"])
+            .args(args)
+            .current_dir(&self.repo_path)
+            .output()
+            .map_err(|e| AppError::GitError(e.to_string()))?;
+        if !output.status.success() {
+            return Err(AppError::GitError(
+                String::from_utf8_lossy(&output.stderr).to_string(),
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    /// git コマンドを実行し、成功/失敗のみを返す（stdout不要のケース）
+    fn run_git_ok(&self, args: &[&str]) -> Result<(), AppError> {
+        self.run_git(args)?;
+        Ok(())
+    }
+
+    /// git コマンドを実行し、成功時は Some(stdout)、失敗時は None を返す
+    fn try_run_git(&self, args: &[&str]) -> Option<String> {
+        let output = Command::new("git")
+            .args(args)
             .current_dir(&self.repo_path)
             .output()
             .ok()?;
 
         if output.status.success() {
-            let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            Some(PathBuf::from(root))
+            let result = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if result.is_empty() {
+                None
+            } else {
+                Some(result)
+            }
         } else {
             None
         }
+    }
+
+    /// コミットハッシュが有効か検証し、無効な場合は InvalidCommitHash エラーを返す
+    fn verify_commit_hash(&self, hash: &str) -> Result<(), AppError> {
+        let output = Command::new("git")
+            .args(["rev-parse", "--verify", hash])
+            .current_dir(&self.repo_path)
+            .output()
+            .map_err(|e| AppError::GitError(e.to_string()))?;
+
+        if !output.status.success() {
+            return Err(AppError::InvalidCommitHash(hash.to_string()));
+        }
+        Ok(())
+    }
+
+    // ============================================================
+    // 内部ユーティリティ
+    // ============================================================
+
+    /// Gitリポジトリのルートディレクトリを取得
+    fn get_git_root(&self) -> Option<PathBuf> {
+        self.try_run_git(&["rev-parse", "--show-toplevel"])
+            .map(PathBuf::from)
     }
 
     /// .git-sc-ignoreファイルを読み込んでGitignoreを構築
@@ -195,29 +248,24 @@ impl GitService {
 
                 while i < lines.len() && !lines[i].starts_with("diff --git") {
                     let current_line = lines[i];
-                    if current_line.starts_with("Binary files") && current_line.ends_with("differ")
-                    {
+
+                    if current_line.starts_with("Binary files") {
                         is_binary = true;
-                    }
-                    if current_line.starts_with("new file mode") {
+                    } else if current_line.starts_with("new file mode") {
                         is_new_file = true;
-                    }
-                    if current_line.starts_with("deleted file mode") {
+                    } else if current_line.starts_with("deleted file mode") {
                         is_deleted = true;
-                    }
-                    if current_line.starts_with("rename from ") {
-                        rename_from =
-                            Some(current_line.trim_start_matches("rename from ").to_string());
-                    }
-                    if current_line.starts_with("rename to ") {
-                        rename_to = Some(current_line.trim_start_matches("rename to ").to_string());
+                    } else if let Some(from) = current_line.strip_prefix("rename from ") {
+                        rename_from = Some(from.to_string());
+                    } else if let Some(to) = current_line.strip_prefix("rename to ") {
+                        rename_to = Some(to.to_string());
                     }
                     i += 1;
                 }
 
                 if is_binary {
-                    // バイナリファイルの変更種別を出力
-                    let binary_info = if let (Some(from), Some(to)) = (&rename_from, &rename_to) {
+                    // バイナリファイルは変更種別のサマリーのみ出力
+                    let summary = if let (Some(from), Some(to)) = (&rename_from, &rename_to) {
                         format!("[Binary] renamed: {} -> {}", from, to)
                     } else if is_new_file {
                         format!("[Binary] added: {}", file_path)
@@ -226,9 +274,9 @@ impl GitService {
                     } else {
                         format!("[Binary] modified: {}", file_path)
                     };
-                    filtered_lines.push(binary_info);
+                    filtered_lines.push(summary);
                 } else {
-                    // テキストファイルはそのまま追加
+                    // テキストファイルはそのまま出力
                     for line in lines.iter().take(i).skip(block_start) {
                         filtered_lines.push((*line).to_string());
                     }
@@ -243,43 +291,35 @@ impl GitService {
         filtered_lines.join("\n")
     }
 
-    /// 現在のディレクトリがGitリポジトリであることを確認
+    // ============================================================
+    // パブリック API
+    // ============================================================
+
+    /// Gitリポジトリ内にいるか確認
     pub fn verify_repository(&self) -> Result<(), AppError> {
-        let git_dir = self.repo_path.join(".git");
-        if git_dir.exists() {
+        // .git ディレクトリが直接存在するかチェック
+        if self.repo_path.join(".git").exists() {
+            return Ok(());
+        }
+
+        // Gitリポジトリのサブディレクトリにいる場合もチェック
+        let output = Command::new("git")
+            .args(["rev-parse", "--git-dir"])
+            .current_dir(&self.repo_path)
+            .output()
+            .map_err(|e| AppError::GitError(e.to_string()))?;
+
+        if output.status.success() {
             Ok(())
         } else {
-            // Gitリポジトリのサブディレクトリにいる場合もチェック
-            let output = Command::new("git")
-                .args(["rev-parse", "--git-dir"])
-                .current_dir(&self.repo_path)
-                .output()
-                .map_err(|e| AppError::GitError(e.to_string()))?;
-
-            if output.status.success() {
-                Ok(())
-            } else {
-                Err(AppError::NotGitRepository)
-            }
+            Err(AppError::NotGitRepository)
         }
     }
 
     /// ステージ済みのdiffを取得（バイナリファイル、.git-sc-ignore対象、空白のみの変更を除外）
     pub fn get_staged_diff(&self) -> Result<String, AppError> {
-        let output = Command::new("git")
-            .args(["diff", "--cached", "-w", "-U0"])
-            .current_dir(&self.repo_path)
-            .output()
-            .map_err(|e| AppError::GitError(e.to_string()))?;
-
-        if !output.status.success() {
-            return Err(AppError::GitError(
-                String::from_utf8_lossy(&output.stderr).to_string(),
-            ));
-        }
-
-        let diff = String::from_utf8_lossy(&output.stdout).to_string();
-        Ok(self.apply_all_filters(&diff))
+        let raw = self.run_git(&["diff", "--cached", "-w", "-U0"])?;
+        Ok(self.apply_all_filters(&raw))
     }
 
     /// 直近のコミットメッセージを取得
@@ -294,7 +334,7 @@ impl GitService {
             // コミットがまだない場合は空のベクタを返す
             let stderr = String::from_utf8_lossy(&output.stderr);
             if stderr.contains("does not have any commits") {
-                return Ok(vec![]);
+                return Ok(Vec::new());
             }
             return Err(AppError::GitError(stderr.to_string()));
         }
@@ -327,17 +367,7 @@ impl GitService {
         #[cfg(not(windows))]
         let args: &[&str] = &["add", "-A"];
 
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(&self.repo_path)
-            .output()
-            .map_err(|e| AppError::GitError(e.to_string()))?;
-
-        if !output.status.success() {
-            return Err(AppError::GitError(
-                String::from_utf8_lossy(&output.stderr).to_string(),
-            ));
-        }
+        self.run_git_ok(args)?;
 
         // Windows環境で万が一 nul がステージされていた場合はアンステージ
         #[cfg(windows)]
@@ -353,36 +383,12 @@ impl GitService {
 
     /// 指定されたメッセージでコミットを作成
     pub fn commit(&self, message: &str) -> Result<(), AppError> {
-        let output = Command::new("git")
-            .args(["commit", "-m", message])
-            .current_dir(&self.repo_path)
-            .output()
-            .map_err(|e| AppError::GitError(e.to_string()))?;
-
-        if !output.status.success() {
-            return Err(AppError::GitError(
-                String::from_utf8_lossy(&output.stderr).to_string(),
-            ));
-        }
-
-        Ok(())
+        self.run_git_ok(&["commit", "-m", message])
     }
 
     /// リモートにpush
     pub fn push(&self) -> Result<(), AppError> {
-        let output = Command::new("git")
-            .args(["push"])
-            .current_dir(&self.repo_path)
-            .output()
-            .map_err(|e| AppError::GitError(e.to_string()))?;
-
-        if !output.status.success() {
-            return Err(AppError::GitError(
-                String::from_utf8_lossy(&output.stderr).to_string(),
-            ));
-        }
-
-        Ok(())
+        self.run_git_ok(&["push"])
     }
 
     /// auto_push が有効かどうかを判定
@@ -392,73 +398,23 @@ impl GitService {
 
     /// 直前のコミットのdiffを取得（バイナリファイル、.git-sc-ignore対象、空白のみの変更を除外）
     pub fn get_last_commit_diff(&self) -> Result<String, AppError> {
-        let output = Command::new("git")
-            .args(["diff", "-w", "-U0", "HEAD~1", "HEAD"])
-            .current_dir(&self.repo_path)
-            .output()
-            .map_err(|e| AppError::GitError(e.to_string()))?;
-
-        if !output.status.success() {
-            return Err(AppError::GitError(
-                String::from_utf8_lossy(&output.stderr).to_string(),
-            ));
-        }
-
-        let diff = String::from_utf8_lossy(&output.stdout).to_string();
-        Ok(self.apply_all_filters(&diff))
+        let raw = self.run_git(&["diff", "-w", "-U0", "HEAD~1", "HEAD"])?;
+        Ok(self.apply_all_filters(&raw))
     }
 
     /// 直前のコミットを新しいメッセージで修正
     pub fn amend_commit(&self, message: &str) -> Result<(), AppError> {
-        let output = Command::new("git")
-            .args(["commit", "--amend", "-m", message])
-            .current_dir(&self.repo_path)
-            .output()
-            .map_err(|e| AppError::GitError(e.to_string()))?;
-
-        if !output.status.success() {
-            return Err(AppError::GitError(
-                String::from_utf8_lossy(&output.stderr).to_string(),
-            ));
-        }
-
-        Ok(())
+        self.run_git_ok(&["commit", "--amend", "-m", message])
     }
 
     /// リモートURLを取得（origin）
     pub fn get_remote_url(&self) -> Option<String> {
-        let output = Command::new("git")
-            .args(["config", "--get", "remote.origin.url"])
-            .current_dir(&self.repo_path)
-            .output()
-            .ok()?;
-
-        if output.status.success() {
-            let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if url.is_empty() { None } else { Some(url) }
-        } else {
-            None
-        }
+        self.try_run_git(&["config", "--get", "remote.origin.url"])
     }
 
     /// 現在のブランチ名を取得
     pub fn get_current_branch(&self) -> Option<String> {
-        let output = Command::new("git")
-            .args(["branch", "--show-current"])
-            .current_dir(&self.repo_path)
-            .output()
-            .ok()?;
-
-        if output.status.success() {
-            let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if branch.is_empty() {
-                None
-            } else {
-                Some(branch)
-            }
-        } else {
-            None
-        }
+        self.try_run_git(&["branch", "--show-current"])
     }
 
     /// プレフィックススクリプトを実行してプレフィックスを取得
@@ -500,47 +456,23 @@ impl GitService {
 
     /// ブランチが存在するか確認
     pub fn branch_exists(&self, branch: &str) -> bool {
-        let output = Command::new("git")
-            .args(["rev-parse", "--verify", branch])
-            .current_dir(&self.repo_path)
-            .output();
-
-        output.map(|o| o.status.success()).unwrap_or(false)
+        self.try_run_git(&["rev-parse", "--verify", branch])
+            .is_some()
     }
 
     /// 2つのブランチのmerge-baseを取得
     pub fn get_merge_base(&self, base: &str, head: &str) -> Result<String, AppError> {
-        let output = Command::new("git")
-            .args(["merge-base", base, head])
-            .current_dir(&self.repo_path)
-            .output()
-            .map_err(|e| AppError::GitError(e.to_string()))?;
-
-        if !output.status.success() {
-            return Err(AppError::GitError(format!(
+        self.run_git(&["merge-base", base, head]).map_err(|_| {
+            AppError::GitError(format!(
                 "Failed to find merge-base between {} and {}",
                 base, head
-            )));
-        }
-
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+            ))
+        })
     }
 
     /// ベースからHEADまでのコミット数を取得
     pub fn count_commits_from_base(&self, base: &str) -> Result<usize, AppError> {
-        let output = Command::new("git")
-            .args(["rev-list", "--count", &format!("{}..HEAD", base)])
-            .current_dir(&self.repo_path)
-            .output()
-            .map_err(|e| AppError::GitError(e.to_string()))?;
-
-        if !output.status.success() {
-            return Err(AppError::GitError(
-                String::from_utf8_lossy(&output.stderr).to_string(),
-            ));
-        }
-
-        let count_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let count_str = self.run_git(&["rev-list", "--count", &format!("{}..HEAD", base)])?;
         count_str
             .parse()
             .map_err(|_| AppError::GitError("Failed to parse commit count".to_string()))
@@ -548,128 +480,44 @@ impl GitService {
 
     /// ベースからHEADまでの差分を取得（バイナリファイル、.git-sc-ignore対象、空白のみの変更を除外）
     pub fn get_diff_from_base(&self, base: &str) -> Result<String, AppError> {
-        let output = Command::new("git")
-            .args(["diff", "-w", "-U0", base, "HEAD"])
-            .current_dir(&self.repo_path)
-            .output()
-            .map_err(|e| AppError::GitError(e.to_string()))?;
-
-        if !output.status.success() {
-            return Err(AppError::GitError(
-                String::from_utf8_lossy(&output.stderr).to_string(),
-            ));
-        }
-
-        let diff = String::from_utf8_lossy(&output.stdout).to_string();
-        Ok(self.apply_all_filters(&diff))
+        let raw = self.run_git(&["diff", "-w", "-U0", base, "HEAD"])?;
+        Ok(self.apply_all_filters(&raw))
     }
 
     /// 指定したコミットにsoft resetする
     pub fn soft_reset_to(&self, commit: &str) -> Result<(), AppError> {
-        let output = Command::new("git")
-            .args(["reset", "--soft", commit])
-            .current_dir(&self.repo_path)
-            .output()
-            .map_err(|e| AppError::GitError(e.to_string()))?;
-
-        if !output.status.success() {
-            return Err(AppError::GitError(
-                String::from_utf8_lossy(&output.stderr).to_string(),
-            ));
-        }
-
-        Ok(())
+        self.run_git_ok(&["reset", "--soft", commit])
     }
 
     /// 指定範囲にマージコミットが含まれているかチェック
     pub fn has_merge_commits_in_range(&self, n: usize) -> Result<bool, AppError> {
         // マージコミットは親が2つ以上ある
-        let output = Command::new("git")
-            .args(["rev-list", "--merges", &format!("HEAD~{}..HEAD", n)])
-            .current_dir(&self.repo_path)
-            .output()
-            .map_err(|e| AppError::GitError(e.to_string()))?;
-
-        if !output.status.success() {
-            return Err(AppError::GitError(
-                String::from_utf8_lossy(&output.stderr).to_string(),
-            ));
-        }
-
-        let merges = String::from_utf8_lossy(&output.stdout);
-        Ok(!merges.trim().is_empty())
+        let merges = self.run_git(&["rev-list", "--merges", &format!("HEAD~{}..HEAD", n)])?;
+        Ok(!merges.is_empty())
     }
 
     /// 指定されたコミットハッシュの差分を取得
     pub fn get_commit_diff_by_hash(&self, hash: &str) -> Result<String, AppError> {
         // まずコミットハッシュが有効か確認
-        let verify_output = Command::new("git")
-            .args(["rev-parse", "--verify", hash])
-            .current_dir(&self.repo_path)
-            .output()
-            .map_err(|e| AppError::GitError(e.to_string()))?;
-
-        if !verify_output.status.success() {
-            return Err(AppError::InvalidCommitHash(hash.to_string()));
-        }
+        self.verify_commit_hash(hash)?;
 
         // git show でそのコミットの差分を取得
-        let output = Command::new("git")
-            .args(["show", hash, "--format=", "--no-color", "-w", "-U0"])
-            .current_dir(&self.repo_path)
-            .output()
-            .map_err(|e| AppError::GitError(e.to_string()))?;
-
-        if !output.status.success() {
-            return Err(AppError::GitError(
-                String::from_utf8_lossy(&output.stderr).to_string(),
-            ));
-        }
-
-        let diff = String::from_utf8_lossy(&output.stdout).to_string();
-        Ok(self.apply_all_filters(&diff))
+        let raw = self.run_git(&["show", hash, "--format=", "--no-color", "-w", "-U0"])?;
+        Ok(self.apply_all_filters(&raw))
     }
 
     /// 指定されたコミットハッシュのメッセージを取得
     pub fn get_commit_message_by_hash(&self, hash: &str) -> Result<String, AppError> {
         // まずコミットハッシュが有効か確認
-        let verify_output = Command::new("git")
-            .args(["rev-parse", "--verify", hash])
-            .current_dir(&self.repo_path)
-            .output()
-            .map_err(|e| AppError::GitError(e.to_string()))?;
+        self.verify_commit_hash(hash)?;
 
-        if !verify_output.status.success() {
-            return Err(AppError::InvalidCommitHash(hash.to_string()));
-        }
-
-        let output = Command::new("git")
-            .args(["log", "-1", "--format=%s", hash])
-            .current_dir(&self.repo_path)
-            .output()
-            .map_err(|e| AppError::GitError(e.to_string()))?;
-
-        if !output.status.success() {
-            return Err(AppError::GitError(
-                String::from_utf8_lossy(&output.stderr).to_string(),
-            ));
-        }
-
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        self.run_git(&["log", "-1", "--format=%s", hash])
     }
 
     /// reword対象として有効なコミットか確認（現在のHEAD履歴上に存在するか）
     fn validate_reword_target_hash(&self, hash: &str) -> Result<(), AppError> {
         // まずコミットハッシュが有効か確認
-        let verify_output = Command::new("git")
-            .args(["rev-parse", "--verify", hash])
-            .current_dir(&self.repo_path)
-            .output()
-            .map_err(|e| AppError::GitError(e.to_string()))?;
-
-        if !verify_output.status.success() {
-            return Err(AppError::InvalidCommitHash(hash.to_string()));
-        }
+        self.verify_commit_hash(hash)?;
 
         // 履歴外のコミットをreword対象にすると誤ったコミット位置が算出されるため、祖先関係を厳密に確認
         let ancestor_output = Command::new("git")
@@ -703,21 +551,8 @@ impl GitService {
         // HEADからそのコミットまでのコミット数をカウント
         // git rev-list --count hash..HEAD で hash から HEAD までのコミット数を取得
         // これに1を足すと、そのコミット自体の位置になる
-        let output = Command::new("git")
-            .args(["rev-list", "--count", &format!("{}..HEAD", hash)])
-            .current_dir(&self.repo_path)
-            .output()
-            .map_err(|e| AppError::GitError(e.to_string()))?;
-
-        if !output.status.success() {
-            return Err(AppError::GitError(
-                String::from_utf8_lossy(&output.stderr).to_string(),
-            ));
-        }
-
-        let count_str = String::from_utf8_lossy(&output.stdout);
+        let count_str = self.run_git(&["rev-list", "--count", &format!("{}..HEAD", hash)])?;
         let count: usize = count_str
-            .trim()
             .parse()
             .map_err(|_| AppError::GitError("Failed to parse commit count".to_string()))?;
 
@@ -730,20 +565,8 @@ impl GitService {
         self.validate_reword_target_hash(hash)?;
 
         // マージコミットは親が2つ以上ある
-        let output = Command::new("git")
-            .args(["rev-list", "--merges", &format!("{}..HEAD", hash)])
-            .current_dir(&self.repo_path)
-            .output()
-            .map_err(|e| AppError::GitError(e.to_string()))?;
-
-        if !output.status.success() {
-            return Err(AppError::GitError(
-                String::from_utf8_lossy(&output.stderr).to_string(),
-            ));
-        }
-
-        let merges = String::from_utf8_lossy(&output.stdout);
-        Ok(!merges.trim().is_empty())
+        let merges = self.run_git(&["rev-list", "--merges", &format!("{}..HEAD", hash)])?;
+        Ok(!merges.is_empty())
     }
 
     /// 指定されたコミットハッシュのメッセージを変更（rebase使用）
@@ -833,19 +656,7 @@ impl GitService {
 
     /// コミットメッセージを変更（amend）
     fn amend_commit_message(&self, new_message: &str) -> Result<(), AppError> {
-        let output = Command::new("git")
-            .args(["commit", "--amend", "-m", new_message])
-            .current_dir(&self.repo_path)
-            .output()
-            .map_err(|e| AppError::GitError(e.to_string()))?;
-
-        if !output.status.success() {
-            return Err(AppError::GitError(
-                String::from_utf8_lossy(&output.stderr).to_string(),
-            ));
-        }
-
-        Ok(())
+        self.run_git_ok(&["commit", "--amend", "-m", new_message])
     }
 }
 
