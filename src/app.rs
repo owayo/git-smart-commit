@@ -465,6 +465,105 @@ impl App {
         }
     }
 
+    /// PrefixModeに基づいてメッセージを生成し、スクリプトプレフィックスを適用する共通メソッド
+    ///
+    /// # 引数
+    /// - `cli`: CLIオプション
+    /// - `diff`: 差分テキスト
+    /// - `recent_commits`: フォーマット参照用の直近コミット
+    /// - `prefix_mode`: プレフィックス判定結果
+    /// - `is_squash`: squashモードかどうか（Autoモード時にconventionalを強制する）
+    /// - `agent_context`: エージェントコンテキスト
+    fn generate_with_prefix(
+        &self,
+        cli: &Cli,
+        diff: &str,
+        recent_commits: &[String],
+        prefix_mode: PrefixMode,
+        is_squash: bool,
+        agent_context: Option<&str>,
+    ) -> Result<(String, &'static str), AppError> {
+        // デバッグモード: プロンプトを表示
+        if cli.debug {
+            self.debug_print_for_prefix_mode(
+                diff,
+                recent_commits,
+                &prefix_mode,
+                is_squash,
+                cli.with_body,
+                agent_context,
+            );
+        }
+
+        // PrefixModeに基づいてメッセージを生成
+        let (mut message, provider_name) = match &prefix_mode {
+            PrefixMode::Script(_) => {
+                // スクリプトモード: プレフィックスなしで生成（後でスクリプトのプレフィックスを適用）
+                self.generate_message(cli, diff, &[], Some("plain"), cli.with_body, agent_context)?
+            }
+            PrefixMode::Rule(prefix_type) | PrefixMode::Config(prefix_type) => {
+                // ルール/設定モード: 指定されたprefix_typeで生成
+                self.generate_message(
+                    cli,
+                    diff,
+                    recent_commits,
+                    Some(prefix_type),
+                    cli.with_body,
+                    agent_context,
+                )?
+            }
+            PrefixMode::Auto => {
+                if is_squash {
+                    // squashモード: Conventional Commits形式で生成
+                    self.generate_message(
+                        cli,
+                        diff,
+                        &[],
+                        Some("conventional"),
+                        cli.with_body,
+                        agent_context,
+                    )?
+                } else {
+                    // 通常モード: 過去コミットから推論
+                    self.generate_message(
+                        cli,
+                        diff,
+                        recent_commits,
+                        None,
+                        cli.with_body,
+                        agent_context,
+                    )?
+                }
+            }
+        };
+
+        // スクリプトモードの場合はメッセージを加工
+        if let PrefixMode::Script(result) = prefix_mode {
+            match result {
+                ScriptResult::Prefix(prefix) => {
+                    message = self.apply_prefix(&message, &prefix);
+                    if !cli.quiet {
+                        println!("{}", format!("Applied prefix: {}", prefix.trim()).cyan());
+                    }
+                }
+                ScriptResult::Empty => {
+                    message = self.strip_type_prefix(&message);
+                    if !cli.quiet {
+                        println!("{}", "No prefix applied (script returned empty).".cyan());
+                    }
+                }
+                ScriptResult::Failed => {
+                    // AI生成のメッセージをそのまま使用
+                    if !cli.quiet {
+                        println!("{}", "Using AI-generated format.".cyan());
+                    }
+                }
+            }
+        }
+
+        Ok((message, provider_name))
+    }
+
     /// メインワークフローを実行
     pub fn run(&self, cli: &Cli) -> Result<(), AppError> {
         // claw-hooks stop hook から渡されるエージェントコンテキスト
@@ -551,62 +650,8 @@ impl App {
 
         let agent_ctx = agent_context.as_deref();
 
-        // デバッグモード: プロンプトを表示
-        if cli.debug {
-            self.debug_print_for_prefix_mode(
-                &diff,
-                &recent_commits,
-                &prefix_mode,
-                false,
-                cli.with_body,
-                agent_ctx,
-            );
-        }
-        let (mut message, provider_name) = match &prefix_mode {
-            PrefixMode::Script(_) => {
-                // スクリプトモード: プレフィックスなしで生成（後でスクリプトのプレフィックスを適用）
-                self.generate_message(cli, &diff, &[], Some("plain"), cli.with_body, agent_ctx)?
-            }
-            PrefixMode::Rule(prefix_type) | PrefixMode::Config(prefix_type) => {
-                // ルール/設定モード: 指定されたprefix_typeで生成
-                self.generate_message(
-                    cli,
-                    &diff,
-                    &recent_commits,
-                    Some(prefix_type),
-                    cli.with_body,
-                    agent_ctx,
-                )?
-            }
-            PrefixMode::Auto => {
-                // 自動判定モード: 過去コミットから推論
-                self.generate_message(cli, &diff, &recent_commits, None, cli.with_body, agent_ctx)?
-            }
-        };
-
-        // スクリプトモードの場合はメッセージを加工
-        if let PrefixMode::Script(result) = prefix_mode {
-            match result {
-                ScriptResult::Prefix(prefix) => {
-                    message = self.apply_prefix(&message, &prefix);
-                    if !cli.quiet {
-                        println!("{}", format!("Applied prefix: {}", prefix.trim()).cyan());
-                    }
-                }
-                ScriptResult::Empty => {
-                    message = self.strip_type_prefix(&message);
-                    if !cli.quiet {
-                        println!("{}", "No prefix applied (script returned empty).".cyan());
-                    }
-                }
-                ScriptResult::Failed => {
-                    // AI生成のメッセージをそのまま使用
-                    if !cli.quiet {
-                        println!("{}", "Using AI-generated format.".cyan());
-                    }
-                }
-            }
-        }
+        let (message, provider_name) =
+            self.generate_with_prefix(cli, &diff, &recent_commits, prefix_mode, false, agent_ctx)?;
 
         // 生成されたメッセージを表示
         self.print_generated_message(cli, &message, provider_name);
@@ -689,67 +734,14 @@ impl App {
             println!("{}", "Generating commit message...".cyan());
         }
 
-        // デバッグモード: プロンプトを表示
-        if cli.debug {
-            self.debug_print_for_prefix_mode(
-                &diff,
-                &recent_commits,
-                &prefix_mode,
-                false,
-                cli.with_body,
-                agent_context,
-            );
-        }
-
-        let (mut message, provider_name) = match &prefix_mode {
-            PrefixMode::Script(_) => {
-                // スクリプトモード: プレフィックスなしで生成（後でスクリプトのプレフィックスを適用）
-                self.generate_message(cli, &diff, &[], Some("plain"), cli.with_body, agent_context)?
-            }
-            PrefixMode::Rule(prefix_type) | PrefixMode::Config(prefix_type) => {
-                // ルール/設定モード: 指定されたprefix_typeで生成
-                self.generate_message(
-                    cli,
-                    &diff,
-                    &recent_commits,
-                    Some(prefix_type),
-                    cli.with_body,
-                    agent_context,
-                )?
-            }
-            PrefixMode::Auto => self.generate_message(
-                cli,
-                &diff,
-                &recent_commits,
-                None,
-                cli.with_body,
-                agent_context,
-            )?,
-        };
-
-        // スクリプトモードの場合はメッセージを加工
-        if let PrefixMode::Script(result) = prefix_mode {
-            match result {
-                ScriptResult::Prefix(prefix) => {
-                    message = self.apply_prefix(&message, &prefix);
-                    if !cli.quiet {
-                        println!("{}", format!("Applied prefix: {}", prefix.trim()).cyan());
-                    }
-                }
-                ScriptResult::Empty => {
-                    message = self.strip_type_prefix(&message);
-                    if !cli.quiet {
-                        println!("{}", "No prefix applied (script returned empty).".cyan());
-                    }
-                }
-                ScriptResult::Failed => {
-                    // AI生成のメッセージをそのまま使用
-                    if !cli.quiet {
-                        println!("{}", "Using AI-generated format.".cyan());
-                    }
-                }
-            }
-        }
+        let (message, provider_name) = self.generate_with_prefix(
+            cli,
+            &diff,
+            &recent_commits,
+            prefix_mode,
+            false,
+            agent_context,
+        )?;
 
         // 生成されたメッセージを表示
         self.print_generated_message(cli, &message, provider_name);
@@ -856,69 +848,8 @@ impl App {
             println!("{}", "Generating commit message...".cyan());
         }
 
-        // デバッグモード: プロンプトを表示
-        if cli.debug {
-            self.debug_print_for_prefix_mode(
-                &diff,
-                &[],
-                &prefix_mode,
-                true,
-                cli.with_body,
-                agent_context,
-            );
-        }
-
-        let (mut message, provider_name) = match &prefix_mode {
-            PrefixMode::Script(_) => {
-                // スクリプトモード: プレフィックスなしで生成
-                self.generate_message(cli, &diff, &[], Some("plain"), cli.with_body, agent_context)?
-            }
-            PrefixMode::Rule(prefix_type) | PrefixMode::Config(prefix_type) => {
-                // ルール/設定モード: 指定されたprefix_typeで生成
-                self.generate_message(
-                    cli,
-                    &diff,
-                    &[],
-                    Some(prefix_type),
-                    cli.with_body,
-                    agent_context,
-                )?
-            }
-            PrefixMode::Auto => {
-                // 自動判定モード: Conventional Commits形式で生成
-                self.generate_message(
-                    cli,
-                    &diff,
-                    &[],
-                    Some("conventional"),
-                    cli.with_body,
-                    agent_context,
-                )?
-            }
-        };
-
-        // スクリプトモードの場合はメッセージを加工
-        if let PrefixMode::Script(result) = prefix_mode {
-            match result {
-                ScriptResult::Prefix(prefix) => {
-                    message = self.apply_prefix(&message, &prefix);
-                    if !cli.quiet {
-                        println!("{}", format!("Applied prefix: {}", prefix.trim()).cyan());
-                    }
-                }
-                ScriptResult::Empty => {
-                    message = self.strip_type_prefix(&message);
-                    if !cli.quiet {
-                        println!("{}", "No prefix applied (script returned empty).".cyan());
-                    }
-                }
-                ScriptResult::Failed => {
-                    if !cli.quiet {
-                        println!("{}", "Using AI-generated format.".cyan());
-                    }
-                }
-            }
-        }
+        let (message, provider_name) =
+            self.generate_with_prefix(cli, &diff, &[], prefix_mode, true, agent_context)?;
 
         // 生成されたメッセージを表示
         self.print_generated_message(cli, &message, provider_name);
@@ -1142,69 +1073,14 @@ impl App {
             println!("{}", "Generating commit message...".cyan());
         }
 
-        // デバッグモード: プロンプトを表示
-        if cli.debug {
-            self.debug_print_for_prefix_mode(
-                &diff,
-                &recent_commits,
-                &prefix_mode,
-                false,
-                cli.with_body,
-                agent_context,
-            );
-        }
-
-        let (mut message, provider_name) = match &prefix_mode {
-            PrefixMode::Script(_) => {
-                // スクリプトモード: プレフィックスなしで生成
-                self.generate_message(cli, &diff, &[], Some("plain"), cli.with_body, agent_context)?
-            }
-            PrefixMode::Rule(prefix_type) | PrefixMode::Config(prefix_type) => {
-                // ルール/設定モード: 指定されたprefix_typeで生成
-                self.generate_message(
-                    cli,
-                    &diff,
-                    &recent_commits,
-                    Some(prefix_type),
-                    cli.with_body,
-                    agent_context,
-                )?
-            }
-            PrefixMode::Auto => {
-                // 自動判定モード: 過去コミットから推論
-                self.generate_message(
-                    cli,
-                    &diff,
-                    &recent_commits,
-                    None,
-                    cli.with_body,
-                    agent_context,
-                )?
-            }
-        };
-
-        // スクリプトモードの場合はメッセージを加工
-        if let PrefixMode::Script(result) = prefix_mode {
-            match result {
-                ScriptResult::Prefix(prefix) => {
-                    message = self.apply_prefix(&message, &prefix);
-                    if !cli.quiet {
-                        println!("{}", format!("Applied prefix: {}", prefix.trim()).cyan());
-                    }
-                }
-                ScriptResult::Empty => {
-                    message = self.strip_type_prefix(&message);
-                    if !cli.quiet {
-                        println!("{}", "No prefix applied (script returned empty).".cyan());
-                    }
-                }
-                ScriptResult::Failed => {
-                    if !cli.quiet {
-                        println!("{}", "Using AI-generated format.".cyan());
-                    }
-                }
-            }
-        }
+        let (message, provider_name) = self.generate_with_prefix(
+            cli,
+            &diff,
+            &recent_commits,
+            prefix_mode,
+            false,
+            agent_context,
+        )?;
 
         // 生成されたメッセージを表示
         self.print_generated_message(cli, &message, provider_name);

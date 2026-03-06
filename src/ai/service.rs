@@ -1,12 +1,41 @@
 use std::fs::{self, File};
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 
 use colored::Colorize;
 
 use crate::config::{Config, ModelsConfig};
 use crate::error::AppError;
 use crate::state::State;
+
+/// 一時ファイルの RAII ガード。Drop 時に自動でクリーンアップする。
+struct TempFile {
+    path: std::path::PathBuf,
+}
+
+impl TempFile {
+    /// 一時ファイルを作成し、内容を書き込む。sync_all でディスクにフラッシュ。
+    fn create_with_content(path: std::path::PathBuf, content: &[u8]) -> Result<Self, AppError> {
+        let mut file = File::create(&path)
+            .map_err(|e| AppError::AiProviderError(format!("Failed to create temp file: {}", e)))?;
+        file.write_all(content)
+            .map_err(|e| AppError::AiProviderError(format!("Failed to write temp file: {}", e)))?;
+        file.sync_all()
+            .map_err(|e| AppError::AiProviderError(format!("Failed to sync temp file: {}", e)))?;
+        drop(file); // 明示的にファイルハンドルを閉じる
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
 
 /// Conventional Commits プレフィックスの詳細説明
 const CONVENTIONAL_COMMITS_GUIDE: &str = "\
