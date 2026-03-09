@@ -284,7 +284,7 @@ jobs:
             chmod +x "bottle_staging/git-sc/${VERSION}/bin/git-sc"
 
             # Create bottle tarball
-            local bottle_name="git-sc--${VERSION}.${bottle_tag}.bottle.tar.gz"
+            local bottle_name="git-sc-${VERSION}.${bottle_tag}.bottle.tar.gz"
             tar czf "${bottle_name}" -C bottle_staging git-sc
 
             # Return SHA256
@@ -307,9 +307,9 @@ jobs:
           TAG="${{ needs.prepare-release.outputs.tag }}"
 
           gh release upload "${TAG}" \
-            "git-sc--${VERSION}.arm64_sonoma.bottle.tar.gz" \
-            "git-sc--${VERSION}.sonoma.bottle.tar.gz" \
-            "git-sc--${VERSION}.x86_64_linux.bottle.tar.gz" \
+            "git-sc-${VERSION}.arm64_sonoma.bottle.tar.gz" \
+            "git-sc-${VERSION}.sonoma.bottle.tar.gz" \
+            "git-sc-${VERSION}.x86_64_linux.bottle.tar.gz" \
             --clobber \
             --repo "${{ github.repository }}"
 
