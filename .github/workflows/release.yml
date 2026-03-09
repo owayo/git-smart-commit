@@ -255,27 +255,63 @@ jobs:
           private_key: ${{ secrets.PRIVATE_KEY }}
           repositories: '["homebrew-git-sc"]'
 
-      - name: Download and Calculate SHA256
-        id: sha256
+      - name: Create Homebrew bottles and calculate SHA256
+        id: bottles
         run: |
           VERSION="${{ needs.prepare-release.outputs.version }}"
           TAG="${{ needs.prepare-release.outputs.tag }}"
 
-          # Download tarballs and calculate SHA256
-          curl -sL "https://github.com/${{ github.repository }}/releases/download/${TAG}/git-sc-aarch64-apple-darwin.tar.gz" -o arm64.tar.gz
-          curl -sL "https://github.com/${{ github.repository }}/releases/download/${TAG}/git-sc-x86_64-apple-darwin.tar.gz" -o x86_64.tar.gz
+          # Download source archive for formula URL
+          curl -sL "https://github.com/${{ github.repository }}/archive/refs/tags/${TAG}.tar.gz" -o source.tar.gz
+          SHA256_SOURCE=$(sha256sum source.tar.gz | cut -d' ' -f1)
+          echo "sha256_source=${SHA256_SOURCE}" >> $GITHUB_OUTPUT
+
+          # Download release binaries
+          curl -sL "https://github.com/${{ github.repository }}/releases/download/${TAG}/git-sc-aarch64-apple-darwin.tar.gz" -o mac_arm64.tar.gz
+          curl -sL "https://github.com/${{ github.repository }}/releases/download/${TAG}/git-sc-x86_64-apple-darwin.tar.gz" -o mac_x86_64.tar.gz
           curl -sL "https://github.com/${{ github.repository }}/releases/download/${TAG}/git-sc-x86_64-unknown-linux-gnu.tar.gz" -o linux_x86_64.tar.gz
-          curl -sL "https://github.com/${{ github.repository }}/releases/download/${TAG}/git-sc-aarch64-unknown-linux-gnu.tar.gz" -o linux_arm64.tar.gz
 
-          SHA256_ARM64=$(sha256sum arm64.tar.gz | cut -d' ' -f1)
-          SHA256_X86_64=$(sha256sum x86_64.tar.gz | cut -d' ' -f1)
-          SHA256_LINUX_X86_64=$(sha256sum linux_x86_64.tar.gz | cut -d' ' -f1)
-          SHA256_LINUX_ARM64=$(sha256sum linux_arm64.tar.gz | cut -d' ' -f1)
+          # Create Homebrew bottle tarball from release binary
+          create_bottle() {
+            local src_tarball=$1
+            local bottle_tag=$2
 
-          echo "sha256_arm64=${SHA256_ARM64}" >> $GITHUB_OUTPUT
-          echo "sha256_x86_64=${SHA256_X86_64}" >> $GITHUB_OUTPUT
-          echo "sha256_linux_x86_64=${SHA256_LINUX_X86_64}" >> $GITHUB_OUTPUT
-          echo "sha256_linux_arm64=${SHA256_LINUX_ARM64}" >> $GITHUB_OUTPUT
+            rm -rf bottle_staging
+            mkdir -p "bottle_staging/git-sc/${VERSION}/bin"
+
+            # Extract binary from release tarball into bottle structure
+            tar xzf "${src_tarball}" -C "bottle_staging/git-sc/${VERSION}/bin/"
+            chmod +x "bottle_staging/git-sc/${VERSION}/bin/git-sc"
+
+            # Create bottle tarball
+            local bottle_name="git-sc--${VERSION}.${bottle_tag}.bottle.tar.gz"
+            tar czvf "${bottle_name}" -C bottle_staging git-sc
+
+            # Return SHA256
+            sha256sum "${bottle_name}" | cut -d' ' -f1
+          }
+
+          SHA256_BOTTLE_ARM64_SONOMA=$(create_bottle mac_arm64.tar.gz arm64_sonoma)
+          SHA256_BOTTLE_SONOMA=$(create_bottle mac_x86_64.tar.gz sonoma)
+          SHA256_BOTTLE_X86_64_LINUX=$(create_bottle linux_x86_64.tar.gz x86_64_linux)
+
+          echo "sha256_bottle_arm64_sonoma=${SHA256_BOTTLE_ARM64_SONOMA}" >> $GITHUB_OUTPUT
+          echo "sha256_bottle_sonoma=${SHA256_BOTTLE_SONOMA}" >> $GITHUB_OUTPUT
+          echo "sha256_bottle_x86_64_linux=${SHA256_BOTTLE_X86_64_LINUX}" >> $GITHUB_OUTPUT
+
+      - name: Upload bottles to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ needs.prepare-release.outputs.version }}"
+          TAG="${{ needs.prepare-release.outputs.tag }}"
+
+          gh release upload "${TAG}" \
+            "git-sc--${VERSION}.arm64_sonoma.bottle.tar.gz" \
+            "git-sc--${VERSION}.sonoma.bottle.tar.gz" \
+            "git-sc--${VERSION}.x86_64_linux.bottle.tar.gz" \
+            --clobber \
+            --repo "${{ github.repository }}"
 
       - name: Update Homebrew Formula
         env:
@@ -283,10 +319,10 @@ jobs:
         run: |
           VERSION="${{ needs.prepare-release.outputs.version }}"
           TAG="${{ needs.prepare-release.outputs.tag }}"
-          SHA256_ARM64="${{ steps.sha256.outputs.sha256_arm64 }}"
-          SHA256_X86_64="${{ steps.sha256.outputs.sha256_x86_64 }}"
-          SHA256_LINUX_X86_64="${{ steps.sha256.outputs.sha256_linux_x86_64 }}"
-          SHA256_LINUX_ARM64="${{ steps.sha256.outputs.sha256_linux_arm64 }}"
+          SHA256_SOURCE="${{ steps.bottles.outputs.sha256_source }}"
+          SHA256_BOTTLE_ARM64_SONOMA="${{ steps.bottles.outputs.sha256_bottle_arm64_sonoma }}"
+          SHA256_BOTTLE_SONOMA="${{ steps.bottles.outputs.sha256_bottle_sonoma }}"
+          SHA256_BOTTLE_X86_64_LINUX="${{ steps.bottles.outputs.sha256_bottle_x86_64_linux }}"
 
           # Clone homebrew tap
           git clone "https://x-access-token:${GH_TOKEN}@github.com/owayo/homebrew-git-sc.git"
@@ -295,57 +331,41 @@ jobs:
           # Create Formula directory if not exists
           mkdir -p Formula
 
-          # Create/update formula
+          # Create/update formula with bottle support
           cat > Formula/git-sc.rb << 'FORMULA'
-          class GitSc < Formula
-            desc "AI-powered smart commit message generator for coding agents"
-            homepage "https://github.com/owayo/git-smart-commit"
-            version "VERSION_PLACEHOLDER"
-            license "MIT"
+class GitSc < Formula
+  desc "AI-powered smart commit message generator for coding agents"
+  homepage "https://github.com/owayo/git-smart-commit"
+  url "URL_SOURCE_PLACEHOLDER"
+  sha256 "SHA256_SOURCE_PLACEHOLDER"
+  license "MIT"
 
-            on_macos do
-              if Hardware::CPU.arm?
-                url "URL_ARM64_PLACEHOLDER"
-                sha256 "SHA256_ARM64_PLACEHOLDER"
-              else
-                url "URL_X86_64_PLACEHOLDER"
-                sha256 "SHA256_X86_64_PLACEHOLDER"
-              end
-            end
+  bottle do
+    root_url "ROOT_URL_PLACEHOLDER"
+    sha256 cellar: :any_skip_relocation, arm64_sonoma: "SHA256_BOTTLE_ARM64_SONOMA_PLACEHOLDER"
+    sha256 cellar: :any_skip_relocation, sonoma: "SHA256_BOTTLE_SONOMA_PLACEHOLDER"
+    sha256 cellar: :any_skip_relocation, x86_64_linux: "SHA256_BOTTLE_X86_64_LINUX_PLACEHOLDER"
+  end
 
-            on_linux do
-              if Hardware::CPU.arm?
-                url "URL_LINUX_ARM64_PLACEHOLDER"
-                sha256 "SHA256_LINUX_ARM64_PLACEHOLDER"
-              else
-                url "URL_LINUX_X86_64_PLACEHOLDER"
-                sha256 "SHA256_LINUX_X86_64_PLACEHOLDER"
-              end
-            end
+  depends_on "rust" => :build
 
-            def install
-              bin.install "git-sc"
-            end
+  def install
+    system "cargo", "install", *std_cargo_args
+  end
 
-            test do
-              system "#{bin}/git-sc", "--version"
-            end
-          end
-          FORMULA
+  test do
+    system "#{bin}/git-sc", "--version"
+  end
+end
+FORMULA
 
           # Replace placeholders with actual values
-          sed -i "s|VERSION_PLACEHOLDER|${VERSION}|g" Formula/git-sc.rb
-          sed -i "s|URL_ARM64_PLACEHOLDER|https://github.com/owayo/git-smart-commit/releases/download/${TAG}/git-sc-aarch64-apple-darwin.tar.gz|g" Formula/git-sc.rb
-          sed -i "s|SHA256_ARM64_PLACEHOLDER|${SHA256_ARM64}|g" Formula/git-sc.rb
-          sed -i "s|URL_X86_64_PLACEHOLDER|https://github.com/owayo/git-smart-commit/releases/download/${TAG}/git-sc-x86_64-apple-darwin.tar.gz|g" Formula/git-sc.rb
-          sed -i "s|SHA256_X86_64_PLACEHOLDER|${SHA256_X86_64}|g" Formula/git-sc.rb
-          sed -i "s|URL_LINUX_ARM64_PLACEHOLDER|https://github.com/owayo/git-smart-commit/releases/download/${TAG}/git-sc-aarch64-unknown-linux-gnu.tar.gz|g" Formula/git-sc.rb
-          sed -i "s|SHA256_LINUX_ARM64_PLACEHOLDER|${SHA256_LINUX_ARM64}|g" Formula/git-sc.rb
-          sed -i "s|URL_LINUX_X86_64_PLACEHOLDER|https://github.com/owayo/git-smart-commit/releases/download/${TAG}/git-sc-x86_64-unknown-linux-gnu.tar.gz|g" Formula/git-sc.rb
-          sed -i "s|SHA256_LINUX_X86_64_PLACEHOLDER|${SHA256_LINUX_X86_64}|g" Formula/git-sc.rb
-
-          # Remove leading spaces from heredoc
-          sed -i 's/^          //' Formula/git-sc.rb
+          sed -i "s|URL_SOURCE_PLACEHOLDER|https://github.com/owayo/git-smart-commit/archive/refs/tags/${TAG}.tar.gz|g" Formula/git-sc.rb
+          sed -i "s|SHA256_SOURCE_PLACEHOLDER|${SHA256_SOURCE}|g" Formula/git-sc.rb
+          sed -i "s|ROOT_URL_PLACEHOLDER|https://github.com/owayo/git-smart-commit/releases/download/${TAG}|g" Formula/git-sc.rb
+          sed -i "s|SHA256_BOTTLE_ARM64_SONOMA_PLACEHOLDER|${SHA256_BOTTLE_ARM64_SONOMA}|g" Formula/git-sc.rb
+          sed -i "s|SHA256_BOTTLE_SONOMA_PLACEHOLDER|${SHA256_BOTTLE_SONOMA}|g" Formula/git-sc.rb
+          sed -i "s|SHA256_BOTTLE_X86_64_LINUX_PLACEHOLDER|${SHA256_BOTTLE_X86_64_LINUX}|g" Formula/git-sc.rb
 
           # Commit and push
           git config user.name "github-actions[bot]"
