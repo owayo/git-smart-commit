@@ -155,6 +155,7 @@ git-sc -n
 `--reword` note:
 - Only accepts commits reachable from the current `HEAD` history.
 - Passing a hash from another branch (not in current history) fails with an error.
+- Rewording the oldest commit in current history is also supported (internally uses `git rebase -i --root` when required).
 
 #### Settings
 
@@ -315,6 +316,7 @@ echo "conventional"
 
 - Whitespace-only changes excluded
 - Binary files excluded
+- Quoted diff headers with spaces in file paths are handled correctly
 - `.git-sc-ignore` patterns applied
 - Truncated at 10,000 characters
 

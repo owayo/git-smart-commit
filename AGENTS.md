@@ -68,6 +68,7 @@ Prefix script behavior note:
 Reword safety note:
 - `GitService` validates that a `--reword` target hash is in the current `HEAD` history before merge-range checks and position calculation.
 - If the hash exists but is outside the current history (e.g., another branch), reword fails with an error.
+- Rewording the oldest commit in the current branch is supported by switching to `git rebase -i --root` when needed.
 
 ### AI Provider Implementation
 

@@ -139,6 +139,7 @@ impl GitService {
 
                 // ignoreパターンにマッチするかチェック
                 let should_ignore = file_path
+                    .as_deref()
                     .map(|p| ignore.matched_path_or_any_parents(p, false).is_ignore())
                     .unwrap_or(false);
 
@@ -165,17 +166,50 @@ impl GitService {
     }
 
     /// diffヘッダーからファイルパスを抽出
-    fn extract_file_path_from_diff_header(header: &str) -> Option<&str> {
-        // "diff --git a/path/to/file b/path/to/file" から "path/to/file" を抽出
-        let parts: Vec<&str> = header.split_whitespace().collect();
-        if parts.len() >= 4 {
-            // "a/path/to/file" から先頭の "a/" を除去
-            let a_path = parts[2];
-            if let Some(stripped) = a_path.strip_prefix("a/") {
-                return Some(stripped);
+    fn extract_file_path_from_diff_header(header: &str) -> Option<String> {
+        let rest = header.strip_prefix("diff --git ")?;
+        let rest = rest.trim_start();
+
+        let a_path = if let Some(after_quote) = rest.strip_prefix('"') {
+            // "a/path with space.txt" 形式の引用符付きパスを正しく扱う
+            let mut parsed = String::new();
+            let mut escaped = false;
+            let mut closed_quote = false;
+
+            for ch in after_quote.chars() {
+                if escaped {
+                    let unescaped = match ch {
+                        'n' => '\n',
+                        't' => '\t',
+                        'r' => '\r',
+                        '\\' => '\\',
+                        '"' => '"',
+                        _ => ch,
+                    };
+                    parsed.push(unescaped);
+                    escaped = false;
+                    continue;
+                }
+
+                match ch {
+                    '\\' => escaped = true,
+                    '"' => {
+                        closed_quote = true;
+                        break;
+                    }
+                    _ => parsed.push(ch),
+                }
             }
-        }
-        None
+
+            if escaped || !closed_quote || parsed.is_empty() {
+                return None;
+            }
+            parsed
+        } else {
+            rest.split_whitespace().next()?.to_string()
+        };
+
+        a_path.strip_prefix("a/").map(str::to_string)
     }
 
     /// diffを最大文字数に切り詰める
@@ -235,8 +269,7 @@ impl GitService {
                 // 新しいdiffブロックの開始
                 let block_start = i;
                 let file_path = Self::extract_file_path_from_diff_header(line)
-                    .unwrap_or("unknown")
-                    .to_string();
+                    .unwrap_or_else(|| "unknown".to_string());
                 i += 1;
 
                 // ブロック内の情報を収集
@@ -491,9 +524,31 @@ impl GitService {
 
     /// 指定範囲にマージコミットが含まれているかチェック
     pub fn has_merge_commits_in_range(&self, n: usize) -> Result<bool, AppError> {
+        if n == 0 {
+            return Err(AppError::InvalidRewordTarget);
+        }
+
+        let total_commits = self.get_head_commit_count()?;
+        if n > total_commits {
+            return Err(AppError::InvalidRewordTarget);
+        }
+
         // マージコミットは親が2つ以上ある
-        let merges = self.run_git(&["rev-list", "--merges", &format!("HEAD~{}..HEAD", n)])?;
+        let merges = if n == total_commits {
+            // 最古コミットを含む範囲では HEAD~n が無効になるため履歴全体を対象にする
+            self.run_git(&["rev-list", "--merges", "HEAD"])?
+        } else {
+            self.run_git(&["rev-list", "--merges", &format!("HEAD~{}..HEAD", n)])?
+        };
         Ok(!merges.is_empty())
+    }
+
+    /// HEAD から辿れる総コミット数を取得
+    fn get_head_commit_count(&self) -> Result<usize, AppError> {
+        let count_str = self.run_git(&["rev-list", "--count", "HEAD"])?;
+        count_str
+            .parse()
+            .map_err(|_| AppError::GitError("Failed to parse commit count".to_string()))
     }
 
     /// 指定されたコミットハッシュの差分を取得
@@ -589,6 +644,11 @@ impl GitService {
             return self.amend_commit_message(new_message);
         }
 
+        let total_commits = self.get_head_commit_count()?;
+        if n > total_commits {
+            return Err(AppError::InvalidRewordTarget);
+        }
+
         // マージコミットをチェック
         if self.has_merge_commits_in_range(n)? {
             return Err(AppError::HasMergeCommits);
@@ -600,8 +660,8 @@ impl GitService {
         std::fs::write(&msg_file, new_message)
             .map_err(|e| AppError::GitError(format!("Failed to create temp file: {}", e)))?;
 
-        // GIT_SEQUENCE_EDITOR: 最初の pick を reword に変更
-        // シェル経由で実行するために sh -c でラップする
+        // GIT_SEQUENCE_EDITOR: 先頭の pick を reword に置換
+        // シェル経由で実行するため、sh -c でラップする
         let sequence_editor = if cfg!(windows) {
             // Windows環境では PowerShell を使用
             "powershell -Command \"(Get-Content $args[0]) -replace '^pick', 'reword' | Set-Content $args[0]\"".to_string()
@@ -612,7 +672,7 @@ impl GitService {
                 .to_string()
         };
 
-        // GIT_EDITOR: 一時ファイルの内容をコミットメッセージへ反映
+        // GIT_EDITOR: 一時ファイルの内容をコミットメッセージに反映
         let editor = if cfg!(windows) {
             format!(
                 "powershell -Command \"Copy-Item '{}' $args[0]\"",
@@ -623,9 +683,16 @@ impl GitService {
             format!("sh -c 'cp \"{}\" \"$1\"' --", msg_file.display())
         };
 
-        // git rebase -i を実行
-        let output = Command::new("git")
-            .args(["rebase", "-i", &format!("HEAD~{}", n)])
+        // git rebase -i を実行（最古コミット対象時は --root を使う）
+        let mut rebase_cmd = Command::new("git");
+        rebase_cmd.arg("rebase").arg("-i");
+        if n == total_commits {
+            rebase_cmd.arg("--root");
+        } else {
+            rebase_cmd.arg(format!("HEAD~{}", n));
+        }
+
+        let output = rebase_cmd
             .env("GIT_SEQUENCE_EDITOR", &sequence_editor)
             .env("GIT_EDITOR", &editor)
             .env("EDITOR", &editor)
@@ -670,6 +737,7 @@ impl Default for GitService {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    use std::process::Command;
 
     // ============================================================
     // filter_binary_diff のテスト
@@ -1105,14 +1173,14 @@ index 1234567..abcdefg 100644
     fn test_extract_file_path_simple() {
         let header = "diff --git a/src/main.rs b/src/main.rs";
         let result = GitService::extract_file_path_from_diff_header(header);
-        assert_eq!(result, Some("src/main.rs"));
+        assert_eq!(result, Some("src/main.rs".to_string()));
     }
 
     #[test]
     fn test_extract_file_path_nested() {
         let header = "diff --git a/path/to/nested/file.txt b/path/to/nested/file.txt";
         let result = GitService::extract_file_path_from_diff_header(header);
-        assert_eq!(result, Some("path/to/nested/file.txt"));
+        assert_eq!(result, Some("path/to/nested/file.txt".to_string()));
     }
 
     #[test]
@@ -1446,8 +1514,70 @@ index 555..666 100644
         let header = "diff --git a/Cargo.toml b/Cargo.toml";
         assert_eq!(
             GitService::extract_file_path_from_diff_header(header),
-            Some("Cargo.toml")
+            Some("Cargo.toml".to_string())
         );
+    }
+
+    #[test]
+    fn test_extract_file_path_with_quoted_spaces() {
+        let header =
+            r#"diff --git "a/path with spaces/file name.txt" "b/path with spaces/file name.txt""#;
+        assert_eq!(
+            GitService::extract_file_path_from_diff_header(header),
+            Some("path with spaces/file name.txt".to_string())
+        );
+    }
+
+    /// テスト用の一時Gitリポジトリで git コマンドを実行する
+    fn run_git_in(path: &std::path::Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// 最古コミットを含む範囲でも reword できることを検証する
+    #[test]
+    fn test_reword_commit_oldest_commit() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let repo = temp_dir.path();
+
+        run_git_in(repo, &["init"]);
+        run_git_in(repo, &["config", "user.name", "Test User"]);
+        run_git_in(repo, &["config", "user.email", "test@example.com"]);
+
+        std::fs::write(repo.join("file.txt"), "first\n").unwrap();
+        run_git_in(repo, &["add", "file.txt"]);
+        run_git_in(repo, &["commit", "-m", "first"]);
+
+        std::fs::write(repo.join("file.txt"), "second\n").unwrap();
+        run_git_in(repo, &["add", "file.txt"]);
+        run_git_in(repo, &["commit", "-m", "second"]);
+
+        let service = GitService {
+            repo_path: repo.to_path_buf(),
+        };
+
+        let result = service.reword_commit(2, "rewritten root");
+        assert!(result.is_ok());
+
+        let output = Command::new("git")
+            .args(["log", "--reverse", "--format=%s"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let messages = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(messages.lines().next(), Some("rewritten root"));
     }
 
     // ============================================================
