@@ -285,7 +285,7 @@ jobs:
 
             # Create bottle tarball
             local bottle_name="git-sc--${VERSION}.${bottle_tag}.bottle.tar.gz"
-            tar czvf "${bottle_name}" -C bottle_staging git-sc
+            tar czf "${bottle_name}" -C bottle_staging git-sc
 
             # Return SHA256
             sha256sum "${bottle_name}" | cut -d' ' -f1
