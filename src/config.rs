@@ -1003,4 +1003,70 @@ language = "ja"
         let config = Config::from_str("").unwrap();
         assert_eq!(config.language, "Japanese");
     }
+
+    // ============================================================
+    // merge_with: prefix_scripts の上書きテスト
+    // ============================================================
+
+    #[test]
+    fn test_merge_with_prefix_scripts_override() {
+        let global_script = PrefixScriptConfig {
+            url_pattern: "global".to_string(),
+            script: "global-script.sh".to_string(),
+        };
+        let project_script = PrefixScriptConfig {
+            url_pattern: "project".to_string(),
+            script: "project-script.sh".to_string(),
+        };
+
+        let mut global = Config {
+            prefix_scripts: vec![global_script],
+            ..Default::default()
+        };
+
+        let project = Config {
+            prefix_scripts: vec![project_script],
+            ..Default::default()
+        };
+
+        global.merge_with(project);
+        assert_eq!(global.prefix_scripts.len(), 1);
+        assert_eq!(global.prefix_scripts[0].script, "project-script.sh");
+    }
+
+    #[test]
+    fn test_merge_with_prefix_scripts_empty_preserves_global() {
+        let global_script = PrefixScriptConfig {
+            url_pattern: "global".to_string(),
+            script: "global-script.sh".to_string(),
+        };
+
+        let mut global = Config {
+            prefix_scripts: vec![global_script],
+            ..Default::default()
+        };
+
+        let project = Config::default(); // prefix_scripts = []
+
+        global.merge_with(project);
+        // 空のプロジェクト設定はグローバルを保持
+        assert_eq!(global.prefix_scripts.len(), 1);
+        assert_eq!(global.prefix_scripts[0].script, "global-script.sh");
+    }
+
+    #[test]
+    fn test_merge_with_nano_buddy_true_to_true() {
+        let mut global = Config {
+            nano_buddy: true,
+            ..Default::default()
+        };
+
+        let project = Config {
+            nano_buddy: true,
+            ..Default::default()
+        };
+
+        global.merge_with(project);
+        assert!(global.nano_buddy);
+    }
 }

@@ -1598,4 +1598,101 @@ index 555..666 100644
         let result = service.get_commit_message_by_hash("0000000000000000000000000000000000000000");
         assert!(result.is_err());
     }
+
+    // ============================================================
+    // extract_file_path_from_diff_header: エスケープ・エッジケース
+    // ============================================================
+
+    #[test]
+    fn test_extract_file_path_escaped_characters() {
+        // エスケープされたバックスラッシュ
+        let header = r#"diff --git "a/path\\with\\backslash.txt" "b/path\\with\\backslash.txt""#;
+        let result = GitService::extract_file_path_from_diff_header(header);
+        assert_eq!(result, Some(r"path\with\backslash.txt".to_string()));
+    }
+
+    #[test]
+    fn test_extract_file_path_escaped_tab() {
+        let header = "diff --git \"a/file\\twith\\ttab.txt\" \"b/file\\twith\\ttab.txt\"";
+        let result = GitService::extract_file_path_from_diff_header(header);
+        assert_eq!(result, Some("file\twith\ttab.txt".to_string()));
+    }
+
+    #[test]
+    fn test_extract_file_path_unclosed_quote() {
+        // 閉じ引用符がない場合は None
+        let header = "diff --git \"a/unclosed b/unclosed";
+        let result = GitService::extract_file_path_from_diff_header(header);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_file_path_empty_quoted_path() {
+        // 引用符内が "a/" のみ（パスが空）
+        let header = "diff --git \"a/\" \"b/\"";
+        let result = GitService::extract_file_path_from_diff_header(header);
+        // strip_prefix("a/") 後に空文字列 → None
+        assert_eq!(result, Some(String::new()));
+    }
+
+    #[test]
+    fn test_extract_file_path_trailing_backslash() {
+        // 末尾がエスケープ文字で終わる（不完全なエスケープ）
+        let header = "diff --git \"a/file\\";
+        let result = GitService::extract_file_path_from_diff_header(header);
+        assert_eq!(result, None);
+    }
+
+    // ============================================================
+    // filter_binary_diff: パス抽出失敗時のフォールバック
+    // ============================================================
+
+    #[test]
+    fn test_filter_binary_diff_unknown_path_fallback() {
+        // extract_file_path_from_diff_header が None を返すケース
+        let diff = "diff --git \n\
+                     Binary files /dev/null and b/something differ";
+        let result = GitService::filter_binary_diff(diff);
+        assert!(result.contains("[Binary]"));
+        assert!(result.contains("unknown"));
+    }
+
+    // ============================================================
+    // filter_ignored_files: パス抽出失敗時はスキップしない
+    // ============================================================
+
+    #[test]
+    fn test_filter_ignored_files_path_extraction_fails() {
+        // パス抽出が失敗してもブロックは保持される
+        let mut builder = GitignoreBuilder::new(".");
+        builder.add_line(None, "*.log").unwrap();
+        let ignore = builder.build().unwrap();
+        let diff = "diff --git \n\
+                     some content line";
+        let result = GitService::filter_ignored_files(diff, &ignore);
+        assert!(result.contains("some content line"));
+    }
+
+    // ============================================================
+    // truncate_diff: マルチバイト文字の境界
+    // ============================================================
+
+    #[test]
+    fn test_truncate_diff_multibyte_characters() {
+        // 日本語文字（各3バイト）を含むdiffが文字数で正しく切り詰められる
+        let line = "日本語のテスト行です。変更がありました。\n";
+        // MAX_DIFF_CHARS (10000) を超えるまで繰り返す
+        let chars_per_line = line.chars().count();
+        let repeat_count = (MAX_DIFF_CHARS / chars_per_line) + 2;
+        let diff: String = line.repeat(repeat_count);
+        assert!(diff.chars().count() > MAX_DIFF_CHARS);
+
+        let result = GitService::truncate_diff(&diff);
+        // 切り詰めメッセージが含まれる
+        assert!(result.contains("diff truncated"));
+        // パニックせずに正常に処理される
+        // 結果の文字数がMAX_DIFF_CHARS以下（切り詰めメッセージ分を除く）
+        let without_msg = result.split("\n\n... (diff truncated").next().unwrap();
+        assert!(without_msg.chars().count() <= MAX_DIFF_CHARS);
+    }
 }

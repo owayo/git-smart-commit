@@ -2389,4 +2389,141 @@ mod tests {
         let message = "  \"feat: add feature\"  ";
         assert_eq!(AiService::clean_message(message), "feat: add feature");
     }
+
+    // ============================================================
+    // clean_message: 言語タグ付きコードブロックの複数行
+    // ============================================================
+
+    #[test]
+    fn test_clean_message_code_block_with_language_multiline() {
+        let message = "```commit\nfeat: add auth\n\n- OAuth2 support\n- JWT tokens\n```";
+        assert_eq!(
+            AiService::clean_message(message),
+            "feat: add auth\n\n- OAuth2 support\n- JWT tokens"
+        );
+    }
+
+    #[test]
+    fn test_clean_message_code_block_opening_only_no_content() {
+        // 開始フェンスのみ、内容なし
+        let message = "```";
+        assert_eq!(AiService::clean_message(message), "```");
+    }
+
+    // ============================================================
+    // process_provider_output: ExitStatus を生成して検証
+    // ============================================================
+
+    /// テスト用にコマンド実行で ExitStatus を取得するヘルパー
+    fn exit_status(success: bool) -> ExitStatus {
+        if success {
+            Command::new("true").status().unwrap()
+        } else {
+            Command::new("false").status().unwrap()
+        }
+    }
+
+    #[test]
+    fn test_process_provider_output_success_with_message() {
+        let status = exit_status(true);
+        let result =
+            AiService::process_provider_output(&AiProvider::Gemini, status, "feat: add X", "");
+        assert_eq!(result.unwrap(), "feat: add X");
+    }
+
+    #[test]
+    fn test_process_provider_output_success_empty_stdout() {
+        let status = exit_status(true);
+        let result = AiService::process_provider_output(&AiProvider::Gemini, status, "", "");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("empty response"));
+    }
+
+    #[test]
+    fn test_process_provider_output_success_empty_stdout_with_stderr() {
+        let status = exit_status(true);
+        let result =
+            AiService::process_provider_output(&AiProvider::Gemini, status, "", "some hint");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("stderr"));
+    }
+
+    #[test]
+    fn test_process_provider_output_failure() {
+        let status = exit_status(false);
+        let result = AiService::process_provider_output(
+            &AiProvider::Gemini,
+            status,
+            "",
+            "something went wrong",
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_process_provider_output_stderr_error_for_gemini() {
+        // Gemini は stderr に "error:" があればエラー扱い
+        let status = exit_status(true);
+        let result = AiService::process_provider_output(
+            &AiProvider::Gemini,
+            status,
+            "feat: ok",
+            "error: rate limit",
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_process_provider_output_stderr_error_ignored_for_codex() {
+        // Codex は stderr に "error:" があっても無視
+        let status = exit_status(true);
+        let result = AiService::process_provider_output(
+            &AiProvider::Codex,
+            status,
+            "feat: add feature",
+            "error: this is just a log",
+        );
+        assert_eq!(result.unwrap(), "feat: add feature");
+    }
+
+    #[test]
+    fn test_process_provider_output_stderr_error_ignored_for_claude() {
+        // Claude は stderr に "error:" があっても無視
+        let status = exit_status(true);
+        let result = AiService::process_provider_output(
+            &AiProvider::Claude,
+            status,
+            "fix: resolve bug",
+            "error: debug log",
+        );
+        assert_eq!(result.unwrap(), "fix: resolve bug");
+    }
+
+    #[test]
+    fn test_process_provider_output_stderr_file_not_found() {
+        // Gemini で stderr に "file not found" があればエラー
+        let status = exit_status(true);
+        let result = AiService::process_provider_output(
+            &AiProvider::Gemini,
+            status,
+            "feat: ok",
+            "File not found: /path/to/bin",
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_process_provider_output_cleans_message() {
+        // 出力メッセージがクリーンアップされることを確認
+        let status = exit_status(true);
+        let result = AiService::process_provider_output(
+            &AiProvider::Gemini,
+            status,
+            "```\nfeat: clean this\n```",
+            "",
+        );
+        assert_eq!(result.unwrap(), "feat: clean this");
+    }
 }

@@ -375,46 +375,18 @@ impl App {
             with_body,
             agent_context,
         );
-        if use_stderr {
-            eprintln!();
-            eprintln!("{}", "=== DEBUG: AI Prompt ===".yellow().bold());
-            eprintln!("{}", "─".repeat(50).dimmed());
-            eprintln!("{}", prompt);
-            eprintln!("{}", "─".repeat(50).dimmed());
-            eprintln!("{}", "=== END DEBUG ===".yellow().bold());
-            eprintln!();
-        } else {
-            println!();
-            println!("{}", "=== DEBUG: AI Prompt ===".yellow().bold());
-            println!("{}", "─".repeat(50).dimmed());
-            println!("{}", prompt);
-            println!("{}", "─".repeat(50).dimmed());
-            println!("{}", "=== END DEBUG ===".yellow().bold());
-            println!();
+        macro_rules! debug_out {
+            ($($arg:tt)*) => {
+                if use_stderr { eprintln!($($arg)*) } else { println!($($arg)*) }
+            };
         }
-    }
-
-    /// デバッグモード時にPrefixModeに基づいてプロンプトを表示
-    fn debug_print_for_prefix_mode(
-        &self,
-        diff: &str,
-        recent_commits: &[String],
-        prefix_mode: &PrefixMode,
-        is_squash: bool,
-        with_body: bool,
-        agent_context: Option<&str>,
-        use_stderr: bool,
-    ) {
-        let (prefix_type, commits) =
-            Self::get_debug_params_for_prefix_mode(prefix_mode, recent_commits, is_squash);
-        self.print_debug_prompt(
-            diff,
-            commits,
-            prefix_type,
-            with_body,
-            agent_context,
-            use_stderr,
-        );
+        debug_out!();
+        debug_out!("{}", "=== DEBUG: AI Prompt ===".yellow().bold());
+        debug_out!("{}", "─".repeat(50).dimmed());
+        debug_out!("{}", prompt);
+        debug_out!("{}", "─".repeat(50).dimmed());
+        debug_out!("{}", "=== END DEBUG ===".yellow().bold());
+        debug_out!();
     }
 
     fn print_recent_commits_for_auto(&self, cli: &Cli, recent_commits: &[String]) {
@@ -461,6 +433,7 @@ impl App {
     /// - `is_squash`: squashモードかどうか（Autoモード時にconventionalを強制する）
     /// - `agent_context`: エージェントコンテキスト
     /// - `silent`: trueの場合、進捗メッセージを抑制しデバッグ出力をstderrに出力
+    #[allow(clippy::too_many_arguments)]
     fn generate_with_prefix(
         &self,
         cli: &Cli,
@@ -475,11 +448,12 @@ impl App {
 
         // デバッグモード: プロンプトを表示
         if cli.debug {
-            self.debug_print_for_prefix_mode(
+            let (prefix_type, commits) =
+                Self::get_debug_params_for_prefix_mode(&prefix_mode, recent_commits, is_squash);
+            self.print_debug_prompt(
                 diff,
-                recent_commits,
-                &prefix_mode,
-                is_squash,
+                commits,
+                prefix_type,
                 cli.with_body,
                 agent_context,
                 silent,
@@ -1522,5 +1496,60 @@ mod tests {
     #[test]
     fn test_extract_conventional_body_empty() {
         assert_eq!(extract_conventional_body(""), None);
+    }
+
+    // ============================================================
+    // extract_conventional_body: 追加エッジケース
+    // ============================================================
+
+    #[test]
+    fn test_extract_conventional_body_all_types() {
+        // 全 conventional type が認識される
+        let types = [
+            "feat", "fix", "docs", "style", "refactor", "perf", "test", "build", "ci", "chore",
+            "revert",
+        ];
+        for ty in types {
+            let msg = format!("{}: description", ty);
+            assert_eq!(
+                extract_conventional_body(&msg),
+                Some("description"),
+                "type '{}' should be recognized",
+                ty
+            );
+        }
+    }
+
+    #[test]
+    fn test_extract_conventional_body_colon_space_only() {
+        // "feat: " はコロン後がスペースのみ → trim_start で空文字列
+        assert_eq!(extract_conventional_body("feat: "), Some(""));
+    }
+
+    #[test]
+    fn test_extract_conventional_body_no_space_after_colon() {
+        // "feat:no-space" はコロン後にスペースなし → trim_start で "no-space"
+        assert_eq!(extract_conventional_body("feat:no-space"), Some("no-space"));
+    }
+
+    #[test]
+    fn test_extract_conventional_body_unknown_type() {
+        // conventional type でないものは None
+        assert_eq!(extract_conventional_body("unknown_type: some text"), None);
+    }
+
+    #[test]
+    fn test_extract_conventional_body_scope_with_breaking() {
+        // マルチ文字スコープ + breaking change
+        assert_eq!(
+            extract_conventional_body("feat(auth-module)!: major change"),
+            Some("major change")
+        );
+    }
+
+    #[test]
+    fn test_extract_conventional_body_open_paren_no_close() {
+        // 開き括弧のみで閉じ括弧なし → None
+        assert_eq!(extract_conventional_body("feat(: invalid scope"), None);
     }
 }

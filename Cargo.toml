@@ -10,7 +10,7 @@ license = "MIT"
 apple-ai = ["fm-rs"]
 
 [dependencies]
-clap = { version = "4.5.60", features = ["derive"] }
+clap = { version = "4.6.0", features = ["derive"] }
 anyhow = "1.0.102"
 thiserror = "2.0.18"
 regex = "1.12.3"
@@ -26,8 +26,8 @@ fm-rs = { version = "0.1.5", optional = true }
 [dev-dependencies]
 rstest = "0.26.1"
 pretty_assertions = "1.4.1"
-tempfile = "3.26.0"
-assert_cmd = "2.1.2"
+tempfile = "3.27.0"
+assert_cmd = "2.2.0"
 predicates = "3.1.4"
 
 [profile.release]
