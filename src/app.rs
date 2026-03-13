@@ -192,13 +192,8 @@ impl App {
     /// 1. prefix_scripts: url_patternの正規表現にマッチすればスクリプト実行
     /// 2. prefix_rules: url_patternの正規表現にマッチすればそのprefix_typeを使用
     /// 3. Auto: 上記に該当しなければ過去コミットから自動判定
-    fn get_prefix_mode(&self) -> PrefixMode {
-        self.get_prefix_mode_internal(false)
-    }
-
-    /// サイレントモードでプレフィックスモードを判定（進捗出力なし）
-    fn get_prefix_mode_silent(&self) -> PrefixMode {
-        self.get_prefix_mode_internal(true)
+    fn get_prefix_mode(&self, quiet: bool) -> PrefixMode {
+        self.get_prefix_mode_internal(quiet)
     }
 
     /// 内部実装: プレフィックスモード判定
@@ -370,6 +365,7 @@ impl App {
         prefix_type: Option<&str>,
         with_body: bool,
         agent_context: Option<&str>,
+        use_stderr: bool,
     ) {
         let prompt = AiService::build_prompt(
             diff,
@@ -379,13 +375,23 @@ impl App {
             with_body,
             agent_context,
         );
-        println!();
-        println!("{}", "=== DEBUG: AI Prompt ===".yellow().bold());
-        println!("{}", "─".repeat(50).dimmed());
-        println!("{}", prompt);
-        println!("{}", "─".repeat(50).dimmed());
-        println!("{}", "=== END DEBUG ===".yellow().bold());
-        println!();
+        if use_stderr {
+            eprintln!();
+            eprintln!("{}", "=== DEBUG: AI Prompt ===".yellow().bold());
+            eprintln!("{}", "─".repeat(50).dimmed());
+            eprintln!("{}", prompt);
+            eprintln!("{}", "─".repeat(50).dimmed());
+            eprintln!("{}", "=== END DEBUG ===".yellow().bold());
+            eprintln!();
+        } else {
+            println!();
+            println!("{}", "=== DEBUG: AI Prompt ===".yellow().bold());
+            println!("{}", "─".repeat(50).dimmed());
+            println!("{}", prompt);
+            println!("{}", "─".repeat(50).dimmed());
+            println!("{}", "=== END DEBUG ===".yellow().bold());
+            println!();
+        }
     }
 
     /// デバッグモード時にPrefixModeに基づいてプロンプトを表示
@@ -397,10 +403,18 @@ impl App {
         is_squash: bool,
         with_body: bool,
         agent_context: Option<&str>,
+        use_stderr: bool,
     ) {
         let (prefix_type, commits) =
             Self::get_debug_params_for_prefix_mode(prefix_mode, recent_commits, is_squash);
-        self.print_debug_prompt(diff, commits, prefix_type, with_body, agent_context);
+        self.print_debug_prompt(
+            diff,
+            commits,
+            prefix_type,
+            with_body,
+            agent_context,
+            use_stderr,
+        );
     }
 
     fn print_recent_commits_for_auto(&self, cli: &Cli, recent_commits: &[String]) {
@@ -437,34 +451,6 @@ impl App {
         println!();
     }
 
-    fn generate_message(
-        &self,
-        cli: &Cli,
-        diff: &str,
-        recent_commits: &[String],
-        prefix_type: Option<&str>,
-        with_body: bool,
-        agent_context: Option<&str>,
-    ) -> Result<(String, &'static str), AppError> {
-        if cli.quiet {
-            self.ai.generate_commit_message_silent(
-                diff,
-                recent_commits,
-                prefix_type,
-                with_body,
-                agent_context,
-            )
-        } else {
-            self.ai.generate_commit_message(
-                diff,
-                recent_commits,
-                prefix_type,
-                with_body,
-                agent_context,
-            )
-        }
-    }
-
     /// PrefixModeに基づいてメッセージを生成し、スクリプトプレフィックスを適用する共通メソッド
     ///
     /// # 引数
@@ -474,6 +460,7 @@ impl App {
     /// - `prefix_mode`: プレフィックス判定結果
     /// - `is_squash`: squashモードかどうか（Autoモード時にconventionalを強制する）
     /// - `agent_context`: エージェントコンテキスト
+    /// - `silent`: trueの場合、進捗メッセージを抑制しデバッグ出力をstderrに出力
     fn generate_with_prefix(
         &self,
         cli: &Cli,
@@ -482,7 +469,10 @@ impl App {
         prefix_mode: PrefixMode,
         is_squash: bool,
         agent_context: Option<&str>,
+        silent: bool,
     ) -> Result<(String, &'static str), AppError> {
+        let quiet = silent || cli.quiet;
+
         // デバッグモード: プロンプトを表示
         if cli.debug {
             self.debug_print_for_prefix_mode(
@@ -492,6 +482,7 @@ impl App {
                 is_squash,
                 cli.with_body,
                 agent_context,
+                silent,
             );
         }
 
@@ -499,38 +490,45 @@ impl App {
         let (mut message, provider_name) = match &prefix_mode {
             PrefixMode::Script(_) => {
                 // スクリプトモード: プレフィックスなしで生成（後でスクリプトのプレフィックスを適用）
-                self.generate_message(cli, diff, &[], Some("plain"), cli.with_body, agent_context)?
+                self.ai.generate_commit_message(
+                    diff,
+                    &[],
+                    Some("plain"),
+                    cli.with_body,
+                    quiet,
+                    agent_context,
+                )?
             }
             PrefixMode::Rule(prefix_type) | PrefixMode::Config(prefix_type) => {
                 // ルール/設定モード: 指定されたprefix_typeで生成
-                self.generate_message(
-                    cli,
+                self.ai.generate_commit_message(
                     diff,
                     recent_commits,
                     Some(prefix_type),
                     cli.with_body,
+                    quiet,
                     agent_context,
                 )?
             }
             PrefixMode::Auto => {
                 if is_squash {
                     // squashモード: Conventional Commits形式で生成
-                    self.generate_message(
-                        cli,
+                    self.ai.generate_commit_message(
                         diff,
                         &[],
                         Some("conventional"),
                         cli.with_body,
+                        quiet,
                         agent_context,
                     )?
                 } else {
                     // 通常モード: 過去コミットから推論
-                    self.generate_message(
-                        cli,
+                    self.ai.generate_commit_message(
                         diff,
                         recent_commits,
                         None,
                         cli.with_body,
+                        quiet,
                         agent_context,
                     )?
                 }
@@ -542,19 +540,19 @@ impl App {
             match result {
                 ScriptResult::Prefix(prefix) => {
                     message = self.apply_prefix(&message, &prefix);
-                    if !cli.quiet {
+                    if !quiet {
                         println!("{}", format!("Applied prefix: {}", prefix.trim()).cyan());
                     }
                 }
                 ScriptResult::Empty => {
                     message = self.strip_type_prefix(&message);
-                    if !cli.quiet {
+                    if !quiet {
                         println!("{}", "No prefix applied (script returned empty).".cyan());
                     }
                 }
                 ScriptResult::Failed => {
                     // AI生成のメッセージをそのまま使用
-                    if !cli.quiet {
+                    if !quiet {
                         println!("{}", "Using AI-generated format.".cyan());
                     }
                 }
@@ -626,11 +624,7 @@ impl App {
         };
 
         // プレフィックスモードを判定
-        let prefix_mode = if cli.quiet {
-            self.get_prefix_mode_silent()
-        } else {
-            self.get_prefix_mode()
-        };
+        let prefix_mode = self.get_prefix_mode(cli.quiet);
 
         // フォーマット検出用に直近のコミットを取得（Autoモードの場合のみ表示）
         let recent_commits = self.git.get_recent_commits(5)?;
@@ -650,8 +644,15 @@ impl App {
 
         let agent_ctx = agent_context.as_deref();
 
-        let (message, provider_name) =
-            self.generate_with_prefix(cli, &diff, &recent_commits, prefix_mode, false, agent_ctx)?;
+        let (message, provider_name) = self.generate_with_prefix(
+            cli,
+            &diff,
+            &recent_commits,
+            prefix_mode,
+            false,
+            agent_ctx,
+            false,
+        )?;
 
         // 生成されたメッセージを表示
         self.print_generated_message(cli, &message, provider_name);
@@ -711,11 +712,7 @@ impl App {
         }
 
         // プレフィックスモードを判定
-        let prefix_mode = if cli.quiet {
-            self.get_prefix_mode_silent()
-        } else {
-            self.get_prefix_mode()
-        };
+        let prefix_mode = self.get_prefix_mode(cli.quiet);
 
         // フォーマット検出用に直近のコミットを取得（amendするコミットはスキップ）
         let recent_commits = self.git.get_recent_commits(6)?;
@@ -741,6 +738,7 @@ impl App {
             prefix_mode,
             false,
             agent_context,
+            false,
         )?;
 
         // 生成されたメッセージを表示
@@ -834,11 +832,7 @@ impl App {
         }
 
         // プレフィックスモードを判定
-        let prefix_mode = if cli.quiet {
-            self.get_prefix_mode_silent()
-        } else {
-            self.get_prefix_mode()
-        };
+        let prefix_mode = self.get_prefix_mode(cli.quiet);
 
         // AI CLIがインストールされているか確認
         self.ai.verify_installation()?;
@@ -849,7 +843,7 @@ impl App {
         }
 
         let (message, provider_name) =
-            self.generate_with_prefix(cli, &diff, &[], prefix_mode, true, agent_context)?;
+            self.generate_with_prefix(cli, &diff, &[], prefix_mode, true, agent_context, false)?;
 
         // 生成されたメッセージを表示
         self.print_generated_message(cli, &message, provider_name);
@@ -931,74 +925,21 @@ impl App {
         self.ai.verify_installation()?;
 
         // プレフィックスモードを判定（サイレントモード）
-        let prefix_mode = self.get_prefix_mode_silent();
+        let prefix_mode = self.get_prefix_mode(true);
 
         // フォーマット検出用に直近のコミットを取得
         let recent_commits = self.git.get_recent_commits(5)?;
 
-        // デバッグモード: プロンプトを標準エラー出力に表示（標準出力はメッセージのみ）
-        if cli.debug {
-            eprintln!();
-            let (prefix_type, commits) =
-                Self::get_debug_params_for_prefix_mode(&prefix_mode, &recent_commits, false);
-            let prompt = AiService::build_prompt(
-                &combined_diff,
-                commits,
-                self.ai.language(),
-                prefix_type,
-                cli.with_body,
-                agent_context,
-            );
-            eprintln!("{}", "=== DEBUG: AI Prompt ===".yellow().bold());
-            eprintln!("{}", "─".repeat(50).dimmed());
-            eprintln!("{}", prompt);
-            eprintln!("{}", "─".repeat(50).dimmed());
-            eprintln!("{}", "=== END DEBUG ===".yellow().bold());
-            eprintln!();
-        }
-
-        // コミットメッセージを生成（サイレントモード）
-        let (mut message, _provider_name) = match &prefix_mode {
-            PrefixMode::Script(_) => self.ai.generate_commit_message_silent(
-                &combined_diff,
-                &[],
-                Some("plain"),
-                cli.with_body,
-                agent_context,
-            )?,
-            PrefixMode::Rule(prefix_type) | PrefixMode::Config(prefix_type) => {
-                // ルール/設定モード: 指定されたprefix_typeで生成
-                self.ai.generate_commit_message_silent(
-                    &combined_diff,
-                    &recent_commits,
-                    Some(prefix_type),
-                    cli.with_body,
-                    agent_context,
-                )?
-            }
-            PrefixMode::Auto => self.ai.generate_commit_message_silent(
-                &combined_diff,
-                &recent_commits,
-                None,
-                cli.with_body,
-                agent_context,
-            )?,
-        };
-
-        // スクリプトモードの場合はメッセージを加工
-        if let PrefixMode::Script(result) = prefix_mode {
-            match result {
-                ScriptResult::Prefix(prefix) => {
-                    message = self.apply_prefix(&message, &prefix);
-                }
-                ScriptResult::Empty => {
-                    message = self.strip_type_prefix(&message);
-                }
-                ScriptResult::Failed => {
-                    // AI生成のメッセージをそのまま使用
-                }
-            }
-        }
+        // コミットメッセージを生成（サイレントモード: 進捗抑制、デバッグ出力はstderr）
+        let (message, _provider_name) = self.generate_with_prefix(
+            cli,
+            &combined_diff,
+            &recent_commits,
+            prefix_mode,
+            false,
+            agent_context,
+            true,
+        )?;
 
         // 標準出力にメッセージのみを出力（余計な装飾なし）
         println!("{}", message);
@@ -1050,11 +991,7 @@ impl App {
         }
 
         // プレフィックスモードを判定
-        let prefix_mode = if cli.quiet {
-            self.get_prefix_mode_silent()
-        } else {
-            self.get_prefix_mode()
-        };
+        let prefix_mode = self.get_prefix_mode(cli.quiet);
 
         // フォーマット検出用に直近のコミットを取得（対象コミットより新しいものを除く）
         let recent_commits = self.git.get_recent_commits(5 + n)?;
@@ -1080,6 +1017,7 @@ impl App {
             prefix_mode,
             false,
             agent_context,
+            false,
         )?;
 
         // 生成されたメッセージを表示

@@ -399,6 +399,7 @@ Instructions:
     /// - Some(other): カスタム形式
     ///
     /// with_body: true の場合、本文（body）付きのコミットメッセージを生成
+    /// silent: true の場合、進捗出力を抑制（サイレントモード）
     /// 返り値: (メッセージ, プロバイダー名)
     pub fn generate_commit_message(
         &self,
@@ -406,6 +407,7 @@ Instructions:
         recent_commits: &[String],
         prefix_type: Option<&str>,
         with_body: bool,
+        silent: bool,
         agent_context: Option<&str>,
     ) -> Result<(String, &'static str), AppError> {
         self.generate_commit_message_internal(
@@ -413,27 +415,7 @@ Instructions:
             recent_commits,
             prefix_type,
             with_body,
-            false,
-            agent_context,
-        )
-    }
-
-    /// サイレントモードでコミットメッセージを生成（進捗出力なし）
-    /// 返り値: (メッセージ, プロバイダー名)
-    pub fn generate_commit_message_silent(
-        &self,
-        diff: &str,
-        recent_commits: &[String],
-        prefix_type: Option<&str>,
-        with_body: bool,
-        agent_context: Option<&str>,
-    ) -> Result<(String, &'static str), AppError> {
-        self.generate_commit_message_internal(
-            diff,
-            recent_commits,
-            prefix_type,
-            with_body,
-            true,
+            silent,
             agent_context,
         )
     }
