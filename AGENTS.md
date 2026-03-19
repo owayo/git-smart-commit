@@ -69,6 +69,10 @@ Reword safety note:
 - `GitService` validates that a `--reword` target hash is in the current `HEAD` history before merge-range checks and position calculation.
 - If the hash exists but is outside the current history (e.g., another branch), reword fails with an error.
 - Rewording the oldest commit in the current branch is supported by switching to `git rebase -i --root` when needed.
+- The temporary message file used during reword is created with a unique name and cleaned up automatically to avoid collisions between concurrent runs.
+
+Amend safety note:
+- `GitService` reads the last-commit diff via `git show HEAD`, so `--amend` also works when the current `HEAD` is the root commit.
 
 ### AI Provider Implementation
 
@@ -91,6 +95,9 @@ When invoked from a coding agent, `App::run()` reads the `CLAW_HOOKS_AGENT_MESSA
 | `~/.config/git-sc/config.toml` | Global user settings |
 | `.git-sc` | Project-level overrides (repo root) |
 | `.git-sc-ignore` | Patterns to exclude from diff |
+
+`.git-sc-ignore` note:
+- Patterns are matched against decoded Git paths, including quoted diff headers with non-ASCII filenames.
 
 ## Testing
 

@@ -369,6 +369,22 @@ fn test_quiet_amend_dry_run_with_ai_generation_suppresses_provider_output() {
 }
 
 #[test]
+fn test_amend_dry_run_with_single_commit_repo() {
+    let dir = setup_git_repo_with_commit();
+    let path = setup_fake_opencode_path(&dir);
+
+    git_sc!()
+        .args(["--amend", "--dry-run"])
+        .env("PATH", path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("feat:"));
+}
+
+#[test]
 fn test_quiet_reword_dry_run_with_ai_generation_suppresses_provider_output() {
     let dir = setup_git_repo_with_commit();
     let path = setup_fake_opencode_path(&dir);

@@ -1,5 +1,8 @@
+use std::fs::OpenOptions;
+use std::io::{ErrorKind, Write};
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
@@ -17,6 +20,67 @@ pub enum ScriptResult {
     Empty,
     /// スクリプトが失敗（exit 1）→ AI生成のメッセージをそのまま使用
     Failed,
+}
+
+/// reword 用コミットメッセージ一時ファイル
+///
+/// 固定名を避けて一意なファイルを作成し、Drop 時に自動削除する。
+struct TempRewordMessageFile {
+    path: PathBuf,
+}
+
+impl TempRewordMessageFile {
+    /// 競合しない一時ファイルを作成し、コミットメッセージを書き込む
+    fn create(message: &str) -> Result<Self, AppError> {
+        let temp_dir = std::env::temp_dir();
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+
+        for attempt in 0..100 {
+            let path = temp_dir.join(format!(
+                "git-sc-reword-message-{}-{}-{}.txt",
+                std::process::id(),
+                timestamp,
+                attempt
+            ));
+
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(mut file) => {
+                    file.write_all(message.as_bytes()).map_err(|e| {
+                        AppError::GitError(format!("Failed to write temp file: {}", e))
+                    })?;
+                    file.sync_all().map_err(|e| {
+                        AppError::GitError(format!("Failed to sync temp file: {}", e))
+                    })?;
+                    drop(file);
+                    return Ok(Self { path });
+                }
+                Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
+                Err(e) => {
+                    return Err(AppError::GitError(format!(
+                        "Failed to create temp file: {}",
+                        e
+                    )));
+                }
+            }
+        }
+
+        Err(AppError::GitError(
+            "Failed to create unique temp file".to_string(),
+        ))
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Drop for TempRewordMessageFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 /// Git操作サービス
@@ -171,45 +235,70 @@ impl GitService {
         let rest = rest.trim_start();
 
         let a_path = if let Some(after_quote) = rest.strip_prefix('"') {
-            // "a/path with space.txt" 形式の引用符付きパスを正しく扱う
-            let mut parsed = String::new();
-            let mut escaped = false;
-            let mut closed_quote = false;
-
-            for ch in after_quote.chars() {
-                if escaped {
-                    let unescaped = match ch {
-                        'n' => '\n',
-                        't' => '\t',
-                        'r' => '\r',
-                        '\\' => '\\',
-                        '"' => '"',
-                        _ => ch,
-                    };
-                    parsed.push(unescaped);
-                    escaped = false;
-                    continue;
-                }
-
-                match ch {
-                    '\\' => escaped = true,
-                    '"' => {
-                        closed_quote = true;
-                        break;
-                    }
-                    _ => parsed.push(ch),
-                }
-            }
-
-            if escaped || !closed_quote || parsed.is_empty() {
-                return None;
-            }
-            parsed
+            Self::decode_quoted_diff_path(after_quote)?
         } else {
             rest.split_whitespace().next()?.to_string()
         };
 
         a_path.strip_prefix("a/").map(str::to_string)
+    }
+
+    /// Git の quoted path をデコードする
+    ///
+    /// Git は `core.quotePath=true` のとき、非 ASCII 文字を 8 進エスケープで出力する。
+    /// `.git-sc-ignore` との照合に使うため、実際のパス文字列へ復元する。
+    fn decode_quoted_diff_path(input: &str) -> Option<String> {
+        fn is_octal(byte: u8) -> bool {
+            matches!(byte, b'0'..=b'7')
+        }
+
+        let bytes = input.as_bytes();
+        let mut decoded = Vec::new();
+        let mut i = 0;
+        let mut closed_quote = false;
+
+        while i < bytes.len() {
+            match bytes[i] {
+                b'"' => {
+                    closed_quote = true;
+                    break;
+                }
+                b'\\' => {
+                    i += 1;
+                    let escaped = *bytes.get(i)?;
+
+                    match escaped {
+                        b'n' => decoded.push(b'\n'),
+                        b't' => decoded.push(b'\t'),
+                        b'r' => decoded.push(b'\r'),
+                        b'\\' => decoded.push(b'\\'),
+                        b'"' => decoded.push(b'"'),
+                        b'0'..=b'7' => {
+                            let second = *bytes.get(i + 1)?;
+                            let third = *bytes.get(i + 2)?;
+                            if !is_octal(second) || !is_octal(third) {
+                                return None;
+                            }
+
+                            let value =
+                                (escaped - b'0') * 64 + (second - b'0') * 8 + (third - b'0');
+                            decoded.push(value);
+                            i += 2;
+                        }
+                        other => decoded.push(other),
+                    }
+                }
+                byte => decoded.push(byte),
+            }
+
+            i += 1;
+        }
+
+        if !closed_quote || decoded.is_empty() {
+            return None;
+        }
+
+        Some(String::from_utf8_lossy(&decoded).into_owned())
     }
 
     /// diffを最大文字数に切り詰める
@@ -431,8 +520,7 @@ impl GitService {
 
     /// 直前のコミットのdiffを取得（バイナリファイル、.git-sc-ignore対象、空白のみの変更を除外）
     pub fn get_last_commit_diff(&self) -> Result<String, AppError> {
-        let raw = self.run_git(&["diff", "-w", "-U0", "HEAD~1", "HEAD"])?;
-        Ok(self.apply_all_filters(&raw))
+        self.get_commit_diff_by_hash("HEAD")
     }
 
     /// 直前のコミットを新しいメッセージで修正
@@ -654,11 +742,8 @@ impl GitService {
             return Err(AppError::HasMergeCommits);
         }
 
-        // 一時ファイルにメッセージを保存
-        let temp_dir = std::env::temp_dir();
-        let msg_file = temp_dir.join("git-sc-reword-message.txt");
-        std::fs::write(&msg_file, new_message)
-            .map_err(|e| AppError::GitError(format!("Failed to create temp file: {}", e)))?;
+        // 一意な一時ファイルにメッセージを保存
+        let msg_file = TempRewordMessageFile::create(new_message)?;
 
         // GIT_SEQUENCE_EDITOR: 先頭の pick を reword に置換
         // シェル経由で実行するため、sh -c でラップする
@@ -676,11 +761,11 @@ impl GitService {
         let editor = if cfg!(windows) {
             format!(
                 "powershell -Command \"Copy-Item '{}' $args[0]\"",
-                msg_file.display()
+                msg_file.path().display()
             )
         } else {
             // sh -c でラップ
-            format!("sh -c 'cp \"{}\" \"$1\"' --", msg_file.display())
+            format!("sh -c 'cp \"{}\" \"$1\"' --", msg_file.path().display())
         };
 
         // git rebase -i を実行（最古コミット対象時は --root を使う）
@@ -699,9 +784,6 @@ impl GitService {
             .current_dir(&self.repo_path)
             .output()
             .map_err(|e| AppError::GitError(e.to_string()))?;
-
-        // 一時ファイルを削除
-        let _ = std::fs::remove_file(&msg_file);
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1580,6 +1662,28 @@ index 555..666 100644
         assert_eq!(messages.lines().next(), Some("rewritten root"));
     }
 
+    #[test]
+    fn test_temp_reword_message_file_uses_unique_paths() {
+        let first = TempRewordMessageFile::create("first").unwrap();
+        let second = TempRewordMessageFile::create("second").unwrap();
+
+        assert_ne!(first.path(), second.path());
+        assert_eq!(std::fs::read_to_string(first.path()).unwrap(), "first");
+        assert_eq!(std::fs::read_to_string(second.path()).unwrap(), "second");
+    }
+
+    #[test]
+    fn test_temp_reword_message_file_is_cleaned_up_on_drop() {
+        let path = {
+            let file = TempRewordMessageFile::create("cleanup").unwrap();
+            let path = file.path().to_path_buf();
+            assert!(path.exists());
+            path
+        };
+
+        assert!(!path.exists());
+    }
+
     // ============================================================
     // get_commit_message_by_hash のテスト
     // ============================================================
@@ -1599,6 +1703,30 @@ index 555..666 100644
         assert!(result.is_err());
     }
 
+    #[test]
+    fn test_get_last_commit_diff_on_root_commit() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let repo = temp_dir.path();
+
+        run_git_in(repo, &["init"]);
+        run_git_in(repo, &["config", "user.name", "Test User"]);
+        run_git_in(repo, &["config", "user.email", "test@example.com"]);
+
+        std::fs::write(repo.join("file.txt"), "first\n").unwrap();
+        run_git_in(repo, &["add", "file.txt"]);
+        run_git_in(repo, &["commit", "-m", "initial commit"]);
+
+        let service = GitService {
+            repo_path: repo.to_path_buf(),
+        };
+
+        let diff = service.get_last_commit_diff().unwrap();
+        assert!(diff.contains("diff --git"));
+        assert!(diff.contains("+first"));
+    }
+
     // ============================================================
     // extract_file_path_from_diff_header: エスケープ・エッジケース
     // ============================================================
@@ -1616,6 +1744,14 @@ index 555..666 100644
         let header = "diff --git \"a/file\\twith\\ttab.txt\" \"b/file\\twith\\ttab.txt\"";
         let result = GitService::extract_file_path_from_diff_header(header);
         assert_eq!(result, Some("file\twith\ttab.txt".to_string()));
+    }
+
+    #[test]
+    fn test_extract_file_path_octal_escaped_utf8() {
+        let header =
+            r#"diff --git "a/\346\227\245\346\234\254.txt" "b/\346\227\245\346\234\254.txt""#;
+        let result = GitService::extract_file_path_from_diff_header(header);
+        assert_eq!(result, Some("日本.txt".to_string()));
     }
 
     #[test]
@@ -1673,6 +1809,26 @@ index 555..666 100644
         assert!(result.contains("some content line"));
     }
 
+    #[test]
+    fn test_filter_ignored_files_with_octal_escaped_utf8_path() {
+        let mut builder = GitignoreBuilder::new(".");
+        builder.add_line(None, "日本.txt").unwrap();
+        let ignore = builder.build().unwrap();
+        let diff = concat!(
+            "diff --git \"a/\\346\\227\\245\\346\\234\\254.txt\" ",
+            "\"b/\\346\\227\\245\\346\\234\\254.txt\"\n",
+            "index 1234567..89abcde 100644\n",
+            "--- \"a/\\346\\227\\245\\346\\234\\254.txt\"\n",
+            "+++ \"b/\\346\\227\\245\\346\\234\\254.txt\"\n",
+            "@@ -1 +1 @@\n",
+            "-old\n",
+            "+new\n"
+        );
+
+        let result = GitService::filter_ignored_files(diff, &ignore);
+        assert!(result.is_empty());
+    }
+
     // ============================================================
     // truncate_diff: マルチバイト文字の境界
     // ============================================================
@@ -1694,5 +1850,308 @@ index 555..666 100644
         // 結果の文字数がMAX_DIFF_CHARS以下（切り詰めメッセージ分を除く）
         let without_msg = result.split("\n\n... (diff truncated").next().unwrap();
         assert!(without_msg.chars().count() <= MAX_DIFF_CHARS);
+    }
+
+    // ============================================================
+    // decode_quoted_diff_path: エスケープシーケンスのエッジケース
+    // ============================================================
+
+    #[test]
+    fn test_decode_quoted_path_newline_escape() {
+        // \n エスケープが改行文字にデコードされる
+        let result = GitService::decode_quoted_diff_path(r#"a/file\nname.txt""#);
+        assert_eq!(result, Some("a/file\nname.txt".to_string()));
+    }
+
+    #[test]
+    fn test_decode_quoted_path_carriage_return_escape() {
+        // \r エスケープが復帰文字にデコードされる
+        let result = GitService::decode_quoted_diff_path(r#"a/file\rname.txt""#);
+        assert_eq!(result, Some("a/file\rname.txt".to_string()));
+    }
+
+    #[test]
+    fn test_decode_quoted_path_escaped_quote() {
+        // \" エスケープがクォート文字にデコードされる
+        let result = GitService::decode_quoted_diff_path(r#"a/file\"name.txt""#);
+        assert_eq!(result, Some("a/file\"name.txt".to_string()));
+    }
+
+    #[test]
+    fn test_decode_quoted_path_incomplete_octal() {
+        // 8進数エスケープが2桁しかない場合は None
+        let result = GitService::decode_quoted_diff_path(r#"a/\34""#);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_decode_quoted_path_non_octal_after_backslash_digit() {
+        // 8進数の2桁目が非8進数文字の場合は None
+        let result = GitService::decode_quoted_diff_path(r#"a/\389.txt""#);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_decode_quoted_path_unknown_escape_passthrough() {
+        // 未知のエスケープ文字はそのまま通過する
+        let result = GitService::decode_quoted_diff_path(r#"a/file\xname.txt""#);
+        assert_eq!(result, Some("a/filexname.txt".to_string()));
+    }
+
+    #[test]
+    fn test_decode_quoted_path_no_closing_quote() {
+        // 閉じクォートがない場合は None
+        let result = GitService::decode_quoted_diff_path("a/file.txt");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_decode_quoted_path_empty_content() {
+        // 空のパス（即座に閉じクォート）は None
+        let result = GitService::decode_quoted_diff_path("\"");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_decode_quoted_path_max_octal_value() {
+        // 最大8進数値 \377 = 255 (u8最大値)
+        let result = GitService::decode_quoted_diff_path(r#"a/\377""#);
+        assert!(result.is_some());
+        let decoded = result.unwrap();
+        // "a/" (2バイト) + 0xFF (1バイト)
+        // from_utf8_lossy が 0xFF を U+FFFD に変換する
+        assert!(decoded.starts_with("a/"));
+    }
+
+    #[test]
+    fn test_decode_quoted_path_mixed_escapes() {
+        // 複数のエスケープが混在するパス
+        let result = GitService::decode_quoted_diff_path(r#"a/\346\227\245\\path\tfile.txt""#);
+        assert!(result.is_some());
+        let decoded = result.unwrap();
+        assert!(decoded.contains("日"));
+        assert!(decoded.contains("\\"));
+        assert!(decoded.contains("\t"));
+    }
+
+    // ============================================================
+    // has_merge_commits_in_range: 実Gitリポジトリでの境界テスト
+    // ============================================================
+
+    #[test]
+    fn test_has_merge_commits_in_range_zero() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let repo = temp_dir.path();
+
+        run_git_in(repo, &["init"]);
+        run_git_in(repo, &["config", "user.name", "Test User"]);
+        run_git_in(repo, &["config", "user.email", "test@example.com"]);
+
+        std::fs::write(repo.join("file.txt"), "content\n").unwrap();
+        run_git_in(repo, &["add", "file.txt"]);
+        run_git_in(repo, &["commit", "-m", "initial"]);
+
+        let service = GitService {
+            repo_path: repo.to_path_buf(),
+        };
+
+        // n=0 は InvalidRewordTarget エラー
+        let result = service.has_merge_commits_in_range(0);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_has_merge_commits_in_range_exceeds_total() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let repo = temp_dir.path();
+
+        run_git_in(repo, &["init"]);
+        run_git_in(repo, &["config", "user.name", "Test User"]);
+        run_git_in(repo, &["config", "user.email", "test@example.com"]);
+
+        std::fs::write(repo.join("file.txt"), "content\n").unwrap();
+        run_git_in(repo, &["add", "file.txt"]);
+        run_git_in(repo, &["commit", "-m", "initial"]);
+
+        let service = GitService {
+            repo_path: repo.to_path_buf(),
+        };
+
+        // n=2 だがコミットは1つだけ → InvalidRewordTarget
+        let result = service.has_merge_commits_in_range(2);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_has_merge_commits_in_range_equal_total() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let repo = temp_dir.path();
+
+        run_git_in(repo, &["init"]);
+        run_git_in(repo, &["config", "user.name", "Test User"]);
+        run_git_in(repo, &["config", "user.email", "test@example.com"]);
+
+        std::fs::write(repo.join("file.txt"), "first\n").unwrap();
+        run_git_in(repo, &["add", "file.txt"]);
+        run_git_in(repo, &["commit", "-m", "first"]);
+
+        std::fs::write(repo.join("file.txt"), "second\n").unwrap();
+        run_git_in(repo, &["add", "file.txt"]);
+        run_git_in(repo, &["commit", "-m", "second"]);
+
+        let service = GitService {
+            repo_path: repo.to_path_buf(),
+        };
+
+        // n == total_commits（最古コミット含む範囲）→ 正常動作
+        let result = service.has_merge_commits_in_range(2);
+        assert!(result.is_ok());
+        assert!(!result.unwrap()); // マージコミットなし
+    }
+
+    #[test]
+    fn test_has_merge_commits_in_range_no_merge() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let repo = temp_dir.path();
+
+        run_git_in(repo, &["init"]);
+        run_git_in(repo, &["config", "user.name", "Test User"]);
+        run_git_in(repo, &["config", "user.email", "test@example.com"]);
+
+        std::fs::write(repo.join("file.txt"), "first\n").unwrap();
+        run_git_in(repo, &["add", "file.txt"]);
+        run_git_in(repo, &["commit", "-m", "first"]);
+
+        std::fs::write(repo.join("file.txt"), "second\n").unwrap();
+        run_git_in(repo, &["add", "file.txt"]);
+        run_git_in(repo, &["commit", "-m", "second"]);
+
+        std::fs::write(repo.join("file.txt"), "third\n").unwrap();
+        run_git_in(repo, &["add", "file.txt"]);
+        run_git_in(repo, &["commit", "-m", "third"]);
+
+        let service = GitService {
+            repo_path: repo.to_path_buf(),
+        };
+
+        // 直近1コミットの範囲にマージコミットなし
+        let result = service.has_merge_commits_in_range(1);
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
+    }
+
+    // ============================================================
+    // get_commit_diff_by_hash: エッジケーステスト
+    // ============================================================
+
+    #[test]
+    fn test_get_commit_diff_by_hash_valid() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let repo = temp_dir.path();
+
+        run_git_in(repo, &["init"]);
+        run_git_in(repo, &["config", "user.name", "Test User"]);
+        run_git_in(repo, &["config", "user.email", "test@example.com"]);
+
+        std::fs::write(repo.join("file.txt"), "content\n").unwrap();
+        run_git_in(repo, &["add", "file.txt"]);
+        run_git_in(repo, &["commit", "-m", "test commit"]);
+
+        let service = GitService {
+            repo_path: repo.to_path_buf(),
+        };
+
+        let result = service.get_commit_diff_by_hash("HEAD");
+        assert!(result.is_ok());
+        assert!(result.unwrap().contains("file.txt"));
+    }
+
+    #[test]
+    fn test_get_commit_diff_by_hash_invalid_in_temp_repo() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let repo = temp_dir.path();
+
+        run_git_in(repo, &["init"]);
+        run_git_in(repo, &["config", "user.name", "Test User"]);
+        run_git_in(repo, &["config", "user.email", "test@example.com"]);
+
+        std::fs::write(repo.join("file.txt"), "content\n").unwrap();
+        run_git_in(repo, &["add", "file.txt"]);
+        run_git_in(repo, &["commit", "-m", "test"]);
+
+        let service = GitService {
+            repo_path: repo.to_path_buf(),
+        };
+
+        let result = service.get_commit_diff_by_hash("0000000000000000000000000000000000000000");
+        assert!(result.is_err());
+    }
+
+    // ============================================================
+    // verify_commit_hash: 境界テスト
+    // ============================================================
+
+    #[test]
+    fn test_verify_commit_hash_valid_head() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let repo = temp_dir.path();
+
+        run_git_in(repo, &["init"]);
+        run_git_in(repo, &["config", "user.name", "Test User"]);
+        run_git_in(repo, &["config", "user.email", "test@example.com"]);
+
+        std::fs::write(repo.join("file.txt"), "content\n").unwrap();
+        run_git_in(repo, &["add", "file.txt"]);
+        run_git_in(repo, &["commit", "-m", "test"]);
+
+        let service = GitService {
+            repo_path: repo.to_path_buf(),
+        };
+
+        assert!(service.verify_commit_hash("HEAD").is_ok());
+    }
+
+    #[test]
+    fn test_verify_commit_hash_invalid() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let repo = temp_dir.path();
+
+        run_git_in(repo, &["init"]);
+        run_git_in(repo, &["config", "user.name", "Test User"]);
+        run_git_in(repo, &["config", "user.email", "test@example.com"]);
+
+        std::fs::write(repo.join("file.txt"), "content\n").unwrap();
+        run_git_in(repo, &["add", "file.txt"]);
+        run_git_in(repo, &["commit", "-m", "test"]);
+
+        let service = GitService {
+            repo_path: repo.to_path_buf(),
+        };
+
+        // 無効なハッシュ形式（16進数ではない文字を含む）
+        let result = service.verify_commit_hash("not-a-valid-hash");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AppError::InvalidCommitHash(hash) => {
+                assert_eq!(hash, "not-a-valid-hash");
+            }
+            other => panic!("Expected InvalidCommitHash, got {:?}", other),
+        }
     }
 }

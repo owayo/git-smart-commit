@@ -413,4 +413,97 @@ mod tests {
         let demoted = state.get_demoted_providers(60);
         assert_eq!(demoted.len(), 3);
     }
+
+    #[test]
+    fn test_get_demoted_providers_at_cooldown_boundary() {
+        // クールダウン境界値: ちょうど60分前の失敗は期限切れ
+        let mut state = State::default();
+        let exactly_60_min_ago = State::now() - (60 * 60);
+        state.provider_failures.insert(
+            "gemini".to_string(),
+            ProviderFailure {
+                failed_at: exactly_60_min_ago,
+            },
+        );
+
+        let demoted = state.get_demoted_providers(60);
+        // elapsed == cooldown_secs なので期限切れ
+        assert!(demoted.is_empty());
+    }
+
+    #[test]
+    fn test_get_demoted_providers_just_before_boundary() {
+        // クールダウン境界値: 59分59秒前の失敗はまだクールダウン中
+        let mut state = State::default();
+        let just_before = State::now() - (60 * 60 - 1);
+        state.provider_failures.insert(
+            "gemini".to_string(),
+            ProviderFailure {
+                failed_at: just_before,
+            },
+        );
+
+        let demoted = state.get_demoted_providers(60);
+        assert!(demoted.contains(&"gemini".to_string()));
+    }
+
+    #[test]
+    fn test_state_deserialize_from_malformed_toml() {
+        // 不正なTOMLからのデシリアライズはエラー
+        let result: Result<State, _> = toml::from_str("invalid[[[toml");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_state_deserialize_empty_toml() {
+        // 空のTOMLからデシリアライズするとデフォルト状態
+        let state: State = toml::from_str("").unwrap();
+        assert!(state.provider_failures.is_empty());
+    }
+
+    #[test]
+    fn test_cleanup_expired_at_boundary() {
+        // クールダウンちょうどの境界でクリーンアップされる
+        let mut state = State::default();
+        let exactly_at_boundary = State::now() - (30 * 60);
+        state.provider_failures.insert(
+            "gemini".to_string(),
+            ProviderFailure {
+                failed_at: exactly_at_boundary,
+            },
+        );
+
+        // 30分のクールダウンでちょうど30分前 → elapsed == cooldown_secs → 期限切れ
+        state.cleanup_expired(30);
+        assert!(state.provider_failures.is_empty());
+    }
+
+    #[test]
+    fn test_reorder_providers_demoted_not_in_list() {
+        // 降格されたプロバイダーがリストに含まれない場合、リストは変更なし
+        let mut state = State::default();
+        state.record_failure("unknown_provider");
+
+        let providers = vec!["gemini".to_string(), "claude".to_string()];
+
+        let reordered = state.reorder_providers(providers.clone(), 60);
+        assert_eq!(reordered, providers);
+    }
+
+    #[test]
+    fn test_state_path_ends_with_expected_filename() {
+        let path = State::state_path().unwrap();
+        assert!(path.file_name().unwrap().to_str().unwrap() == ".providers-state");
+    }
+
+    #[test]
+    fn test_provider_failure_serialization() {
+        // ProviderFailure 単体のシリアライズ・デシリアライズ
+        let failure = ProviderFailure {
+            failed_at: 1234567890,
+        };
+        let serialized = toml::to_string(&failure).unwrap();
+        let deserialized: ProviderFailure = toml::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.failed_at, 1234567890);
+    }
 }
