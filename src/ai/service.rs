@@ -101,6 +101,9 @@ impl AiProvider {
     }
 }
 
+/// claw-hooks の stop hook 経由で呼ばれたことを示す環境変数
+const STOP_ACTIVE_ENV: &str = "CLAW_HOOKS_STOP_ACTIVE";
+
 /// フォールバック機能付きのAIサービス
 pub struct AiService {
     providers: Vec<AiProvider>,
@@ -110,6 +113,8 @@ pub struct AiService {
     timeout_seconds: u64,
     debug: bool,
     provider_override: bool,
+    /// stop hook コンテキスト内で実行中かどうか（ループ防止用）
+    stop_hook_active: bool,
 }
 
 impl AiService {
@@ -158,6 +163,7 @@ impl AiService {
             timeout_seconds: config.provider_timeout_seconds,
             debug: false,
             provider_override: false,
+            stop_hook_active: std::env::var(STOP_ACTIVE_ENV).is_ok(),
         }
     }
 
@@ -171,6 +177,7 @@ impl AiService {
             timeout_seconds: 60,  // デフォルト60秒（Config::defaultと同値）
             debug: false,
             provider_override: false,
+            stop_hook_active: std::env::var(STOP_ACTIVE_ENV).is_ok(),
         }
     }
 
@@ -209,7 +216,7 @@ impl AiService {
                 } else {
                     format!(" --model '{}'", self.models.codex)
                 };
-                let hooks_arg = if std::env::var("CLAW_HOOKS_STOP_ACTIVE").is_ok() {
+                let hooks_arg = if self.stop_hook_active {
                     " --disable codex_hooks"
                 } else {
                     ""
@@ -582,7 +589,7 @@ Instructions:
             AiProvider::Codex => {
                 // Stop hook ループ防止: claw-hooks の stop hook 経由で呼ばれた場合、
                 // Codex のフックを無効化して再帰的な stop hook 発火を防ぐ
-                if std::env::var("CLAW_HOOKS_STOP_ACTIVE").is_ok() {
+                if self.stop_hook_active {
                     cmd.args(["--disable", "codex_hooks"]);
                 }
                 cmd.arg("exec");
@@ -1823,6 +1830,30 @@ mod tests {
         let cmd = service.format_command_for_debug(&AiProvider::Codex, "test", None);
         assert!(cmd.contains("codex exec"));
         assert!(!cmd.contains("--model"));
+    }
+
+    #[test]
+    fn test_format_command_for_debug_codex_stop_hook_active() {
+        let mut service = AiService::new();
+        service.stop_hook_active = true;
+        let cmd = service.format_command_for_debug(&AiProvider::Codex, "test", None);
+        assert!(
+            cmd.contains("--disable codex_hooks"),
+            "stop_hook_active=true should add --disable codex_hooks, got: {}",
+            cmd
+        );
+    }
+
+    #[test]
+    fn test_format_command_for_debug_codex_stop_hook_inactive() {
+        let mut service = AiService::new();
+        service.stop_hook_active = false;
+        let cmd = service.format_command_for_debug(&AiProvider::Codex, "test", None);
+        assert!(
+            !cmd.contains("--disable codex_hooks"),
+            "stop_hook_active=false should not add --disable codex_hooks, got: {}",
+            cmd
+        );
     }
 
     #[test]
