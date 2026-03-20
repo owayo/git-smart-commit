@@ -209,7 +209,15 @@ impl AiService {
                 } else {
                     format!(" --model '{}'", self.models.codex)
                 };
-                format!("echo '{}' | codex exec{}", escaped_prompt, model_arg)
+                let hooks_arg = if std::env::var("CLAW_HOOKS_STOP_ACTIVE").is_ok() {
+                    " --disable codex_hooks"
+                } else {
+                    ""
+                };
+                format!(
+                    "echo '{}' | codex{} exec{}",
+                    escaped_prompt, hooks_arg, model_arg
+                )
             }
             AiProvider::Claude => {
                 let model_arg = if self.models.claude.is_empty() {
@@ -572,6 +580,11 @@ Instructions:
                 false
             }
             AiProvider::Codex => {
+                // Stop hook ループ防止: claw-hooks の stop hook 経由で呼ばれた場合、
+                // Codex のフックを無効化して再帰的な stop hook 発火を防ぐ
+                if std::env::var("CLAW_HOOKS_STOP_ACTIVE").is_ok() {
+                    cmd.args(["--disable", "codex_hooks"]);
+                }
                 cmd.arg("exec");
                 if !self.models.codex.is_empty() {
                     cmd.args(["--model", &self.models.codex]);
