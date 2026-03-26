@@ -512,6 +512,17 @@ impl GitService {
         Ok(())
     }
 
+    /// ステージ済みの変更が存在するかチェック
+    pub fn has_staged_changes(&self) -> bool {
+        // git diff --cached --quiet は差分があると exit 1 を返す
+        Command::new("git")
+            .args(["diff", "--cached", "--quiet"])
+            .current_dir(&self.repo_path)
+            .output()
+            .map(|o| !o.status.success())
+            .unwrap_or(false)
+    }
+
     /// 指定されたメッセージでコミットを作成
     pub fn commit(&self, message: &str) -> Result<(), AppError> {
         self.run_git_ok(&["commit", "-m", message])

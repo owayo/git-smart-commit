@@ -641,6 +641,16 @@ impl App {
 
         // 確認してコミット
         if cli.auto_confirm || self.confirm_commit()? {
+            // コミット直前にステージ済み変更を再確認（race condition 防止）
+            if !self.git.has_staged_changes() {
+                if !cli.quiet {
+                    println!(
+                        "{}",
+                        "ステージ済みの変更がありません。コミットをスキップしました。".yellow()
+                    );
+                }
+                return Ok(());
+            }
             self.git.commit(&message)?;
             if cli.quiet {
                 println!("Committed");
