@@ -2174,4 +2174,179 @@ index 555..666 100644
             other => panic!("Expected InvalidCommitHash, got {:?}", other),
         }
     }
+
+    // ============================================================
+    // truncate_diff: 切り詰めロジックのテスト
+    // ============================================================
+
+    #[test]
+    fn test_truncate_diff_short_input_unchanged() {
+        let diff = "short diff\n";
+        let result = GitService::truncate_diff(diff);
+        assert_eq!(result, diff);
+    }
+
+    #[test]
+    fn test_truncate_diff_exact_limit_unchanged() {
+        // ちょうど MAX_DIFF_CHARS 文字の入力はそのまま返る
+        let diff: String = "a".repeat(10000);
+        let result = GitService::truncate_diff(&diff);
+        assert_eq!(result, diff);
+    }
+
+    #[test]
+    fn test_truncate_diff_over_limit_truncated_at_newline() {
+        // MAX_DIFF_CHARS + 1 文字で、改行で切り詰められる
+        let mut diff = String::new();
+        for i in 0..200 {
+            diff.push_str(&format!("line {}\n", i));
+        }
+        // 10000文字を超えるようにパディング
+        while diff.len() <= 10000 {
+            diff.push_str("padding line with some content here\n");
+        }
+        let result = GitService::truncate_diff(&diff);
+        assert!(result.contains("... (diff truncated: exceeded 10000 characters)"));
+        // 切り詰め位置は改行の直前
+        let content_before_marker = result.split("\n\n... (diff truncated").next().unwrap();
+        assert!(!content_before_marker.ends_with('\n'));
+    }
+
+    #[test]
+    fn test_truncate_diff_no_newline_in_truncated() {
+        // 改行なしで10000文字を超える場合
+        let diff: String = "a".repeat(10001);
+        let result = GitService::truncate_diff(&diff);
+        assert!(result.contains("... (diff truncated: exceeded 10000 characters)"));
+    }
+
+    #[test]
+    fn test_truncate_diff_multibyte_japanese_chars() {
+        // マルチバイト文字（日本語）を含むdiffが正しく切り詰められる
+        // "あ\n" は2文字なので、5001回で10002文字 > MAX_DIFF_CHARS
+        let mut diff = String::new();
+        for _ in 0..5001 {
+            diff.push_str("あ\n");
+        }
+        let result = GitService::truncate_diff(&diff);
+        assert!(result.contains("... (diff truncated: exceeded 10000 characters)"));
+        // パニックしないことが重要
+    }
+
+    // ============================================================
+    // extract_file_path_from_diff_header: パス抽出テスト（追加）
+    // ============================================================
+
+    #[test]
+    fn test_extract_file_path_nested_directory() {
+        let header = "diff --git a/src/ai/service.rs b/src/ai/service.rs";
+        let result = GitService::extract_file_path_from_diff_header(header);
+        assert_eq!(result, Some("src/ai/service.rs".to_string()));
+    }
+
+    #[test]
+    fn test_extract_file_path_no_prefix() {
+        // "diff --git " のみで後続がない場合
+        let result = GitService::extract_file_path_from_diff_header("diff --git ");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_file_path_quoted_with_escape() {
+        let header = r#"diff --git "a/src/te\\st.rs" "b/src/te\\st.rs""#;
+        let result = GitService::extract_file_path_from_diff_header(header);
+        assert_eq!(result, Some("src/te\\st.rs".to_string()));
+    }
+
+    // ============================================================
+    // decode_quoted_diff_path: クォートパスのデコードテスト
+    // ============================================================
+
+    #[test]
+    fn test_decode_quoted_path_tab_escape() {
+        let result = GitService::decode_quoted_diff_path(r#"a/te\tst.rs""#);
+        assert_eq!(result, Some("a/te\tst.rs".to_string()));
+    }
+
+    #[test]
+    fn test_decode_quoted_path_quote_escape() {
+        let result = GitService::decode_quoted_diff_path(r#"a/te\"st.rs""#);
+        assert_eq!(result, Some("a/te\"st.rs".to_string()));
+    }
+
+    #[test]
+    fn test_decode_quoted_path_trailing_backslash() {
+        // バックスラッシュの後に何もない → None
+        let result = GitService::decode_quoted_diff_path("a/test\\");
+        assert_eq!(result, None);
+    }
+
+    // ============================================================
+    // filter_binary_diff: バイナリファイル除外テスト（追加）
+    // ============================================================
+
+    #[test]
+    fn test_filter_binary_diff_multiple_binary_files() {
+        let diff = "diff --git a/a.png b/a.png\nnew file mode 100644\nBinary files /dev/null and b/a.png differ\ndiff --git a/b.jpg b/b.jpg\nBinary files a/b.jpg and b/b.jpg differ";
+        let result = GitService::filter_binary_diff(diff);
+        assert!(result.contains("[Binary] added: a.png"));
+        assert!(result.contains("[Binary] modified: b.jpg"));
+    }
+
+    // ============================================================
+    // filter_ignored_files: ignore パターン除外テスト
+    // ============================================================
+
+    #[test]
+    fn test_filter_ignored_files_no_match() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+        std::fs::write(root.join(".gitignore"), "*.log\n").unwrap();
+
+        let mut builder = ignore::gitignore::GitignoreBuilder::new(root);
+        builder.add(root.join(".gitignore"));
+        let ignore = builder.build().unwrap();
+
+        let diff = "diff --git a/src/main.rs b/src/main.rs\n--- a/src/main.rs\n+++ b/src/main.rs\n-old\n+new";
+        let result = GitService::filter_ignored_files(diff, &ignore);
+        assert_eq!(result, diff);
+    }
+
+    #[test]
+    fn test_filter_ignored_files_match() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+        std::fs::write(root.join(".gitignore"), "*.log\n").unwrap();
+
+        let mut builder = ignore::gitignore::GitignoreBuilder::new(root);
+        builder.add(root.join(".gitignore"));
+        let ignore = builder.build().unwrap();
+
+        let diff =
+            "diff --git a/debug.log b/debug.log\n--- a/debug.log\n+++ b/debug.log\n-old\n+new";
+        let result = GitService::filter_ignored_files(diff, &ignore);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_filter_ignored_files_partial_match() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+        std::fs::write(root.join(".gitignore"), "*.log\n").unwrap();
+
+        let mut builder = ignore::gitignore::GitignoreBuilder::new(root);
+        builder.add(root.join(".gitignore"));
+        let ignore = builder.build().unwrap();
+
+        let diff = "diff --git a/src/main.rs b/src/main.rs\n--- a/src/main.rs\n+++ b/src/main.rs\n-old\n+new\ndiff --git a/debug.log b/debug.log\n--- a/debug.log\n+++ b/debug.log\n-x\n+y";
+        let result = GitService::filter_ignored_files(diff, &ignore);
+        assert!(result.contains("src/main.rs"));
+        assert!(!result.contains("debug.log"));
+    }
 }

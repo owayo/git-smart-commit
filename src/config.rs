@@ -1135,4 +1135,230 @@ unknown_field = "some_value"
         global.merge_with(project);
         assert!(global.nano_buddy);
     }
+
+    // ============================================================
+    // merge_with: 各フィールドのマージ動作テスト
+    // ============================================================
+
+    #[test]
+    fn test_merge_with_providers_override() {
+        let mut global = Config::default();
+        let project = Config {
+            providers: vec!["claude".to_string()],
+            ..Default::default()
+        };
+
+        global.merge_with(project);
+        assert_eq!(global.providers, vec!["claude".to_string()]);
+    }
+
+    #[test]
+    fn test_merge_with_empty_providers_preserves_global() {
+        let mut global = Config::default();
+        let original_providers = global.providers.clone();
+
+        let project = Config {
+            providers: vec![],
+            ..Default::default()
+        };
+
+        global.merge_with(project);
+        assert_eq!(global.providers, original_providers);
+    }
+
+    #[test]
+    fn test_merge_with_language_non_default_overrides() {
+        let mut global = Config::default();
+        let project = Config {
+            language: "English".to_string(),
+            ..Default::default()
+        };
+
+        global.merge_with(project);
+        assert_eq!(global.language, "English");
+    }
+
+    #[test]
+    fn test_merge_with_language_default_preserves_global() {
+        let mut global = Config {
+            language: "English".to_string(),
+            ..Default::default()
+        };
+
+        // プロジェクト設定がデフォルト言語（Japanese）の場合、グローバルを保持
+        let project = Config::default();
+        global.merge_with(project);
+        assert_eq!(global.language, "English");
+    }
+
+    #[test]
+    fn test_merge_with_prefix_type_some_overrides() {
+        let mut global = Config::default();
+        assert!(global.prefix_type.is_none());
+
+        let project = Config {
+            prefix_type: Some("bracket".to_string()),
+            ..Default::default()
+        };
+
+        global.merge_with(project);
+        assert_eq!(global.prefix_type, Some("bracket".to_string()));
+    }
+
+    #[test]
+    fn test_merge_with_prefix_type_none_preserves_global() {
+        let mut global = Config {
+            prefix_type: Some("conventional".to_string()),
+            ..Default::default()
+        };
+
+        let project = Config {
+            prefix_type: None,
+            ..Default::default()
+        };
+
+        global.merge_with(project);
+        assert_eq!(global.prefix_type, Some("conventional".to_string()));
+    }
+
+    #[test]
+    fn test_merge_with_auto_push_some_overrides() {
+        let mut global = Config {
+            auto_push: Some(false),
+            ..Default::default()
+        };
+
+        let project = Config {
+            auto_push: Some(true),
+            ..Default::default()
+        };
+
+        global.merge_with(project);
+        assert_eq!(global.auto_push, Some(true));
+    }
+
+    #[test]
+    fn test_merge_with_cooldown_non_default_overrides() {
+        let mut global = Config::default();
+        assert_eq!(global.provider_cooldown_minutes, 60);
+
+        let project = Config {
+            provider_cooldown_minutes: 30,
+            ..Default::default()
+        };
+
+        global.merge_with(project);
+        assert_eq!(global.provider_cooldown_minutes, 30);
+    }
+
+    #[test]
+    fn test_merge_with_cooldown_default_preserves_global() {
+        let mut global = Config {
+            provider_cooldown_minutes: 30,
+            ..Default::default()
+        };
+
+        // デフォルト（60）はグローバルの30を上書きしない
+        let project = Config::default();
+        global.merge_with(project);
+        assert_eq!(global.provider_cooldown_minutes, 30);
+    }
+
+    #[test]
+    fn test_merge_with_timeout_non_default_overrides() {
+        let mut global = Config::default();
+        assert_eq!(global.provider_timeout_seconds, 60);
+
+        let project = Config {
+            provider_timeout_seconds: 120,
+            ..Default::default()
+        };
+
+        global.merge_with(project);
+        assert_eq!(global.provider_timeout_seconds, 120);
+    }
+
+    #[test]
+    fn test_merge_with_models_partial_override() {
+        let mut global = Config::default();
+
+        let project = Config {
+            models: ModelsConfig {
+                gemini: "gemini-2.5-pro".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        global.merge_with(project);
+        // gemini のみ上書きされる
+        assert_eq!(global.models.gemini, "gemini-2.5-pro");
+        // 他はデフォルトのまま
+        assert_eq!(global.models.codex, "gpt-5.1-codex-mini");
+        assert_eq!(global.models.claude, "haiku");
+    }
+
+    #[test]
+    fn test_merge_with_nano_buddy_false_preserves_global_true() {
+        let mut global = Config {
+            nano_buddy: true,
+            ..Default::default()
+        };
+
+        let project = Config {
+            nano_buddy: false,
+            ..Default::default()
+        };
+
+        // nano_buddy は true で上書きのみなので、false では上書きされない
+        global.merge_with(project);
+        assert!(global.nano_buddy);
+    }
+
+    // ============================================================
+    // Config::from_str: パースエッジケーステスト
+    // ============================================================
+
+    #[test]
+    fn test_parse_empty_config_uses_defaults() {
+        let config = Config::from_str("").unwrap();
+        // 全てデフォルト値
+        assert!(config.providers.is_empty());
+        assert_eq!(config.language, "Japanese");
+        assert_eq!(config.provider_cooldown_minutes, 60);
+    }
+
+    #[test]
+    fn test_parse_config_with_multiple_prefix_rules() {
+        let toml = r#"
+            [[prefix_rules]]
+            url_pattern = "github\\.com[:/]myorg/"
+            prefix_type = "conventional"
+
+            [[prefix_rules]]
+            url_pattern = "gitlab\\.com"
+            prefix_type = "bracket"
+        "#;
+
+        let config = Config::from_str(toml).unwrap();
+        assert_eq!(config.prefix_rules.len(), 2);
+        assert_eq!(config.prefix_rules[0].prefix_type, "conventional");
+        assert_eq!(config.prefix_rules[1].prefix_type, "bracket");
+    }
+
+    #[test]
+    fn test_parse_config_cooldown_zero_disables() {
+        let toml = r#"
+            provider_cooldown_minutes = 0
+        "#;
+
+        let config = Config::from_str(toml).unwrap();
+        assert_eq!(config.provider_cooldown_minutes, 0);
+    }
+
+    #[test]
+    fn test_parse_invalid_toml_returns_error() {
+        let result = Config::from_str("invalid [[ toml");
+        assert!(result.is_err());
+    }
 }

@@ -108,7 +108,7 @@ mod tests {
     #[test]
     fn test_default_config_is_valid_toml() {
         let content = Config::default_config_content();
-        // Should parse as valid TOML
+        // 有効なTOMLとしてパースできることを検証
         let result: Result<toml::Value, _> = toml::from_str(&content);
         assert!(result.is_ok(), "Config content should be valid TOML");
     }
