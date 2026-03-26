@@ -108,9 +108,18 @@ impl GitService {
             .output()
             .map_err(|e| AppError::GitError(e.to_string()))?;
         if !output.status.success() {
-            return Err(AppError::GitError(
-                String::from_utf8_lossy(&output.stderr).to_string(),
-            ));
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let msg = if stderr.is_empty() {
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if stdout.is_empty() {
+                    format!("exit code: {}", output.status)
+                } else {
+                    stdout
+                }
+            } else {
+                stderr
+            };
+            return Err(AppError::GitError(msg));
         }
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
