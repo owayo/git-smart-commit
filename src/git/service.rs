@@ -1,6 +1,6 @@
 use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -190,6 +190,25 @@ impl GitService {
         }
 
         builder.build().ok()
+    }
+
+    /// プレフィックススクリプトを実行する基準ディレクトリを取得
+    ///
+    /// `.git-sc` は Git ルートに置かれるため、相対パスの解決と
+    /// スクリプトの作業ディレクトリは Git ルートにそろえる。
+    fn prefix_script_base_dir(&self) -> PathBuf {
+        self.get_git_root()
+            .unwrap_or_else(|| self.repo_path.clone())
+    }
+
+    /// プレフィックススクリプトの実行パスを解決
+    fn resolve_prefix_script_path(&self, script: &str) -> PathBuf {
+        let script_path = Path::new(script);
+        if script_path.is_absolute() {
+            script_path.to_path_buf()
+        } else {
+            self.prefix_script_base_dir().join(script_path)
+        }
     }
 
     /// diffからignoreパターンにマッチするファイルを除外
@@ -575,9 +594,12 @@ impl GitService {
     ) -> Option<ScriptResult> {
         use std::process::Stdio;
 
-        let output = Command::new(script)
+        let base_dir = self.prefix_script_base_dir();
+        let script_path = self.resolve_prefix_script_path(script);
+
+        let output = Command::new(&script_path)
             .args([remote_url, branch])
-            .current_dir(&self.repo_path)
+            .current_dir(base_dir)
             .stderr(Stdio::inherit()) // stderrは直接ターミナルに出力
             .output()
             .ok()?;
@@ -1643,6 +1665,107 @@ index 555..666 100644
             args,
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    /// テスト用の一時 Git リポジトリを作成する
+    fn setup_temp_git_repo() -> tempfile::TempDir {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let repo = temp_dir.path();
+
+        run_git_in(repo, &["init"]);
+        run_git_in(repo, &["config", "user.name", "Test User"]);
+        run_git_in(repo, &["config", "user.email", "test@example.com"]);
+
+        temp_dir
+    }
+
+    /// テスト用スクリプトを書き込み、実行可能にする
+    fn write_test_script(repo: &std::path::Path, relative_path: &str, body: &str) -> PathBuf {
+        let script_path = repo.join(relative_path);
+        if let Some(parent) = script_path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&script_path, body).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut permissions = std::fs::metadata(&script_path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&script_path, permissions).unwrap();
+        }
+
+        script_path
+    }
+
+    #[test]
+    fn test_run_prefix_script_resolves_relative_path_from_git_root() {
+        let temp_dir = setup_temp_git_repo();
+        let repo = temp_dir.path();
+        let nested_dir = repo.join("nested");
+        std::fs::create_dir_all(&nested_dir).unwrap();
+
+        #[cfg(windows)]
+        let relative_script_path = "scripts\\prefix.cmd";
+        #[cfg(not(windows))]
+        let relative_script_path = "scripts/prefix.sh";
+
+        #[cfg(windows)]
+        let script_body = "@echo off\r\necho RELATIVE-PREFIX\r\n";
+        #[cfg(not(windows))]
+        let script_body = "#!/bin/sh\necho RELATIVE-PREFIX\n";
+
+        write_test_script(repo, relative_script_path, script_body);
+
+        let service = GitService {
+            repo_path: nested_dir,
+        };
+
+        let result = service.run_prefix_script(relative_script_path, "origin", "main");
+
+        match result {
+            Some(ScriptResult::Prefix(prefix)) => assert_eq!(prefix.trim(), "RELATIVE-PREFIX"),
+            other => panic!("unexpected result: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_run_prefix_script_uses_git_root_as_working_directory() {
+        let temp_dir = setup_temp_git_repo();
+        let repo = temp_dir.path();
+        let nested_dir = repo.join("nested");
+        std::fs::create_dir_all(&nested_dir).unwrap();
+        std::fs::write(repo.join("repo-root.marker"), "marker").unwrap();
+
+        #[cfg(windows)]
+        let script_relative_path = "scripts\\cwd-check.cmd";
+        #[cfg(not(windows))]
+        let script_relative_path = "scripts/cwd-check.sh";
+
+        #[cfg(windows)]
+        let script_body =
+            "@echo off\r\nif exist repo-root.marker (echo ROOT-CWD) else exit /b 2\r\n";
+        #[cfg(not(windows))]
+        let script_body =
+            "#!/bin/sh\nif [ -f repo-root.marker ]; then\n  echo ROOT-CWD\nelse\n  exit 2\nfi\n";
+
+        let script_path = write_test_script(repo, script_relative_path, script_body);
+
+        let service = GitService {
+            repo_path: nested_dir,
+        };
+
+        let result = service.run_prefix_script(
+            script_path.to_str().unwrap(),
+            "https://github.com/example/repo.git",
+            "feature/test",
+        );
+
+        match result {
+            Some(ScriptResult::Prefix(prefix)) => assert_eq!(prefix.trim(), "ROOT-CWD"),
+            other => panic!("unexpected result: {:?}", other),
+        }
     }
 
     /// 最古コミットを含む範囲でも reword できることを検証する

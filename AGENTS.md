@@ -15,7 +15,7 @@ make release    # Release build (optimized)
 make install    # Build and install to /usr/local/bin (Apple Intelligence enabled on macOS)
 make test       # Run tests
 make fmt        # Format code
-make check      # Run clippy and cargo check
+make check      # Run clippy and cargo check (includes apple-ai on macOS)
 make clean      # Clean build artifacts
 ```
 
@@ -64,6 +64,7 @@ src/
 
 Prefix script behavior note:
 - If a prefix script returns empty output, `App` preserves the generated message and removes only a leading Conventional Commits type prefix (`feat:`, `fix(scope):`, `feat!:` etc.) when present.
+- Relative `script` paths in project-level `.git-sc` are resolved from the Git repository root, and prefix scripts run with the Git root as their working directory.
 
 Reword safety note:
 - `GitService` validates that a `--reword` target hash is in the current `HEAD` history before merge-range checks and position calculation.
@@ -120,7 +121,7 @@ cargo test -- --nocapture     # Show println! output
 - **regex**: Commit format detection
 - **ignore**: Gitignore-style pattern matching
 - **dirs**: Platform-specific directory paths
-- **fm-rs** (optional, macOS): Apple Intelligence Foundation Models FFI
+- **fm-rs** (optional, macOS, pinned to `0.1.4`): Apple Intelligence Foundation Models FFI
 
 ### Dev
 - **rstest**: Parameterized test framework

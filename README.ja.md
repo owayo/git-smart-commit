@@ -309,6 +309,8 @@ script = "/path/to/prefix-generate.py"
 
 プレフィックススクリプトが空文字を返した場合（exit `0` かつ標準出力なし）、git-sc は生成メッセージをそのまま使います。ただし先頭が Conventional Commits の type プレフィックス（例: `feat:`, `fix(scope):`, `feat!:`）の場合のみ、そのプレフィックスを除去します。
 
+プロジェクトレベルの `.git-sc` では、相対 `script` パスは Git リポジトリのルートから解決され、スクリプトの作業ディレクトリも Git ルートになります。
+
 ```bash
 #!/bin/bash
 # 例: "conventional" を返すと Conventional Commits 形式が適用される
@@ -421,7 +423,7 @@ Apple Intelligence プロバイダーは、[fm-rs](https://github.com/blacktop/f
 | `make install` | ビルドして /usr/local/bin にインストール |
 | `make test` | テスト実行 |
 | `make fmt` | コードフォーマット |
-| `make check` | clippy と check を実行 |
+| `make check` | clippy と cargo check を実行（macOS では `apple-ai` を含む） |
 | `make clean` | ビルド成果物をクリーン |
 
 ## コントリビュート

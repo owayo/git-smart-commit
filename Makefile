@@ -40,8 +40,8 @@ fmt: ## Format code
 	cargo fmt
 
 check: ## Run clippy and check
-	cargo clippy -- -D warnings
-	cargo check
+	cargo clippy $(CARGO_FEATURES) -- -D warnings
+	cargo check $(CARGO_FEATURES)
 
 clean: ## Clean build artifacts
 	cargo clean

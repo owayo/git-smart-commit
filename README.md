@@ -309,6 +309,8 @@ If a prefix script returns a valid `prefix_type` name (e.g. `conventional`, `bra
 
 If a prefix script returns empty output (exit `0` with no text), git-sc keeps the generated message as-is, except it removes a leading Conventional Commit type prefix (for example `feat:`, `fix(scope):`, `feat!:`) when present.
 
+For project-level `.git-sc`, relative `script` paths are resolved from the Git repository root, and the script runs with the Git root as its working directory.
+
 ```bash
 #!/bin/bash
 # Example: return "conventional" to use Conventional Commits format
@@ -421,7 +423,7 @@ Apple Intelligence provider uses [fm-rs](https://github.com/blacktop/fm-rs) (Rus
 | `make install` | Build and install to /usr/local/bin |
 | `make test` | Run tests |
 | `make fmt` | Format code |
-| `make check` | Run clippy and check |
+| `make check` | Run clippy and cargo check (includes `apple-ai` on macOS) |
 | `make clean` | Clean build artifacts |
 
 ## Contributing
