@@ -2533,4 +2533,72 @@ index 555..666 100644
         assert!(result.contains("src/main.rs"));
         assert!(!result.contains("debug.log"));
     }
+
+    // ============================================================
+    // decode_quoted_diff_path: 網羅的なデコードテスト
+    // ============================================================
+
+    #[test]
+    fn test_decode_quoted_path_ascii_path() {
+        // 通常のASCIIパスが正しくデコードされる
+        let result = GitService::decode_quoted_diff_path(r#"path/to/file.rs""#);
+        assert_eq!(result, Some("path/to/file.rs".to_string()));
+    }
+
+    #[test]
+    fn test_decode_quoted_path_japanese_utf8_octal() {
+        // 日本語UTF-8のオクタルエスケープが正しくデコードされる（テスト = \343\203\206\343\202\271\343\203\210）
+        let result =
+            GitService::decode_quoted_diff_path(r#"\343\203\206\343\202\271\343\203\210.txt""#);
+        assert_eq!(result, Some("テスト.txt".to_string()));
+    }
+
+    #[test]
+    fn test_decode_quoted_path_backslash_escape() {
+        // バックスラッシュのエスケープが正しくデコードされる
+        let result = GitService::decode_quoted_diff_path(r#"path\\with\\backslash""#);
+        assert_eq!(result, Some("path\\with\\backslash".to_string()));
+    }
+
+    #[test]
+    fn test_decode_quoted_path_tab_and_newline_in_path() {
+        // タブと改行のエスケープが正しくデコードされる
+        let result = GitService::decode_quoted_diff_path(r#"path\twith\ttabs""#);
+        assert_eq!(result, Some("path\twith\ttabs".to_string()));
+    }
+
+    #[test]
+    fn test_decode_quoted_path_no_closing_quote_plain() {
+        // 閉じクォートがない場合は None を返す
+        let result = GitService::decode_quoted_diff_path("no-closing-quote");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_decode_quoted_path_empty_path_only_quote() {
+        // 即座に閉じクォートでパスが空の場合は None を返す
+        let result = GitService::decode_quoted_diff_path("\"");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_decode_quoted_path_incomplete_octal_two_digits() {
+        // オクタルシーケンスが3桁に満たない場合は None を返す
+        let result = GitService::decode_quoted_diff_path(r#"\34""#);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_decode_quoted_path_invalid_octal_digit() {
+        // 8進数の範囲外の数字（8, 9）が含まれる場合は None を返す
+        let result = GitService::decode_quoted_diff_path(r#"\389""#);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_decode_quoted_path_escaped_quotes_in_path() {
+        // パス内のエスケープされたクォートが正しくデコードされる
+        let result = GitService::decode_quoted_diff_path(r#"path\"with\"quotes""#);
+        assert_eq!(result, Some("path\"with\"quotes".to_string()));
+    }
 }
