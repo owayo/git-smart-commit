@@ -355,15 +355,18 @@ impl GitService {
 
     /// diffに対して全てのフィルタリングを適用
     fn apply_all_filters(&self, diff: &str) -> String {
-        // 1. バイナリファイルを除外
-        let filtered = Self::filter_binary_diff(diff);
-
-        // 2. .git-sc-ignore パターンにマッチするファイルを除外
+        // 1. .git-sc-ignore パターンにマッチするファイルを除外
+        //    バイナリフィルタより先に実行する必要がある。
+        //    filter_binary_diff は diff --git ヘッダーをサマリー行に変換するため、
+        //    先に実行するとignoreパターンがバイナリファイルに適用されなくなる。
         let filtered = if let Some(ignore) = self.load_ignore_patterns() {
-            Self::filter_ignored_files(&filtered, &ignore)
+            Self::filter_ignored_files(diff, &ignore)
         } else {
-            filtered
+            diff.to_string()
         };
+
+        // 2. バイナリファイルをサマリーに変換
+        let filtered = Self::filter_binary_diff(&filtered);
 
         // 3. 文字数制限を適用
         Self::truncate_diff(&filtered)
