@@ -1581,4 +1581,224 @@ gemini = "gemini-2.5-pro"
         // PartialConfig::merge_into() は Some(60) を検出してデフォルト値であっても上書きする
         assert_eq!(global.provider_cooldown_minutes, 60);
     }
+
+    // ============================================================
+    // PartialConfig::merge_into() の直接テスト
+    // ============================================================
+
+    /// 全フィールドが None の PartialConfig を merge_into しても元の Config が保持される
+    #[test]
+    fn test_partial_merge_into_all_none_preserves_config() {
+        let mut config = Config {
+            providers: vec!["claude".to_string()],
+            language: "English".to_string(),
+            models: ModelsConfig {
+                gemini: "pro".to_string(),
+                codex: "gpt-5".to_string(),
+                claude: "opus".to_string(),
+                opencode: "custom".to_string(),
+            },
+            prefix_scripts: vec![PrefixScriptConfig {
+                url_pattern: "github".to_string(),
+                script: "test.sh".to_string(),
+            }],
+            prefix_rules: vec![PrefixRuleConfig {
+                url_pattern: "gitlab".to_string(),
+                prefix_type: "bracket".to_string(),
+            }],
+            provider_cooldown_minutes: 30,
+            prefix_type: Some("conventional".to_string()),
+            auto_push: Some(true),
+            provider_timeout_seconds: 120,
+            nano_buddy: true,
+        };
+
+        // 空の TOML → 全フィールドが None の PartialConfig
+        let partial: PartialConfig = toml::from_str("").unwrap();
+        partial.merge_into(&mut config);
+
+        // 全フィールドが元の値のまま保持される
+        assert_eq!(config.providers, vec!["claude".to_string()]);
+        assert_eq!(config.language, "English");
+        assert_eq!(config.models.gemini, "pro");
+        assert_eq!(config.models.codex, "gpt-5");
+        assert_eq!(config.models.claude, "opus");
+        assert_eq!(config.models.opencode, "custom");
+        assert_eq!(config.prefix_scripts.len(), 1);
+        assert_eq!(config.prefix_scripts[0].script, "test.sh");
+        assert_eq!(config.prefix_rules.len(), 1);
+        assert_eq!(config.prefix_rules[0].prefix_type, "bracket");
+        assert_eq!(config.provider_cooldown_minutes, 30);
+        assert_eq!(config.prefix_type, Some("conventional".to_string()));
+        assert_eq!(config.auto_push, Some(true));
+        assert_eq!(config.provider_timeout_seconds, 120);
+        assert!(config.nano_buddy);
+    }
+
+    /// 全フィールドが Some の PartialConfig ですべてのフィールドが上書きされる
+    #[test]
+    fn test_partial_merge_into_all_some_overrides_everything() {
+        let mut config = Config::default();
+
+        let toml = r#"
+providers = ["codex", "claude"]
+language = "English"
+provider_cooldown_minutes = 15
+prefix_type = "bracket"
+auto_push = true
+provider_timeout_seconds = 90
+nano_buddy = true
+
+[models]
+gemini = "gemini-2.5-pro"
+codex = "gpt-5"
+claude = "opus"
+opencode = "custom-model"
+
+[[prefix_scripts]]
+url_pattern = "^https://github\\.com/"
+script = "scripts/prefix.sh"
+
+[[prefix_rules]]
+url_pattern = "gitlab\\.com"
+prefix_type = "conventional"
+"#;
+
+        let partial: PartialConfig = toml::from_str(toml).unwrap();
+        partial.merge_into(&mut config);
+
+        assert_eq!(
+            config.providers,
+            vec!["codex".to_string(), "claude".to_string()]
+        );
+        assert_eq!(config.language, "English");
+        assert_eq!(config.models.gemini, "gemini-2.5-pro");
+        assert_eq!(config.models.codex, "gpt-5");
+        assert_eq!(config.models.claude, "opus");
+        assert_eq!(config.models.opencode, "custom-model");
+        assert_eq!(config.prefix_scripts.len(), 1);
+        assert_eq!(config.prefix_scripts[0].script, "scripts/prefix.sh");
+        assert_eq!(config.prefix_rules.len(), 1);
+        assert_eq!(config.prefix_rules[0].prefix_type, "conventional");
+        assert_eq!(config.provider_cooldown_minutes, 15);
+        assert_eq!(config.prefix_type, Some("bracket".to_string()));
+        assert_eq!(config.auto_push, Some(true));
+        assert_eq!(config.provider_timeout_seconds, 90);
+        assert!(config.nano_buddy);
+    }
+
+    /// providers が空配列の場合、上書きされない（空チェックがある）
+    #[test]
+    fn test_partial_merge_into_empty_providers_not_overridden() {
+        let mut config = Config {
+            providers: vec!["gemini".to_string(), "claude".to_string()],
+            ..Default::default()
+        };
+
+        let toml = r#"providers = []"#;
+        let partial: PartialConfig = toml::from_str(toml).unwrap();
+        partial.merge_into(&mut config);
+
+        // providers = [] は空なのでマージされず、元の値が保持される
+        assert_eq!(
+            config.providers,
+            vec!["gemini".to_string(), "claude".to_string()]
+        );
+    }
+
+    /// prefix_scripts が空配列の場合、上書きされない（空チェックがある）
+    #[test]
+    fn test_partial_merge_into_empty_prefix_scripts_not_overridden() {
+        let mut config = Config {
+            prefix_scripts: vec![PrefixScriptConfig {
+                url_pattern: "github".to_string(),
+                script: "original.sh".to_string(),
+            }],
+            ..Default::default()
+        };
+
+        // TOML の空配列で PartialConfig を作成
+        let toml = r#"prefix_scripts = []"#;
+        let partial: PartialConfig = toml::from_str(toml).unwrap();
+        partial.merge_into(&mut config);
+
+        // prefix_scripts = [] は空なのでマージされず、元の値が保持される
+        assert_eq!(config.prefix_scripts.len(), 1);
+        assert_eq!(config.prefix_scripts[0].script, "original.sh");
+    }
+
+    /// ModelsConfig の部分マージ: gemini のみ指定し、他のモデルは保持される
+    #[test]
+    fn test_partial_merge_into_models_partial_only_gemini() {
+        let mut config = Config {
+            models: ModelsConfig {
+                gemini: "old-gemini".to_string(),
+                codex: "old-codex".to_string(),
+                claude: "old-claude".to_string(),
+                opencode: "old-opencode".to_string(),
+            },
+            ..Default::default()
+        };
+
+        let toml = r#"
+[models]
+gemini = "gemini-2.5-pro"
+"#;
+        let partial: PartialConfig = toml::from_str(toml).unwrap();
+        partial.merge_into(&mut config);
+
+        // gemini のみ上書きされる
+        assert_eq!(config.models.gemini, "gemini-2.5-pro");
+        // 他のモデルは元の値が保持される
+        assert_eq!(config.models.codex, "old-codex");
+        assert_eq!(config.models.claude, "old-claude");
+        assert_eq!(config.models.opencode, "old-opencode");
+    }
+
+    /// nano_buddy の true → false 上書き: Some(false) で上書きできることの確認
+    #[test]
+    fn test_partial_merge_into_nano_buddy_true_to_false() {
+        let mut config = Config {
+            nano_buddy: true,
+            ..Default::default()
+        };
+
+        let toml = r#"nano_buddy = false"#;
+        let partial: PartialConfig = toml::from_str(toml).unwrap();
+        partial.merge_into(&mut config);
+
+        // merge_into は Some(false) を検出して false に上書きする
+        // （merge_with とは異なり、PartialConfig は Option で管理するため正確に動作する）
+        assert!(!config.nano_buddy);
+    }
+
+    /// provider_timeout_seconds の上書き: デフォルト値(60)と異なる値で上書き
+    #[test]
+    fn test_partial_merge_into_provider_timeout_seconds() {
+        let mut config = Config {
+            provider_timeout_seconds: 60,
+            ..Default::default()
+        };
+
+        let toml = r#"provider_timeout_seconds = 180"#;
+        let partial: PartialConfig = toml::from_str(toml).unwrap();
+        partial.merge_into(&mut config);
+
+        assert_eq!(config.provider_timeout_seconds, 180);
+    }
+
+    /// language の上書き: "English" で上書き
+    #[test]
+    fn test_partial_merge_into_language_override() {
+        let mut config = Config {
+            language: "Japanese".to_string(),
+            ..Default::default()
+        };
+
+        let toml = r#"language = "English""#;
+        let partial: PartialConfig = toml::from_str(toml).unwrap();
+        partial.merge_into(&mut config);
+
+        assert_eq!(config.language, "English");
+    }
 }
