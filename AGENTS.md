@@ -105,6 +105,7 @@ Config merge note:
 
 `.git-sc-ignore` note:
 - Patterns are matched against decoded Git paths, including quoted diff headers with non-ASCII filenames.
+- Patterns apply to both text and binary files. Ignore filtering runs before binary-to-summary conversion so that binary files matching ignore patterns are fully excluded from the diff.
 
 ## Testing
 

@@ -1630,6 +1630,66 @@ index 555..666 100644
         assert!(result.is_empty());
     }
 
+    /// ignoreパターンがバイナリファイルにも正しく適用されることを検証
+    ///
+    /// filter_ignored_files が filter_binary_diff より先に実行されなければ、
+    /// バイナリファイルの diff --git ヘッダーがサマリー行に変換されてしまい、
+    /// ignore パターンが適用されなくなる。
+    #[test]
+    fn test_apply_all_filters_binary_ignored_by_pattern() {
+        use tempfile::TempDir;
+
+        // 一時Gitリポジトリを作成
+        let dir = TempDir::new().unwrap();
+        Command::new("git")
+            .args(["init"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        // .git-sc-ignore に *.png を追加
+        std::fs::write(dir.path().join(".git-sc-ignore"), "*.png\n").unwrap();
+
+        let gs = GitService {
+            repo_path: dir.path().to_path_buf(),
+        };
+
+        // バイナリPNGとテキストファイルを含むdiff
+        let diff = concat!(
+            "diff --git a/image.png b/image.png\n",
+            "new file mode 100644\n",
+            "Binary files /dev/null and b/image.png differ\n",
+            "diff --git a/src/main.rs b/src/main.rs\n",
+            "--- a/src/main.rs\n",
+            "+++ b/src/main.rs\n",
+            "@@ -1 +1 @@\n",
+            "-old\n",
+            "+new\n",
+        );
+
+        let result = gs.apply_all_filters(diff);
+
+        // *.png はignoreされるべき（バイナリサマリーも含めて除外）
+        assert!(
+            !result.contains("image.png"),
+            "image.png should be ignored but found in result: {}",
+            result
+        );
+        // テキストファイルは残る
+        assert!(result.contains("src/main.rs"));
+        assert!(result.contains("+new"));
+    }
+
     // ============================================================
     // extract_file_path_from_diff_header: ルートファイルのテスト
     // ============================================================
