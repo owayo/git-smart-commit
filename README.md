@@ -228,7 +228,7 @@ git-sc supports hierarchical configuration with project-level overrides:
 | `~/.config/git-sc/config.toml` | Global | User-wide default settings |
 | `.git-sc` | Project | Repository-specific overrides (in repo root) |
 
-Project settings override global settings. Fields not specified in project config inherit from global config.
+Project settings override global settings. Fields not specified in project config inherit from global config. You can specify only the fields you want to override — partial `[models]` sections are supported.
 
 ### Example Configuration
 

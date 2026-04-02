@@ -800,14 +800,11 @@ impl GitService {
         };
 
         // GIT_EDITOR: 一時ファイルの内容をコミットメッセージに反映
+        // パスを環境変数経由で渡し、シェル文字列にパスを埋め込まない（インジェクション防止）
         let editor = if cfg!(windows) {
-            format!(
-                "powershell -Command \"Copy-Item '{}' $args[0]\"",
-                msg_file.path().display()
-            )
+            "powershell -Command \"Copy-Item $env:GIT_SC_MSG_FILE $args[0]\"".to_string()
         } else {
-            // sh -c でラップ
-            format!("sh -c 'cp \"{}\" \"$1\"' --", msg_file.path().display())
+            "sh -c 'cp \"$GIT_SC_MSG_FILE\" \"$1\"' --".to_string()
         };
 
         // git rebase -i を実行（最古コミット対象時は --root を使う）
@@ -823,6 +820,7 @@ impl GitService {
             .env("GIT_SEQUENCE_EDITOR", &sequence_editor)
             .env("GIT_EDITOR", &editor)
             .env("EDITOR", &editor)
+            .env("GIT_SC_MSG_FILE", msg_file.path().as_os_str())
             .current_dir(&self.repo_path)
             .output()
             .map_err(|e| AppError::GitError(e.to_string()))?;

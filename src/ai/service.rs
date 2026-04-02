@@ -1,4 +1,4 @@
-use std::fs::{self, File};
+use std::fs;
 use std::io::Write;
 use std::process::{Child, Command, ExitStatus, Stdio};
 
@@ -9,21 +9,58 @@ use crate::error::AppError;
 use crate::state::State;
 
 /// 一時ファイルの RAII ガード。Drop 時に自動でクリーンアップする。
+///
+/// シンボリックリンク攻撃を防ぐため、`create_new(true)` で排他的に作成する。
 struct TempFile {
     path: std::path::PathBuf,
 }
 
 impl TempFile {
-    /// 一時ファイルを作成し、内容を書き込む。sync_all でディスクにフラッシュ。
-    fn create_with_content(path: std::path::PathBuf, content: &[u8]) -> Result<Self, AppError> {
-        let mut file = File::create(&path)
-            .map_err(|e| AppError::AiProviderError(format!("Failed to create temp file: {}", e)))?;
-        file.write_all(content)
-            .map_err(|e| AppError::AiProviderError(format!("Failed to write temp file: {}", e)))?;
-        file.sync_all()
-            .map_err(|e| AppError::AiProviderError(format!("Failed to sync temp file: {}", e)))?;
-        drop(file); // 明示的にファイルハンドルを閉じる
-        Ok(Self { path })
+    /// 一意な一時ファイルを排他的に作成し、内容を書き込む。
+    ///
+    /// `create_new(true)` により既存ファイルやシンボリックリンクを追従しない。
+    fn create_with_content(content: &[u8]) -> Result<Self, AppError> {
+        use std::fs::OpenOptions;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let temp_dir = std::env::temp_dir();
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+
+        for attempt in 0..100 {
+            let path = temp_dir.join(format!(
+                "git-sc-prompt-{}-{}-{}.txt",
+                std::process::id(),
+                timestamp,
+                attempt
+            ));
+
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(mut file) => {
+                    file.write_all(content).map_err(|e| {
+                        AppError::AiProviderError(format!("Failed to write temp file: {}", e))
+                    })?;
+                    file.sync_all().map_err(|e| {
+                        AppError::AiProviderError(format!("Failed to sync temp file: {}", e))
+                    })?;
+                    drop(file); // 明示的にファイルハンドルを閉じる
+                    return Ok(Self { path });
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => {
+                    return Err(AppError::AiProviderError(format!(
+                        "Failed to create temp file: {}",
+                        e
+                    )));
+                }
+            }
+        }
+
+        Err(AppError::AiProviderError(
+            "Failed to create unique temp file".to_string(),
+        ))
     }
 
     fn path(&self) -> &std::path::Path {
@@ -518,9 +555,7 @@ Instructions:
         // opencode は一時ファイル経由でプロンプトを渡す（stdinサポートが不明確なため）
         // TempFile の RAII ガードにより、どのパスで return しても自動クリーンアップされる
         let temp_file = if matches!(provider, AiProvider::Opencode) {
-            let temp_dir = std::env::temp_dir();
-            let temp_path = temp_dir.join(format!("git-sc-prompt-{}.txt", std::process::id()));
-            Some(TempFile::create_with_content(temp_path, prompt.as_bytes())?)
+            Some(TempFile::create_with_content(prompt.as_bytes())?)
         } else {
             None
         };

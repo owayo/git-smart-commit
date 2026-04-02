@@ -8,11 +8,26 @@ use crate::error::AppError;
 /// 各プロバイダーのモデル設定
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelsConfig {
+    #[serde(default = "default_gemini_model")]
     pub gemini: String,
+    #[serde(default = "default_codex_model")]
     pub codex: String,
+    #[serde(default = "default_claude_model")]
     pub claude: String,
     #[serde(default = "default_opencode_model")]
     pub opencode: String,
+}
+
+fn default_gemini_model() -> String {
+    "gemini-2.5-flash-lite".to_string()
+}
+
+fn default_codex_model() -> String {
+    "gpt-5.1-codex-mini".to_string()
+}
+
+fn default_claude_model() -> String {
+    "haiku".to_string()
 }
 
 fn default_opencode_model() -> String {
@@ -22,10 +37,117 @@ fn default_opencode_model() -> String {
 impl Default for ModelsConfig {
     fn default() -> Self {
         Self {
-            gemini: "gemini-2.5-flash-lite".to_string(),
-            codex: "gpt-5.1-codex-mini".to_string(),
-            claude: "haiku".to_string(),
+            gemini: default_gemini_model(),
+            codex: default_codex_model(),
+            claude: default_claude_model(),
             opencode: default_opencode_model(),
+        }
+    }
+}
+
+/// 設定ファイルからの部分読み込み用モデル設定
+///
+/// `Option<T>` により「未指定」と「明示的にデフォルト値を指定」を区別する。
+#[derive(Debug, Default, Deserialize)]
+struct PartialModelsConfig {
+    pub gemini: Option<String>,
+    pub codex: Option<String>,
+    pub claude: Option<String>,
+    pub opencode: Option<String>,
+}
+
+/// 設定ファイルからの部分読み込み用
+///
+/// 全フィールドが `Option` のため、部分設定ファイルでもパースに失敗しない。
+/// `merge_into()` で `Config` に明示的に指定されたフィールドのみ上書きする。
+#[derive(Debug, Default, Deserialize)]
+struct PartialConfig {
+    pub providers: Option<Vec<String>>,
+    pub language: Option<String>,
+    #[serde(default)]
+    pub models: PartialModelsConfig,
+    pub prefix_scripts: Option<Vec<PrefixScriptConfig>>,
+    pub prefix_rules: Option<Vec<PrefixRuleConfig>>,
+    pub provider_cooldown_minutes: Option<u64>,
+    pub prefix_type: Option<String>,
+    pub auto_push: Option<bool>,
+    pub provider_timeout_seconds: Option<u64>,
+    pub nano_buddy: Option<bool>,
+}
+
+impl PartialConfig {
+    /// `Config` に変換（未指定フィールドはデフォルト値を使用）
+    fn into_config(self) -> Config {
+        let defaults = Config::default();
+        Config {
+            providers: self.providers.unwrap_or(defaults.providers),
+            language: self.language.unwrap_or(defaults.language),
+            models: ModelsConfig {
+                gemini: self.models.gemini.unwrap_or(defaults.models.gemini),
+                codex: self.models.codex.unwrap_or(defaults.models.codex),
+                claude: self.models.claude.unwrap_or(defaults.models.claude),
+                opencode: self.models.opencode.unwrap_or(defaults.models.opencode),
+            },
+            prefix_scripts: self.prefix_scripts.unwrap_or(defaults.prefix_scripts),
+            prefix_rules: self.prefix_rules.unwrap_or(defaults.prefix_rules),
+            provider_cooldown_minutes: self
+                .provider_cooldown_minutes
+                .unwrap_or(defaults.provider_cooldown_minutes),
+            prefix_type: self.prefix_type.or(defaults.prefix_type),
+            auto_push: self.auto_push.or(defaults.auto_push),
+            provider_timeout_seconds: self
+                .provider_timeout_seconds
+                .unwrap_or(defaults.provider_timeout_seconds),
+            nano_buddy: self.nano_buddy.unwrap_or(defaults.nano_buddy),
+        }
+    }
+
+    /// 指定されたフィールドのみ `Config` に上書き適用する
+    fn merge_into(self, config: &mut Config) {
+        if let Some(providers) = self.providers
+            && !providers.is_empty()
+        {
+            config.providers = providers;
+        }
+        if let Some(language) = self.language {
+            config.language = language;
+        }
+        if let Some(gemini) = self.models.gemini {
+            config.models.gemini = gemini;
+        }
+        if let Some(codex) = self.models.codex {
+            config.models.codex = codex;
+        }
+        if let Some(claude) = self.models.claude {
+            config.models.claude = claude;
+        }
+        if let Some(opencode) = self.models.opencode {
+            config.models.opencode = opencode;
+        }
+        if let Some(scripts) = self.prefix_scripts
+            && !scripts.is_empty()
+        {
+            config.prefix_scripts = scripts;
+        }
+        if let Some(rules) = self.prefix_rules
+            && !rules.is_empty()
+        {
+            config.prefix_rules = rules;
+        }
+        if let Some(minutes) = self.provider_cooldown_minutes {
+            config.provider_cooldown_minutes = minutes;
+        }
+        if let Some(prefix_type) = self.prefix_type {
+            config.prefix_type = Some(prefix_type);
+        }
+        if let Some(auto_push) = self.auto_push {
+            config.auto_push = Some(auto_push);
+        }
+        if let Some(seconds) = self.provider_timeout_seconds {
+            config.provider_timeout_seconds = seconds;
+        }
+        if let Some(nano_buddy) = self.nano_buddy {
+            config.nano_buddy = nano_buddy;
         }
     }
 }
@@ -159,8 +281,8 @@ impl Config {
         }
     }
 
-    /// グローバル設定を読み込む
-    fn load_global() -> Result<Option<Self>, AppError> {
+    /// グローバル設定を PartialConfig として読み込む
+    fn load_global_partial() -> Result<Option<PartialConfig>, AppError> {
         let path = Self::global_config_path()?;
 
         if !path.exists() {
@@ -180,13 +302,13 @@ impl Config {
                     path.display(),
                     e
                 );
-                Ok(Some(Config::default()))
+                Ok(None)
             }
         }
     }
 
-    /// プロジェクト設定を読み込む
-    fn load_project() -> Result<Option<Self>, AppError> {
+    /// プロジェクト設定を PartialConfig として読み込む
+    fn load_project_partial() -> Result<Option<PartialConfig>, AppError> {
         let path = match Self::project_config_path()? {
             Some(p) => p,
             None => return Ok(None),
@@ -208,71 +330,20 @@ impl Config {
         }
     }
 
-    /// 2つの設定をマージ（other が優先）
-    pub fn merge_with(&mut self, other: Self) {
-        // Vec フィールド: other が空でなければ完全置換
-        if !other.providers.is_empty() {
-            self.providers = other.providers;
-        }
-        if !other.prefix_scripts.is_empty() {
-            self.prefix_scripts = other.prefix_scripts;
-        }
-        if !other.prefix_rules.is_empty() {
-            self.prefix_rules = other.prefix_rules;
-        }
-
-        // String フィールド: other がデフォルトでなければ上書き
-        if other.language != default_language() {
-            self.language = other.language;
-        }
-
-        // Option フィールド: Some で上書き
-        if other.prefix_type.is_some() {
-            self.prefix_type = other.prefix_type;
-        }
-        if other.auto_push.is_some() {
-            self.auto_push = other.auto_push;
-        }
-
-        // nano_buddy: true で上書き
-        if other.nano_buddy {
-            self.nano_buddy = true;
-        }
-
-        // ModelsConfig: 個別フィールドをマージ
-        if other.models.gemini != ModelsConfig::default().gemini {
-            self.models.gemini = other.models.gemini;
-        }
-        if other.models.codex != ModelsConfig::default().codex {
-            self.models.codex = other.models.codex;
-        }
-        if other.models.claude != ModelsConfig::default().claude {
-            self.models.claude = other.models.claude;
-        }
-        if other.models.opencode != ModelsConfig::default().opencode {
-            self.models.opencode = other.models.opencode;
-        }
-
-        // provider_cooldown_minutes: デフォルトでなければ上書き
-        if other.provider_cooldown_minutes != default_provider_cooldown_minutes() {
-            self.provider_cooldown_minutes = other.provider_cooldown_minutes;
-        }
-
-        // provider_timeout_seconds: デフォルトでなければ上書き
-        if other.provider_timeout_seconds != default_provider_timeout_seconds() {
-            self.provider_timeout_seconds = other.provider_timeout_seconds;
-        }
-    }
-
     /// 階層的に設定を読み込む（グローバル → プロジェクトでマージ）
+    ///
+    /// PartialConfig（全フィールド Option）で読み込むことで、
+    /// 「未指定」と「明示的にデフォルト値を指定」を正しく区別する。
     pub fn load() -> Result<Self, AppError> {
-        // 1. グローバル設定を読み込む
-        // 注意: ファイルは自動作成しない（git-sc init を使用）
-        let mut config: Config = Self::load_global()?.unwrap_or_default();
+        // 1. グローバル設定を読み込んで Config に変換
+        let mut config: Config = match Self::load_global_partial()? {
+            Some(partial) => partial.into_config(),
+            None => Config::default(),
+        };
 
-        // 2. プロジェクト設定を読み込んでマージ
-        if let Some(project_config) = Self::load_project()? {
-            config.merge_with(project_config);
+        // 2. プロジェクト設定を読み込んで、指定されたフィールドのみ上書き
+        if let Some(project_partial) = Self::load_project_partial()? {
+            project_partial.merge_into(&mut config);
         }
 
         Ok(config)
@@ -372,6 +443,66 @@ impl Config {
     pub fn from_str(content: &str) -> Result<Self, AppError> {
         toml::from_str(content)
             .map_err(|e| AppError::ConfigError(format!("Failed to parse config: {}", e)))
+    }
+
+    /// 2つの設定をマージ（テスト用、other が優先）
+    ///
+    /// 注意: この関数は「デフォルト値と同じ値」を未指定として扱うため、
+    /// プロジェクト設定で明示的にデフォルト値を指定したケースでは正しく動作しない。
+    /// 実運用では `PartialConfig::merge_into()` を使用する `load()` が正確な動作を保証する。
+    pub fn merge_with(&mut self, other: Self) {
+        // Vec フィールド: other が空でなければ完全置換
+        if !other.providers.is_empty() {
+            self.providers = other.providers;
+        }
+        if !other.prefix_scripts.is_empty() {
+            self.prefix_scripts = other.prefix_scripts;
+        }
+        if !other.prefix_rules.is_empty() {
+            self.prefix_rules = other.prefix_rules;
+        }
+
+        // String フィールド: other がデフォルトでなければ上書き
+        if other.language != default_language() {
+            self.language = other.language;
+        }
+
+        // Option フィールド: Some で上書き
+        if other.prefix_type.is_some() {
+            self.prefix_type = other.prefix_type;
+        }
+        if other.auto_push.is_some() {
+            self.auto_push = other.auto_push;
+        }
+
+        // nano_buddy: true で上書き
+        if other.nano_buddy {
+            self.nano_buddy = true;
+        }
+
+        // ModelsConfig: 個別フィールドをマージ
+        if other.models.gemini != ModelsConfig::default().gemini {
+            self.models.gemini = other.models.gemini;
+        }
+        if other.models.codex != ModelsConfig::default().codex {
+            self.models.codex = other.models.codex;
+        }
+        if other.models.claude != ModelsConfig::default().claude {
+            self.models.claude = other.models.claude;
+        }
+        if other.models.opencode != ModelsConfig::default().opencode {
+            self.models.opencode = other.models.opencode;
+        }
+
+        // provider_cooldown_minutes: デフォルトでなければ上書き
+        if other.provider_cooldown_minutes != default_provider_cooldown_minutes() {
+            self.provider_cooldown_minutes = other.provider_cooldown_minutes;
+        }
+
+        // provider_timeout_seconds: デフォルトでなければ上書き
+        if other.provider_timeout_seconds != default_provider_timeout_seconds() {
+            self.provider_timeout_seconds = other.provider_timeout_seconds;
+        }
     }
 }
 
@@ -1360,5 +1491,94 @@ unknown_field = "some_value"
     fn test_parse_invalid_toml_returns_error() {
         let result = Config::from_str("invalid [[ toml");
         assert!(result.is_err());
+    }
+
+    // ============================================================
+    // PartialConfig / PartialModelsConfig のテスト
+    // ============================================================
+
+    /// [models] セクションに gemini のみ指定した場合、
+    /// 以前は "missing field codex" エラーが発生していたが、
+    /// serde(default) 付与により正しくパースできることを確認する。
+    #[test]
+    fn test_partial_models_config_only_gemini_parses() {
+        let toml = r#"
+[models]
+gemini = "gemini-2.5-pro"
+"#;
+        // PartialConfig として直接デシリアライズ
+        let partial: PartialConfig =
+            toml::from_str(toml).expect("[models] に gemini のみ指定してもパース成功すべき");
+
+        assert_eq!(partial.models.gemini, Some("gemini-2.5-pro".to_string()));
+        // 未指定フィールドは None のまま
+        assert!(partial.models.codex.is_none());
+        assert!(partial.models.claude.is_none());
+        assert!(partial.models.opencode.is_none());
+    }
+
+    /// プロジェクト設定の language が "Japanese"（デフォルト値と同じ）であっても、
+    /// PartialConfig::merge_into() はフィールドが明示的に指定されている場合は上書きする。
+    /// グローバルが "English" → プロジェクトが "Japanese" → 最終的に "Japanese" になる。
+    #[test]
+    fn test_partial_merge_language_default_value_overrides_global() {
+        // グローバル設定: language = "English"
+        let global_toml = r#"language = "English""#;
+        let mut global: Config = toml::from_str(global_toml).unwrap();
+        assert_eq!(global.language, "English");
+
+        // プロジェクト設定: language = "Japanese"（デフォルト値と同じだが明示的に指定）
+        let project_toml = r#"language = "Japanese""#;
+        let project_partial: PartialConfig = toml::from_str(project_toml).unwrap();
+
+        // merge_into でグローバル設定を上書き
+        project_partial.merge_into(&mut global);
+
+        // PartialConfig::merge_into() は Some("Japanese") を検出して上書きするため "Japanese" になる
+        assert_eq!(global.language, "Japanese");
+    }
+
+    /// プロジェクト設定の nano_buddy = false が、
+    /// グローバルの nano_buddy = true を正しく上書きすることを確認する。
+    #[test]
+    fn test_partial_merge_nano_buddy_false_overrides_global_true() {
+        // グローバル設定: nano_buddy = true
+        let mut global = Config {
+            nano_buddy: true,
+            ..Default::default()
+        };
+
+        // プロジェクト設定: nano_buddy = false を明示的に指定
+        let project_toml = r#"nano_buddy = false"#;
+        let project_partial: PartialConfig = toml::from_str(project_toml).unwrap();
+        assert_eq!(project_partial.nano_buddy, Some(false));
+
+        // merge_into でグローバル設定を上書き
+        project_partial.merge_into(&mut global);
+
+        // PartialConfig::merge_into() は Some(false) を検出して false に上書きする
+        assert!(!global.nano_buddy);
+    }
+
+    /// プロジェクト設定の provider_cooldown_minutes = 60（デフォルト値）が、
+    /// グローバルの provider_cooldown_minutes = 5 を正しく上書きすることを確認する。
+    #[test]
+    fn test_partial_merge_cooldown_default_value_overrides_global_non_default() {
+        // グローバル設定: provider_cooldown_minutes = 5（非デフォルト値）
+        let mut global = Config {
+            provider_cooldown_minutes: 5,
+            ..Default::default()
+        };
+
+        // プロジェクト設定: provider_cooldown_minutes = 60（デフォルト値と同じだが明示的に指定）
+        let project_toml = r#"provider_cooldown_minutes = 60"#;
+        let project_partial: PartialConfig = toml::from_str(project_toml).unwrap();
+        assert_eq!(project_partial.provider_cooldown_minutes, Some(60));
+
+        // merge_into でグローバル設定を上書き
+        project_partial.merge_into(&mut global);
+
+        // PartialConfig::merge_into() は Some(60) を検出してデフォルト値であっても上書きする
+        assert_eq!(global.provider_cooldown_minutes, 60);
     }
 }
