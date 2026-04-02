@@ -2605,4 +2605,156 @@ mod tests {
         );
         assert_eq!(result.unwrap(), "feat: clean this");
     }
+
+    // ============================================================
+    // process_provider_output 追加テスト
+    // ============================================================
+
+    #[test]
+    fn test_process_provider_output_exit0_empty_stdout_empty_stderr() {
+        // exit code 0 + 空stdout + 空stderr → 空レスポンスエラー
+        let status = exit_status(true);
+        let result = AiService::process_provider_output(&AiProvider::Claude, status, "", "");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("empty response"),
+            "空stdout+空stderrでは 'empty response' エラーになるべき: {}",
+            err
+        );
+        // stderrヒントが含まれないことも確認
+        assert!(
+            !err.contains("stderr"),
+            "stderrが空の場合はstderrヒントが含まれないべき: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_process_provider_output_exit0_empty_stdout_with_stderr_hint() {
+        // exit code 0 + 空stdout + stderr あり → stderrヒント付きエラー
+        let status = exit_status(true);
+        let result = AiService::process_provider_output(
+            &AiProvider::Codex,
+            status,
+            "",
+            "warning: model is overloaded",
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("empty response"),
+            "空stdoutでは 'empty response' エラーになるべき: {}",
+            err
+        );
+        assert!(
+            err.contains("stderr"),
+            "stderrがある場合はヒントが含まれるべき: {}",
+            err
+        );
+        assert!(
+            err.contains("model is overloaded"),
+            "stderrの内容がヒントに含まれるべき: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_process_provider_output_codex_stderr_error_keyword_skipped() {
+        // Codex: exit code 0 + stdout あり + stderr に "error:" → stderrは無視されて正常
+        let status = exit_status(true);
+        let result = AiService::process_provider_output(
+            &AiProvider::Codex,
+            status,
+            "feat: implement auth",
+            "error: some debug info from codex",
+        );
+        assert!(
+            result.is_ok(),
+            "Codex では stderr の 'error:' は無視されるべき"
+        );
+        assert_eq!(result.unwrap(), "feat: implement auth");
+    }
+
+    #[test]
+    fn test_process_provider_output_claude_stderr_error_keyword_skipped() {
+        // Claude: exit code 0 + stdout あり + stderr に "error:" → stderrは無視されて正常
+        let status = exit_status(true);
+        let result = AiService::process_provider_output(
+            &AiProvider::Claude,
+            status,
+            "fix: correct null check",
+            "error: prompt echo from claude",
+        );
+        assert!(
+            result.is_ok(),
+            "Claude では stderr の 'error:' は無視されるべき"
+        );
+        assert_eq!(result.unwrap(), "fix: correct null check");
+    }
+
+    #[test]
+    fn test_process_provider_output_opencode_stderr_file_not_found_error() {
+        // 非Codex/Claude (opencode): exit code 0 + stdout あり + stderr に "file not found" → エラー
+        let status = exit_status(true);
+        let result = AiService::process_provider_output(
+            &AiProvider::Opencode,
+            status,
+            "feat: ok",
+            "file not found: /usr/local/bin/opencode",
+        );
+        assert!(
+            result.is_err(),
+            "非Codex/Claude では stderr の 'file not found' はエラーになるべき"
+        );
+    }
+
+    #[test]
+    fn test_process_provider_output_apple_intelligence_stderr_error_keyword() {
+        // 非Codex/Claude (AppleIntelligence): exit code 0 + stdout あり + stderr に "error:" → エラー
+        let status = exit_status(true);
+        let result = AiService::process_provider_output(
+            &AiProvider::AppleIntelligence,
+            status,
+            "feat: add feature",
+            "error: model initialization failed",
+        );
+        assert!(
+            result.is_err(),
+            "非Codex/Claude では stderr の 'error:' はエラーになるべき"
+        );
+    }
+
+    // ============================================================
+    // clean_message エッジケース追加テスト
+    // ============================================================
+
+    #[test]
+    fn test_clean_message_nested_code_block() {
+        // ネストされたコードブロック: 外側の ``` のみが除去される
+        let message = "```\n```inner```\n```";
+        let result = AiService::clean_message(message);
+        assert_eq!(result, "```inner```");
+    }
+
+    #[test]
+    fn test_clean_message_multiple_consecutive_code_blocks() {
+        // 複数の連続するコードブロック: 外側だけが ``` で囲まれていないため、そのまま
+        let message = "```\nfirst block\n```\n```\nsecond block\n```";
+        // 先頭が ``` で末尾も ``` だが、中間にも ``` があるので外側として処理される
+        let result = AiService::clean_message(message);
+        // starts_with("```") && ends_with("```") なので外側が除去され、
+        // 中間の内容が残る。ensure_body_separatorで件名と本文の間に空行挿入。
+        assert_eq!(result, "first block\n\n```\n```\nsecond block");
+    }
+
+    #[test]
+    fn test_clean_message_inline_backtick_code() {
+        // バッククォートのインラインコード: コードブロックではないのでそのまま維持
+        let message = "`feat: add`";
+        let result = AiService::clean_message(message);
+        // starts_with("```") ではないのでコードブロック除去は行われない
+        // 引用符の trim_matches も ` はマッチしない
+        assert_eq!(result, "`feat: add`");
+    }
 }
