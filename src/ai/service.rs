@@ -2871,4 +2871,24 @@ mod tests {
         assert!(result.starts_with("echo '"));
         assert!(result.contains("apple-ai"));
     }
+
+    // ============================================================
+    // clean_message: コードブロック内に引用符がある場合
+    // ============================================================
+
+    #[test]
+    fn test_clean_message_code_block_with_inner_quotes() {
+        // コードブロック除去後にさらに引用符が残る場合
+        let msg = "```\n\"feat: add feature\"\n```";
+        assert_eq!(AiService::clean_message(msg), "feat: add feature");
+    }
+
+    #[test]
+    fn test_clean_message_backtick_only_opening() {
+        // 開始バッククォートのみで閉じがない場合はそのまま
+        let msg = "```\nfeat: add feature";
+        // starts_with("```") は true だが ends_with("```") は false
+        let result = AiService::clean_message(msg);
+        assert!(result.contains("feat: add feature"));
+    }
 }

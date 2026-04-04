@@ -308,12 +308,12 @@ impl GitService {
                                 return None;
                             }
 
-                            // u16で計算して8進数値が1バイト範囲(0-255)に収まるか検証
-                            // Gitは通常0-377の範囲しか出力しないが、不正入力への防御
+                            // Gitのquoted pathの3桁8進エスケープは1バイトを表す
+                            // 0o400..=0o777は不正入力として拒否する
                             let value = (escaped - b'0') as u16 * 64
                                 + (second - b'0') as u16 * 8
                                 + (third - b'0') as u16;
-                            if value > 255 {
+                            if value > u8::MAX as u16 {
                                 return None;
                             }
                             decoded.push(value as u8);
@@ -2711,5 +2711,39 @@ index 555..666 100644
         assert!(result.contains("src/main.rs"));
         assert!(result.contains("src/lib.rs"));
         assert!(!result.contains("dist/bundle.js"));
+    }
+
+    // ============================================================
+    // decode_quoted_diff_path: 8進オーバーフロー防御テスト
+    // ============================================================
+
+    #[test]
+    fn test_decode_quoted_path_octal_overflow_returns_none() {
+        // \400 (=256) はu8範囲外なのでNoneを返す
+        assert_eq!(GitService::decode_quoted_diff_path(r#"a/\400""#), None);
+        // \777 (=511) も同様にNone
+        assert_eq!(GitService::decode_quoted_diff_path(r#"a/\777""#), None);
+    }
+
+    #[test]
+    fn test_decode_quoted_path_octal_boundary_377_is_valid() {
+        // \377 (=255) はu8の最大値で有効
+        let result = GitService::decode_quoted_diff_path(r#"a/\377""#);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_decode_quoted_path_octal_boundary_400_is_invalid() {
+        // \400 (=256) はちょうどオーバーフロー境界
+        assert_eq!(GitService::decode_quoted_diff_path(r#"\400""#), None);
+    }
+
+    #[test]
+    fn test_decode_quoted_path_octal_overflow_mid_path() {
+        // パス途中のオーバーフローもNoneを返す
+        assert_eq!(
+            GitService::decode_quoted_diff_path(r#"a/valid\400rest""#),
+            None
+        );
     }
 }

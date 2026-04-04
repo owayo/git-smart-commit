@@ -106,6 +106,7 @@ Config merge note:
 `.git-sc-ignore` note:
 - Patterns are matched against decoded Git paths, including quoted diff headers with non-ASCII filenames.
 - Patterns apply to both text and binary files. Ignore filtering runs before binary-to-summary conversion so that binary files matching ignore patterns are fully excluded from the diff.
+- `decode_quoted_diff_path` validates that 3-digit octal escape values are within the u8 range (0-377). Values exceeding 255 (e.g., `\400`) are rejected as invalid input.
 
 ## Testing
 
