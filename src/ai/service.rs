@@ -2891,4 +2891,218 @@ mod tests {
         let result = AiService::clean_message(msg);
         assert!(result.contains("feat: add feature"));
     }
+
+    // ============================================================
+    // clean_message: 連続コードブロック・複合エッジケース
+    // ============================================================
+
+    #[test]
+    fn test_clean_message_consecutive_code_blocks() {
+        // 複数のコードブロックがある場合、最外層のみ除去される
+        let msg = "```\nfeat: inner\n```\nextra text\n```\nfix: another\n```";
+        let result = AiService::clean_message(msg);
+        // 最初の ``` と最後の ``` が除去され、中間が残る
+        assert!(result.contains("feat: inner"));
+    }
+
+    #[test]
+    fn test_clean_message_code_block_two_lines_only() {
+        // コードブロックが2行のみ（開始 + 終了）の場合、コンテンツとして扱われる
+        // ensure_body_separator が2行目を非空と判定し空行を挿入する
+        let msg = "```\n```";
+        let result = AiService::clean_message(msg);
+        assert_eq!(result, "```\n\n```");
+    }
+
+    #[test]
+    fn test_clean_message_nested_quotes_in_code_block() {
+        // コードブロック内にクォートがネストされている場合
+        let msg = "```\n\"feat: 'quoted' message\"\n```";
+        let result = AiService::clean_message(msg);
+        assert_eq!(result, "feat: 'quoted' message");
+    }
+
+    // ============================================================
+    // ensure_body_separator: エッジケース
+    // ============================================================
+
+    #[test]
+    fn test_ensure_body_separator_already_has_blank_line() {
+        // 空行が既にある場合はそのまま
+        let msg = "feat: title\n\n- body";
+        let result = AiService::ensure_body_separator(msg);
+        assert_eq!(result, msg);
+    }
+
+    #[test]
+    fn test_ensure_body_separator_no_blank_line() {
+        // 空行がない場合は挿入される
+        let msg = "feat: title\n- body";
+        let result = AiService::ensure_body_separator(msg);
+        assert_eq!(result, "feat: title\n\n- body");
+    }
+
+    #[test]
+    fn test_ensure_body_separator_one_line_unchanged() {
+        // 1行の場合はそのまま
+        let msg = "feat: title";
+        let result = AiService::ensure_body_separator(msg);
+        assert_eq!(result, msg);
+    }
+
+    #[test]
+    fn test_ensure_body_separator_spaces_only_second_line_treated_as_blank() {
+        // 2行目が空白のみの場合は空行とみなされそのまま
+        let msg = "feat: title\n   \n- body";
+        let result = AiService::ensure_body_separator(msg);
+        assert_eq!(result, msg);
+    }
+
+    // ============================================================
+    // process_provider_output: 空白stderrとGemini以外のstderrチェック
+    // ============================================================
+
+    #[test]
+    fn test_process_provider_output_gemini_stderr_whitespace_only() {
+        // Geminiでstderrが空白のみの場合、エラー扱いにならない
+        use std::os::unix::process::ExitStatusExt;
+        let status = ExitStatus::from_raw(0);
+        let result = AiService::process_provider_output(
+            &AiProvider::Gemini,
+            status,
+            "feat: add feature\n",
+            "   \n  ",
+        );
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "feat: add feature");
+    }
+
+    #[test]
+    fn test_process_provider_output_gemini_stderr_with_error_keyword() {
+        // Gemini（Codex/Claude以外）でstderrに "error:" が含まれる場合はエラー
+        use std::os::unix::process::ExitStatusExt;
+        let status = ExitStatus::from_raw(0);
+        let result = AiService::process_provider_output(
+            &AiProvider::Gemini,
+            status,
+            "feat: add feature\n",
+            "error: something went wrong",
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_process_provider_output_codex_stderr_with_error_ignored() {
+        // Codexではstderrのerror検出をスキップ（誤検出防止）
+        use std::os::unix::process::ExitStatusExt;
+        let status = ExitStatus::from_raw(0);
+        let result = AiService::process_provider_output(
+            &AiProvider::Codex,
+            status,
+            "feat: add feature\n",
+            "error: this is just a log line",
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_process_provider_output_stdout_becomes_empty_after_clean() {
+        // clean_message後に空になるケース
+        use std::os::unix::process::ExitStatusExt;
+        let status = ExitStatus::from_raw(0);
+        let result =
+            AiService::process_provider_output(&AiProvider::Gemini, status, "  \"\"  \n", "");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("empty response"));
+    }
+
+    // ============================================================
+    // extract_error: プロバイダー別の複合エラーパターン
+    // ============================================================
+
+    #[test]
+    fn test_extract_error_gemini_first_of_multiple_api_errors() {
+        // 複数のAPIエラーがある場合、最初のものが返される
+        let stderr = "[API Error: rate limit]\n[API Error: quota exceeded]";
+        let result = AiService::extract_error(stderr, &AiProvider::Gemini);
+        assert_eq!(result, "[API Error: rate limit]");
+    }
+
+    #[test]
+    fn test_extract_error_codex_uppercase_error_over_lowercase() {
+        // "ERROR:" が "error" より優先される
+        let stderr =
+            "Reading prompt from stdin...\nerror: minor issue\nERROR: Your access token expired";
+        let result = AiService::extract_error(stderr, &AiProvider::Codex);
+        assert_eq!(result, "ERROR: Your access token expired");
+    }
+
+    #[test]
+    fn test_extract_error_opencode_failed_keyword() {
+        // opencode: "failed" キーワードの検出
+        let stderr = "Starting...\nConnection failed to server\nDone";
+        let result = AiService::extract_error(stderr, &AiProvider::Opencode);
+        assert_eq!(result, "Connection failed to server");
+    }
+
+    #[test]
+    fn test_extract_error_apple_intelligence_error_prefix() {
+        // Apple Intelligence: "Error:" プレフィックスの検出
+        let stderr = "Initializing model...\nError: Model not available\nCleanup done";
+        let result = AiService::extract_error(stderr, &AiProvider::AppleIntelligence);
+        assert_eq!(result, "Error: Model not available");
+    }
+
+    #[test]
+    fn test_extract_error_apple_intelligence_no_error_prefix() {
+        // Apple Intelligence: "Error:" がない場合は最初の非空行
+        let stderr = "\n  \nSome generic message\nAnother line";
+        let result = AiService::extract_error(stderr, &AiProvider::AppleIntelligence);
+        assert_eq!(result, "Some generic message");
+    }
+
+    // ============================================================
+    // build_prompt: 特殊文字・大量コミットのテスト
+    // ============================================================
+
+    #[test]
+    fn test_build_prompt_with_special_chars_in_diff() {
+        // diff内に特殊文字が含まれる場合でもプロンプトが壊れない
+        let diff = "diff --git a/file.rs b/file.rs\n+let s = \"hello\\nworld\";";
+        let prompt =
+            AiService::build_prompt(diff, &[], "Japanese", Some("conventional"), false, None);
+        assert!(prompt.contains(diff));
+        assert!(prompt.contains("<changes>"));
+        assert!(prompt.contains("</changes>"));
+    }
+
+    #[test]
+    fn test_build_prompt_with_many_recent_commits() {
+        // 大量のコミットが渡された場合の番号付け
+        let commits: Vec<String> = (1..=20).map(|i| format!("commit {}", i)).collect();
+        let prompt = AiService::build_prompt("diff", &commits, "Japanese", None, false, None);
+        assert!(prompt.contains("1. commit 1"));
+        assert!(prompt.contains("20. commit 20"));
+    }
+
+    #[test]
+    fn test_build_prompt_agent_context_empty_string() {
+        // agent_contextが空文字列の場合、agent-contextセクションは含まれない
+        let prompt = AiService::build_prompt("diff", &[], "Japanese", None, false, Some(""));
+        assert!(!prompt.contains("<agent-context>"));
+    }
+
+    #[test]
+    fn test_build_prompt_custom_prefix_type() {
+        // カスタムprefix_typeが正しく反映される
+        let prompt = AiService::build_prompt(
+            "diff",
+            &[],
+            "Japanese",
+            Some("my-custom-format"),
+            false,
+            None,
+        );
+        assert!(prompt.contains("Use the following prefix format: my-custom-format"));
+    }
 }

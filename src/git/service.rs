@@ -2746,4 +2746,174 @@ index 555..666 100644
             None
         );
     }
+
+    // ============================================================
+    // decode_quoted_diff_path: 連続8進シーケンス・特殊エスケープ
+    // ============================================================
+
+    #[test]
+    fn test_decode_quoted_path_consecutive_octal_sequences() {
+        // 連続する8進シーケンス: \343\203\206 = "テ" (UTF-8: E3 83 86)
+        let result =
+            GitService::decode_quoted_diff_path(r#"a/\343\203\206\343\202\271\343\203\210""#);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), "a/テスト");
+    }
+
+    #[test]
+    fn test_decode_quoted_path_tab_escape_in_middle() {
+        // \t エスケープがタブに変換される
+        let result = GitService::decode_quoted_diff_path(r#"a/path\twith\ttab""#);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), "a/path\twith\ttab");
+    }
+
+    #[test]
+    fn test_decode_quoted_path_newline_escape_in_middle() {
+        // \n エスケープが改行に変換される
+        let result = GitService::decode_quoted_diff_path(r#"a/path\nwith\nnewline""#);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), "a/path\nwith\nnewline");
+    }
+
+    #[test]
+    fn test_decode_quoted_path_double_backslash_in_middle() {
+        // \\ エスケープがバックスラッシュに変換される
+        let result = GitService::decode_quoted_diff_path(r#"a/path\\with\\backslash""#);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), "a/path\\with\\backslash");
+    }
+
+    #[test]
+    fn test_decode_quoted_path_escaped_double_quote_in_middle() {
+        // \" エスケープがダブルクォートに変換される
+        let result = GitService::decode_quoted_diff_path(r#"a/path\"with\"quote""#);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), "a/path\"with\"quote");
+    }
+
+    #[test]
+    fn test_decode_quoted_path_missing_closing_quote() {
+        // 閉じクォートがない場合はNone
+        assert_eq!(
+            GitService::decode_quoted_diff_path(r#"a/path/without/close"#),
+            None
+        );
+    }
+
+    #[test]
+    fn test_decode_quoted_path_immediately_closed_quotes() {
+        // クォート内が空の場合はNone
+        assert_eq!(GitService::decode_quoted_diff_path(r#"""#), None);
+    }
+
+    #[test]
+    fn test_decode_quoted_path_one_octal_digit_only() {
+        // 8進が1桁の場合（3桁未満）: 次の2バイトが取れないのでNone
+        assert_eq!(GitService::decode_quoted_diff_path(r#"a/\3""#), None);
+    }
+
+    // ============================================================
+    // truncate_diff: マルチバイト文字境界のテスト
+    // ============================================================
+
+    #[test]
+    fn test_truncate_diff_exact_limit() {
+        // ちょうどMAX_DIFF_CHARS文字の場合はそのまま
+        let diff: String = "a".repeat(MAX_DIFF_CHARS);
+        let result = GitService::truncate_diff(&diff);
+        assert_eq!(result, diff);
+    }
+
+    #[test]
+    fn test_truncate_diff_one_over_limit() {
+        // MAX_DIFF_CHARS + 1文字の場合は切り詰められる
+        let diff: String = "a".repeat(MAX_DIFF_CHARS + 1);
+        let result = GitService::truncate_diff(&diff);
+        assert!(result.contains("diff truncated"));
+        // 元のdiffより切り詰めメッセージ分長くなるが、オリジナルの全文字は含まれない
+        assert!(!result.contains(&diff));
+    }
+
+    #[test]
+    fn test_truncate_diff_multibyte_with_newlines() {
+        // 日本語 + 改行の混合で、最後の完全な行まで切り詰められる
+        let line = "あいうえお\n"; // 6文字（5文字 + 改行）
+        let count = MAX_DIFF_CHARS / 6 + 2; // 制限を超える分
+        let diff: String = line.repeat(count);
+        let result = GitService::truncate_diff(&diff);
+        assert!(result.contains("diff truncated"));
+        // 切り詰め後も改行で終わる行構造が維持される
+        let before_truncation_msg = result.split("\n\n...").next().unwrap();
+        assert!(before_truncation_msg.ends_with("あいうえお"));
+    }
+
+    #[test]
+    fn test_truncate_diff_no_newline_in_content() {
+        // 改行がない長い文字列の場合、rfind('\n')がNoneでもパニックしない
+        let diff: String = "x".repeat(MAX_DIFF_CHARS + 100);
+        let result = GitService::truncate_diff(&diff);
+        assert!(result.contains("diff truncated"));
+    }
+
+    // ============================================================
+    // filter_binary_diff: リネーム・モード変更のエッジケース
+    // ============================================================
+
+    #[test]
+    fn test_filter_binary_diff_renamed_binary_with_similarity() {
+        // similarity index付きバイナリリネーム
+        let diff = r#"diff --git a/old.png b/new.png
+similarity index 100%
+rename from old.png
+rename to new.png
+Binary files a/old.png and b/new.png differ"#;
+        let result = GitService::filter_binary_diff(diff);
+        assert_eq!(result, "[Binary] renamed: old.png -> new.png");
+    }
+
+    #[test]
+    fn test_filter_binary_diff_executable_mode() {
+        // 実行可能モード (100755) のバイナリ
+        let diff = r#"diff --git a/script.bin b/script.bin
+new file mode 100755
+Binary files /dev/null and b/script.bin differ"#;
+        let result = GitService::filter_binary_diff(diff);
+        assert_eq!(result, "[Binary] added: script.bin");
+    }
+
+    // ============================================================
+    // extract_file_path_from_diff_header: 特殊ファイル名
+    // ============================================================
+
+    #[test]
+    fn test_extract_file_path_spaces_in_name() {
+        // クォートされたスペース付きファイル名
+        let header = r#"diff --git "a/path with spaces/file.rs" "b/path with spaces/file.rs""#;
+        let result = GitService::extract_file_path_from_diff_header(header);
+        assert_eq!(result, Some("path with spaces/file.rs".to_string()));
+    }
+
+    #[test]
+    fn test_extract_file_path_basic_unquoted() {
+        // 通常のファイル名
+        let header = "diff --git a/src/main.rs b/src/main.rs";
+        let result = GitService::extract_file_path_from_diff_header(header);
+        assert_eq!(result, Some("src/main.rs".to_string()));
+    }
+
+    #[test]
+    fn test_extract_file_path_deeply_nested() {
+        // 深いネストのパス
+        let header = "diff --git a/a/b/c/d/e/f/g.txt b/a/b/c/d/e/f/g.txt";
+        let result = GitService::extract_file_path_from_diff_header(header);
+        assert_eq!(result, Some("a/b/c/d/e/f/g.txt".to_string()));
+    }
+
+    #[test]
+    fn test_extract_file_path_empty_header() {
+        // 不正なヘッダー
+        let result = GitService::extract_file_path_from_diff_header("diff --git ");
+        assert!(result.is_none());
+    }
 }

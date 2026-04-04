@@ -1661,4 +1661,77 @@ mod tests {
             Some("undo previous change")
         );
     }
+
+    // ============================================================
+    // extract_conventional_body: 数値スコープ・特殊パターン
+    // ============================================================
+
+    #[test]
+    fn test_extract_conventional_body_numeric_scope() {
+        // 数値のみのスコープも有効
+        assert_eq!(
+            extract_conventional_body("feat(123): add feature"),
+            Some("add feature")
+        );
+    }
+
+    #[test]
+    fn test_extract_conventional_body_scope_with_dash() {
+        // ハイフンを含むスコープ
+        assert_eq!(
+            extract_conventional_body("fix(my-module): resolve issue"),
+            Some("resolve issue")
+        );
+    }
+
+    #[test]
+    fn test_extract_conventional_body_scope_missing_close_paren() {
+        // 閉じ括弧がない場合はNone
+        assert_eq!(extract_conventional_body("feat(scope: message"), None);
+    }
+
+    #[test]
+    fn test_extract_conventional_body_breaking_change_with_scope_and_multiline() {
+        // breaking change + スコープ + 複数行
+        let msg = "feat(api)!: remove deprecated endpoint\n\n- Remove /v1/users\n- Update docs";
+        assert_eq!(
+            extract_conventional_body(msg),
+            Some("remove deprecated endpoint\n\n- Remove /v1/users\n- Update docs")
+        );
+    }
+
+    #[test]
+    fn test_extract_conventional_body_multiple_colons_in_body() {
+        // 本文にコロンが含まれる場合、最初のコロンのみ分割に使用
+        assert_eq!(
+            extract_conventional_body("fix: resolve config: parsing error"),
+            Some("resolve config: parsing error")
+        );
+    }
+
+    // ============================================================
+    // apply_prefix: Unicode・空メッセージのエッジケース
+    // ============================================================
+
+    #[test]
+    fn test_apply_prefix_unicode_prefix() {
+        // 日本語プレフィックス
+        let result = TestHelper::apply_prefix("feat: add feature", "【機能】");
+        assert_eq!(result, "【機能】add feature");
+    }
+
+    #[test]
+    fn test_apply_prefix_empty_message() {
+        // 空メッセージへのプレフィックス適用
+        let result = TestHelper::apply_prefix("", "PREFIX ");
+        assert_eq!(result, "PREFIX ");
+    }
+
+    #[test]
+    fn test_strip_type_prefix_multiline_preserves_body() {
+        // 複数行メッセージのstrip: 本文が保持される
+        let msg = "feat: title\n\n- detail 1\n- detail 2";
+        let result = TestHelper::strip_type_prefix(msg);
+        assert_eq!(result, "title\n\n- detail 1\n- detail 2");
+    }
 }
