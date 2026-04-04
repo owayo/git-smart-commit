@@ -308,9 +308,15 @@ impl GitService {
                                 return None;
                             }
 
-                            let value =
-                                (escaped - b'0') * 64 + (second - b'0') * 8 + (third - b'0');
-                            decoded.push(value);
+                            // u16で計算して8進数値が1バイト範囲(0-255)に収まるか検証
+                            // Gitは通常0-377の範囲しか出力しないが、不正入力への防御
+                            let value = (escaped - b'0') as u16 * 64
+                                + (second - b'0') as u16 * 8
+                                + (third - b'0') as u16;
+                            if value > 255 {
+                                return None;
+                            }
+                            decoded.push(value as u8);
                             i += 2;
                         }
                         other => decoded.push(other),
