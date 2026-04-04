@@ -158,4 +158,37 @@ mod tests {
         assert!(content.contains("emoji"));
         assert!(content.contains("plain"));
     }
+
+    #[test]
+    fn test_default_config_content_has_auto_push() {
+        // auto_push 設定がデフォルト設定に含まれる（コメントアウト済み）
+        let content = Config::default_config_content();
+        assert!(content.contains("auto_push"));
+    }
+
+    #[test]
+    fn test_default_config_content_has_provider_cooldown() {
+        // provider_cooldown_minutes 設定がデフォルト設定に含まれる
+        let content = Config::default_config_content();
+        assert!(content.contains("provider_cooldown_minutes"));
+    }
+
+    #[test]
+    fn test_default_config_content_has_timeout() {
+        // provider_timeout_seconds 設定がデフォルト設定に含まれる
+        let content = Config::default_config_content();
+        assert!(content.contains("provider_timeout_seconds"));
+    }
+
+    #[test]
+    fn test_default_config_roundtrip_preserves_all_fields() {
+        // デフォルト設定をシリアライズ→デシリアライズしても全フィールドが保持される
+        let content = Config::default_config_content();
+        let config: Config = toml::from_str(&content).unwrap();
+
+        // 主要フィールドがデフォルト値を持つ
+        assert!(!config.providers.is_empty());
+        assert!(!config.language.is_empty());
+        assert!(config.provider_cooldown_minutes > 0);
+    }
 }

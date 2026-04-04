@@ -2601,4 +2601,109 @@ index 555..666 100644
         let result = GitService::decode_quoted_diff_path(r#"path\"with\"quotes""#);
         assert_eq!(result, Some("path\"with\"quotes".to_string()));
     }
+
+    // ============================================================
+    // filter_binary_diff: リネーム済みテキストファイルのテスト
+    // ============================================================
+
+    #[test]
+    fn test_filter_binary_diff_renamed_text_file_preserved() {
+        // リネームされたテキストファイルはそのまま保持される
+        let diff = "diff --git a/old_name.rs b/new_name.rs\n\
+                     similarity index 95%\n\
+                     rename from old_name.rs\n\
+                     rename to new_name.rs\n\
+                     --- a/old_name.rs\n\
+                     +++ b/new_name.rs\n\
+                     @@ -1,3 +1,3 @@\n\
+                     -old line\n\
+                     +new line";
+        let result = GitService::filter_binary_diff(diff);
+        // テキストファイルのリネームはそのまま保持
+        assert!(result.contains("rename from old_name.rs"));
+        assert!(result.contains("rename to new_name.rs"));
+        assert!(result.contains("-old line"));
+        assert!(result.contains("+new line"));
+    }
+
+    #[test]
+    fn test_filter_binary_diff_deleted_binary_file() {
+        // 削除されたバイナリファイルはサマリーのみ出力
+        let diff = "diff --git a/image.png b/image.png\n\
+                     deleted file mode 100644\n\
+                     Binary files a/image.png and /dev/null differ";
+        let result = GitService::filter_binary_diff(diff);
+        assert_eq!(result, "[Binary] deleted: image.png");
+    }
+
+    // ============================================================
+    // truncate_diff: 境界値テスト（MAX_DIFF_CHARS + 1）
+    // ============================================================
+
+    #[test]
+    fn test_truncate_diff_one_char_over_limit() {
+        // MAX_DIFF_CHARS + 1 文字の入力で切り詰めが発生する
+        let line = "a".repeat(5000);
+        let diff = format!("{}\n{}\nx", line, line); // 10002文字（改行含む）
+        let result = GitService::truncate_diff(&diff);
+        assert!(result.contains("diff truncated"));
+        assert!(!result.contains("\nx")); // 最後の行は含まれない
+    }
+
+    // ============================================================
+    // extract_file_path_from_diff_header: 特殊パス
+    // ============================================================
+
+    #[test]
+    fn test_extract_file_path_with_spaces_unquoted() {
+        // スペースを含むが引用符なしのパス
+        let header = "diff --git a/path with spaces/file.rs b/path with spaces/file.rs";
+        let result = GitService::extract_file_path_from_diff_header(header);
+        // b/ 以降を取得
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_extract_file_path_single_char_filename() {
+        // 1文字のファイル名
+        let header = "diff --git a/x b/x";
+        let result = GitService::extract_file_path_from_diff_header(header);
+        assert_eq!(result, Some("x".to_string()));
+    }
+
+    // ============================================================
+    // filter_ignored_files: 複数パターンマッチテスト
+    // ============================================================
+
+    #[test]
+    fn test_filter_ignored_files_multiple_patterns_mixed() {
+        // 複数のignoreパターンで一部のみマッチする場合
+        let diff = "diff --git a/src/main.rs b/src/main.rs\n\
+                     --- a/src/main.rs\n\
+                     +++ b/src/main.rs\n\
+                     @@ -1,1 +1,1 @@\n\
+                     -old\n\
+                     +new\n\
+                     diff --git a/dist/bundle.js b/dist/bundle.js\n\
+                     --- a/dist/bundle.js\n\
+                     +++ b/dist/bundle.js\n\
+                     @@ -1,1 +1,1 @@\n\
+                     -old\n\
+                     +new\n\
+                     diff --git a/src/lib.rs b/src/lib.rs\n\
+                     --- a/src/lib.rs\n\
+                     +++ b/src/lib.rs\n\
+                     @@ -1,1 +1,1 @@\n\
+                     -old\n\
+                     +new";
+        let mut builder = GitignoreBuilder::new(".");
+        builder.add_line(None, "dist/").unwrap();
+        let ignore = builder.build().unwrap();
+
+        let result = GitService::filter_ignored_files(diff, &ignore);
+        // src/main.rs と src/lib.rs は保持、dist/bundle.js は除外
+        assert!(result.contains("src/main.rs"));
+        assert!(result.contains("src/lib.rs"));
+        assert!(!result.contains("dist/bundle.js"));
+    }
 }

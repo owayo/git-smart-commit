@@ -506,4 +506,91 @@ mod tests {
         let deserialized: ProviderFailure = toml::from_str(&serialized).unwrap();
         assert_eq!(deserialized.failed_at, 1234567890);
     }
+
+    // ============================================================
+    // reorder_providers: 期限切れエントリとの組み合わせ
+    // ============================================================
+
+    #[test]
+    fn test_reorder_providers_with_expired_and_active() {
+        // 1つが期限切れ、1つがアクティブな降格状態
+        let mut state = State::default();
+
+        // 2時間前の失敗（期限切れ）
+        let two_hours_ago = State::now() - (2 * 60 * 60);
+        state.provider_failures.insert(
+            "gemini".to_string(),
+            ProviderFailure {
+                failed_at: two_hours_ago,
+            },
+        );
+
+        // 直近の失敗（アクティブ）
+        state.record_failure("codex");
+
+        let providers = vec![
+            "gemini".to_string(),
+            "codex".to_string(),
+            "claude".to_string(),
+        ];
+
+        let reordered = state.reorder_providers(providers, 60);
+        // geminiは期限切れなので通常位置、codexは末尾に移動
+        assert_eq!(reordered[0], "gemini");
+        assert_eq!(reordered[1], "claude");
+        assert_eq!(reordered[2], "codex");
+    }
+
+    #[test]
+    fn test_cleanup_expired_large_cooldown() {
+        // 非常に大きなクールダウン値: 全エントリが保持される
+        let mut state = State::default();
+        let old_failure = State::now() - (24 * 60 * 60); // 24時間前
+        state.provider_failures.insert(
+            "gemini".to_string(),
+            ProviderFailure {
+                failed_at: old_failure,
+            },
+        );
+
+        // 1週間のクールダウン
+        state.cleanup_expired(7 * 24 * 60);
+        assert!(state.provider_failures.contains_key("gemini"));
+    }
+
+    #[test]
+    fn test_get_demoted_providers_multiple_with_mixed_expiry() {
+        // 複数プロバイダーで一部のみ期限切れ
+        let mut state = State::default();
+
+        // アクティブ
+        state.record_failure("gemini");
+
+        // 期限切れ
+        let old = State::now() - (2 * 60 * 60);
+        state
+            .provider_failures
+            .insert("codex".to_string(), ProviderFailure { failed_at: old });
+
+        // アクティブ
+        state.record_failure("claude");
+
+        let demoted = state.get_demoted_providers(60);
+        assert_eq!(demoted.len(), 2);
+        assert!(demoted.contains(&"gemini".to_string()));
+        assert!(demoted.contains(&"claude".to_string()));
+        assert!(!demoted.contains(&"codex".to_string()));
+    }
+
+    #[test]
+    fn test_reorder_providers_single_provider() {
+        // プロバイダーが1つだけの場合
+        let mut state = State::default();
+        state.record_failure("gemini");
+
+        let providers = vec!["gemini".to_string()];
+        let reordered = state.reorder_providers(providers, 60);
+        // 降格されても1つしかないのでそのまま
+        assert_eq!(reordered, vec!["gemini".to_string()]);
+    }
 }

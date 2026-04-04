@@ -1562,4 +1562,103 @@ mod tests {
         // 開き括弧のみで閉じ括弧なし → None
         assert_eq!(extract_conventional_body("feat(: invalid scope"), None);
     }
+
+    // ============================================================
+    // apply_prefix: breaking change + scope の組み合わせ
+    // ============================================================
+
+    #[test]
+    fn test_apply_prefix_breaking_change_with_scope() {
+        // スコープ付きbreaking change のプレフィックス置換
+        let result = TestHelper::apply_prefix("feat(api)!: remove legacy endpoint", "BREAKING ");
+        assert_eq!(result, "BREAKING remove legacy endpoint");
+    }
+
+    #[test]
+    fn test_apply_prefix_multiline_body_preserves_all_lines() {
+        // 複数行の本文が全て保持される
+        let message = "fix(db): resolve connection leak\n\n- Close idle connections\n- Add timeout\n- Update pool config";
+        let result = TestHelper::apply_prefix(message, "[DB] ");
+        assert_eq!(
+            result,
+            "[DB] resolve connection leak\n\n- Close idle connections\n- Add timeout\n- Update pool config"
+        );
+    }
+
+    // ============================================================
+    // strip_type_prefix: 複雑なケース
+    // ============================================================
+
+    #[test]
+    fn test_strip_type_prefix_breaking_with_scope_and_multiline() {
+        // スコープ付きbreaking change + 複数行の本文
+        let message = "feat(auth)!: rewrite token validation\n\nMigrate from JWT to Paseto";
+        let result = TestHelper::strip_type_prefix(message);
+        assert_eq!(
+            result,
+            "rewrite token validation\n\nMigrate from JWT to Paseto"
+        );
+    }
+
+    #[test]
+    fn test_strip_type_prefix_only_colon() {
+        // タイプ部分がConventional Commitsに合致しない
+        let result = TestHelper::strip_type_prefix(":");
+        assert_eq!(result, ":");
+    }
+
+    // ============================================================
+    // get_debug_params_for_prefix_mode: 空のrecent_commits
+    // ============================================================
+
+    #[test]
+    fn test_debug_params_rule_mode_empty_commits() {
+        // ルールモードでrecent_commitsが空の場合
+        let prefix_mode = PrefixMode::Rule("conventional".to_string());
+        let recent_commits: Vec<String> = vec![];
+        let (prefix_type, commits) =
+            App::get_debug_params_for_prefix_mode(&prefix_mode, &recent_commits, false);
+        assert_eq!(prefix_type, Some("conventional"));
+        assert!(commits.is_empty());
+    }
+
+    #[test]
+    fn test_debug_params_config_mode_squash() {
+        // Configモード + squashフラグ: commitsは空になる
+        let prefix_mode = PrefixMode::Config("bracket".to_string());
+        let recent_commits = vec!["feat: test".to_string()];
+        let (prefix_type, commits) =
+            App::get_debug_params_for_prefix_mode(&prefix_mode, &recent_commits, true);
+        assert_eq!(prefix_type, Some("bracket"));
+        assert!(commits.is_empty());
+    }
+
+    // ============================================================
+    // extract_conventional_body: 追加境界ケース
+    // ============================================================
+
+    #[test]
+    fn test_extract_conventional_body_nested_parentheses() {
+        // ネストされた括弧: split_once('(') で "a(b))" がスコープとして扱われ、
+        // ends_with(')') が true かつ len > 1 なので有効と判定される
+        assert_eq!(
+            extract_conventional_body("feat(a(b)): nested"),
+            Some("nested")
+        );
+    }
+
+    #[test]
+    fn test_extract_conventional_body_empty_after_colon_no_space() {
+        // "feat:" のようにコロン後が空の場合
+        assert_eq!(extract_conventional_body("feat:"), Some(""));
+    }
+
+    #[test]
+    fn test_extract_conventional_body_revert_type() {
+        // revert タイプも認識される
+        assert_eq!(
+            extract_conventional_body("revert: undo previous change"),
+            Some("undo previous change")
+        );
+    }
 }

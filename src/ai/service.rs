@@ -2757,4 +2757,118 @@ mod tests {
         // 引用符の trim_matches も ` はマッチしない
         assert_eq!(result, "`feat: add`");
     }
+
+    // ============================================================
+    // ensure_body_separator: 追加エッジケース
+    // ============================================================
+
+    #[test]
+    fn test_ensure_body_separator_tab_only_second_line() {
+        // 2行目がタブのみの場合は空行として扱われる
+        let message = "feat: add feature\n\t\nBody text";
+        let result = AiService::ensure_body_separator(message);
+        // タブのみの行は trim() で空になるため、空行として扱われる
+        assert_eq!(result, "feat: add feature\n\t\nBody text");
+    }
+
+    #[test]
+    fn test_ensure_body_separator_multiple_body_lines() {
+        // 複数行の本文で2行目が非空の場合、空行が挿入される
+        let message = "feat: add feature\nline 2\nline 3\nline 4";
+        let result = AiService::ensure_body_separator(message);
+        assert_eq!(result, "feat: add feature\n\nline 2\nline 3\nline 4");
+    }
+
+    // ============================================================
+    // clean_message: 追加エッジケース
+    // ============================================================
+
+    #[test]
+    fn test_clean_message_single_quotes_wrapping() {
+        // シングルクォートで囲まれたメッセージ
+        let message = "'feat: add new feature'";
+        let result = AiService::clean_message(message);
+        assert_eq!(result, "feat: add new feature");
+    }
+
+    #[test]
+    fn test_clean_message_double_quotes_wrapping() {
+        // ダブルクォートで囲まれたメッセージ
+        let message = "\"fix: resolve crash\"";
+        let result = AiService::clean_message(message);
+        assert_eq!(result, "fix: resolve crash");
+    }
+
+    #[test]
+    fn test_clean_message_code_block_with_trailing_whitespace() {
+        // コードブロック前後に空白がある場合
+        let message = "  ```\nfeat: add feature\n```  ";
+        let result = AiService::clean_message(message);
+        assert_eq!(result, "feat: add feature");
+    }
+
+    #[test]
+    fn test_clean_message_preserves_body_separator() {
+        // 件名と本文の間の空行が保持される
+        let message = "feat: add feature\n\nDetailed description here";
+        let result = AiService::clean_message(message);
+        assert_eq!(result, "feat: add feature\n\nDetailed description here");
+    }
+
+    // ============================================================
+    // build_prompt: squash + body の組み合わせテスト
+    // ============================================================
+
+    #[test]
+    fn test_build_prompt_squash_with_body() {
+        // squash用のプロンプトはprefix_type="conventional"、commitsなし
+        let diff = "diff content";
+        let prompt =
+            AiService::build_prompt(diff, &[], "Japanese", Some("conventional"), true, None);
+        assert!(prompt.contains("diff content"));
+        assert!(prompt.contains("Japanese"));
+        // Conventional Commits ガイドが含まれる
+        assert!(prompt.contains("feat:"));
+        assert!(prompt.contains("fix:"));
+    }
+
+    #[test]
+    fn test_build_prompt_with_agent_context_and_body() {
+        // agent_contextとbodyの両方が有効な場合
+        let diff = "diff content";
+        let agent_context = "Implementing user authentication feature";
+        let prompt = AiService::build_prompt(
+            diff,
+            &["feat: previous commit".to_string()],
+            "English",
+            None,
+            true,
+            Some(agent_context),
+        );
+        assert!(prompt.contains(agent_context));
+        assert!(prompt.contains("diff content"));
+    }
+
+    // ============================================================
+    // format_command_for_debug: 特殊文字を含むプロンプト
+    // ============================================================
+
+    #[test]
+    fn test_format_command_for_debug_prompt_with_newlines() {
+        // 改行を含むプロンプトがエスケープされる
+        let service = AiService::new();
+        let prompt = "line 1\nline 2\nline 3";
+        let result = service.format_command_for_debug(&AiProvider::Gemini, prompt, None);
+        assert!(result.contains("line 1\nline 2"));
+    }
+
+    #[test]
+    fn test_format_command_for_debug_apple_intelligence_special_chars() {
+        // Apple Intelligenceプロバイダーでの特殊文字処理
+        let service = AiService::new();
+        let prompt = "feat: add 'quotes' and \"doubles\"";
+        let result = service.format_command_for_debug(&AiProvider::AppleIntelligence, prompt, None);
+        assert!(result.starts_with("echo '"));
+        assert!(result.contains("apple-ai"));
+    }
 }
