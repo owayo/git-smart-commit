@@ -2916,4 +2916,82 @@ Binary files /dev/null and b/script.bin differ"#;
         let result = GitService::extract_file_path_from_diff_header("diff --git ");
         assert!(result.is_none());
     }
+
+    // ============================================================
+    // decode_quoted_diff_path: \r エスケープのテスト
+    // ============================================================
+
+    #[test]
+    fn test_decode_quoted_diff_path_carriage_return_escape() {
+        // \r エスケープシーケンスが正しくデコードされる
+        let result = GitService::decode_quoted_diff_path("a/file\\rwith\\rcr\" rest");
+        assert_eq!(result, Some("a/file\rwith\rcr".to_string()));
+    }
+
+    #[test]
+    fn test_decode_quoted_diff_path_unknown_escape() {
+        // 未知のエスケープ文字はそのまま出力される
+        let result = GitService::decode_quoted_diff_path("a/file\\xname\" rest");
+        assert_eq!(result, Some("a/filexname".to_string()));
+    }
+
+    #[test]
+    fn test_decode_quoted_diff_path_octal_max_valid_377() {
+        // 8進 \377 = 255 (u8の最大値) は有効
+        let result = GitService::decode_quoted_diff_path("a/\\377\" rest");
+        assert!(result.is_some());
+    }
+
+    // ============================================================
+    // has_staged_changes のテスト（実際のgitリポジトリ内）
+    // ============================================================
+
+    #[test]
+    fn test_has_staged_changes_in_clean_repo() {
+        // クリーンなリポジトリでは false を返す
+        let temp = tempfile::tempdir().unwrap();
+        Command::new("git")
+            .args(["init"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        // 初期コミットを作成
+        std::fs::write(temp.path().join("file.txt"), "content").unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        let git = GitService {
+            repo_path: temp.path().to_path_buf(),
+        };
+        assert!(!git.has_staged_changes());
+    }
+
+    #[test]
+    fn test_has_staged_changes_with_staged_file() {
+        let temp = tempfile::tempdir().unwrap();
+        Command::new("git")
+            .args(["init"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        std::fs::write(temp.path().join("file.txt"), "content").unwrap();
+        Command::new("git")
+            .args(["add", "file.txt"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        let git = GitService {
+            repo_path: temp.path().to_path_buf(),
+        };
+        assert!(git.has_staged_changes());
+    }
 }

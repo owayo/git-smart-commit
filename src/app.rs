@@ -1734,4 +1734,186 @@ mod tests {
         let result = TestHelper::strip_type_prefix(msg);
         assert_eq!(result, "title\n\n- detail 1\n- detail 2");
     }
+
+    // ============================================================
+    // is_valid_prefix_type のテスト
+    // ============================================================
+
+    #[rstest]
+    #[case("conventional", true)]
+    #[case("bracket", true)]
+    #[case("colon", true)]
+    #[case("emoji", true)]
+    #[case("plain", true)]
+    #[case("none", true)]
+    #[case("invalid", false)]
+    #[case("", false)]
+    #[case("Conventional", false)] // 大文字小文字を区別
+    #[case("PLAIN", false)]
+    fn test_is_valid_prefix_type(#[case] input: &str, #[case] expected: bool) {
+        assert_eq!(is_valid_prefix_type(input), expected);
+    }
+
+    // ============================================================
+    // resolve_script_result のテスト
+    // ============================================================
+
+    #[test]
+    fn test_resolve_script_result_prefix_type_name() {
+        // スクリプトが有効な prefix_type 名を返した場合、PrefixMode::Rule に変換
+        let result = resolve_script_result(ScriptResult::Prefix("conventional".to_string()));
+        assert!(matches!(result, PrefixMode::Rule(ref s) if s == "conventional"));
+    }
+
+    #[test]
+    fn test_resolve_script_result_prefix_type_with_whitespace() {
+        // 前後に空白がある prefix_type 名もトリムして認識
+        let result = resolve_script_result(ScriptResult::Prefix("  plain  ".to_string()));
+        assert!(matches!(result, PrefixMode::Rule(ref s) if s == "plain"));
+    }
+
+    #[test]
+    fn test_resolve_script_result_normal_prefix() {
+        // 有効な prefix_type 名でない場合、PrefixMode::Script のまま
+        let result = resolve_script_result(ScriptResult::Prefix("TICKET-123 ".to_string()));
+        assert!(matches!(
+            result,
+            PrefixMode::Script(ScriptResult::Prefix(_))
+        ));
+    }
+
+    #[test]
+    fn test_resolve_script_result_empty() {
+        // Empty はそのまま PrefixMode::Script(Empty) として返る
+        let result = resolve_script_result(ScriptResult::Empty);
+        assert!(matches!(result, PrefixMode::Script(ScriptResult::Empty)));
+    }
+
+    #[test]
+    fn test_resolve_script_result_failed() {
+        // Failed はそのまま PrefixMode::Script(Failed) として返る
+        let result = resolve_script_result(ScriptResult::Failed);
+        assert!(matches!(result, PrefixMode::Script(ScriptResult::Failed)));
+    }
+
+    // ============================================================
+    // extract_conventional_body: 追加のエッジケース
+    // ============================================================
+
+    #[test]
+    fn test_extract_conventional_body_scope_only_paren() {
+        // 空のスコープ feat() は無効
+        assert_eq!(extract_conventional_body("feat(): add feature"), None);
+    }
+
+    #[test]
+    fn test_extract_conventional_body_unclosed_scope() {
+        // スコープの閉じ括弧がない場合は無効
+        assert_eq!(extract_conventional_body("feat(scope: add feature"), None);
+    }
+
+    #[test]
+    fn test_extract_conventional_body_unknown_type() {
+        // 未知の type は Conventional Commits として認識しない
+        assert_eq!(extract_conventional_body("unknown: something"), None);
+    }
+
+    #[test]
+    fn test_extract_conventional_body_case_insensitive() {
+        // 大文字小文字を区別せず認識
+        assert_eq!(
+            extract_conventional_body("FEAT: add feature"),
+            Some("add feature")
+        );
+        assert_eq!(extract_conventional_body("Fix: bug"), Some("bug"));
+    }
+
+    #[test]
+    fn test_extract_conventional_body_breaking_change_with_scope() {
+        // scope付きbreaking change
+        assert_eq!(
+            extract_conventional_body("feat(api)!: breaking change"),
+            Some("breaking change")
+        );
+    }
+
+    #[test]
+    fn test_extract_conventional_body_no_colon() {
+        // コロンなしは None
+        assert_eq!(extract_conventional_body("feat add feature"), None);
+    }
+
+    #[test]
+    fn test_extract_conventional_body_colon_only() {
+        // コロンだけの場合
+        assert_eq!(extract_conventional_body(":"), None);
+    }
+
+    #[test]
+    fn test_extract_conventional_body_all_types() {
+        // 全ての Conventional Commits type が認識される
+        for ty in CONVENTIONAL_TYPES {
+            let msg = format!("{}: description", ty);
+            assert_eq!(
+                extract_conventional_body(&msg),
+                Some("description"),
+                "type '{}' should be recognized",
+                ty
+            );
+        }
+    }
+
+    // ============================================================
+    // get_debug_params_for_prefix_mode のテスト
+    // ============================================================
+
+    #[test]
+    fn test_debug_params_script_mode() {
+        // Script モードでは prefix_type = "plain"、commits = 空
+        let commits = vec!["commit1".to_string()];
+        let prefix_mode = PrefixMode::Script(ScriptResult::Prefix("prefix".to_string()));
+        let (pt, c) = App::get_debug_params_for_prefix_mode(&prefix_mode, &commits, false);
+        assert_eq!(pt, Some("plain"));
+        assert!(c.is_empty());
+    }
+
+    #[test]
+    fn test_debug_params_rule_mode() {
+        // Rule モードでは指定された prefix_type、commits はそのまま
+        let commits = vec!["commit1".to_string()];
+        let prefix_mode = PrefixMode::Rule("bracket".to_string());
+        let (pt, c) = App::get_debug_params_for_prefix_mode(&prefix_mode, &commits, false);
+        assert_eq!(pt, Some("bracket"));
+        assert_eq!(c.len(), 1);
+    }
+
+    #[test]
+    fn test_debug_params_auto_mode_normal() {
+        // Auto モード（非 squash）では prefix_type = None、commits はそのまま
+        let commits = vec!["commit1".to_string()];
+        let prefix_mode = PrefixMode::Auto;
+        let (pt, c) = App::get_debug_params_for_prefix_mode(&prefix_mode, &commits, false);
+        assert_eq!(pt, None);
+        assert_eq!(c.len(), 1);
+    }
+
+    #[test]
+    fn test_debug_params_auto_mode_squash() {
+        // Auto モード（squash）では prefix_type = "conventional"、commits = 空
+        let commits = vec!["commit1".to_string()];
+        let prefix_mode = PrefixMode::Auto;
+        let (pt, c) = App::get_debug_params_for_prefix_mode(&prefix_mode, &commits, true);
+        assert_eq!(pt, Some("conventional"));
+        assert!(c.is_empty());
+    }
+
+    #[test]
+    fn test_debug_params_config_mode() {
+        // Config モードでは指定された prefix_type、commits はそのまま
+        let commits = vec!["a".to_string(), "b".to_string()];
+        let prefix_mode = PrefixMode::Config("emoji".to_string());
+        let (pt, c) = App::get_debug_params_for_prefix_mode(&prefix_mode, &commits, false);
+        assert_eq!(pt, Some("emoji"));
+        assert_eq!(c.len(), 2);
+    }
 }

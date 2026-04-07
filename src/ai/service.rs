@@ -3105,4 +3105,436 @@ mod tests {
         );
         assert!(prompt.contains("Use the following prefix format: my-custom-format"));
     }
+
+    // ============================================================
+    // clean_message のテスト
+    // ============================================================
+
+    #[test]
+    fn test_clean_message_plain_text() {
+        // 通常のメッセージはそのまま返る
+        assert_eq!(
+            AiService::clean_message("feat: add feature"),
+            "feat: add feature"
+        );
+    }
+
+    #[test]
+    fn test_clean_message_markdown_code_block() {
+        // マークダウンのコードブロックが除去される
+        let msg = "```\nfeat: add feature\n```";
+        assert_eq!(AiService::clean_message(msg), "feat: add feature");
+    }
+
+    #[test]
+    fn test_clean_message_markdown_code_block_with_lang() {
+        // 言語指定付きコードブロック
+        let msg = "```text\nfix: resolve bug\n```";
+        assert_eq!(AiService::clean_message(msg), "fix: resolve bug");
+    }
+
+    #[test]
+    fn test_clean_message_surrounding_quotes() {
+        // 前後の引用符が除去される
+        assert_eq!(AiService::clean_message("\"feat: add\""), "feat: add");
+        assert_eq!(AiService::clean_message("'fix: bug'"), "fix: bug");
+    }
+
+    #[test]
+    fn test_clean_message_whitespace_trim() {
+        // 前後の空白がトリムされる
+        assert_eq!(AiService::clean_message("  feat: add  "), "feat: add");
+    }
+
+    #[test]
+    fn test_clean_message_empty() {
+        assert_eq!(AiService::clean_message(""), "");
+        assert_eq!(AiService::clean_message("   "), "");
+    }
+
+    #[test]
+    fn test_clean_message_code_block_only_backticks() {
+        // バッククォートだけの場合（2行以下）
+        let msg = "```\n```";
+        let result = AiService::clean_message(msg);
+        // 2行なので中身が抽出できず、そのままトリム→引用符除去
+        assert_eq!(result, "```\n```");
+    }
+
+    #[test]
+    fn test_clean_message_multiline_with_body() {
+        // 複数行メッセージ（件名 + 本文）
+        let msg = "feat: add feature\ndetail line";
+        let result = AiService::clean_message(msg);
+        // 2行目が空行でないので空行が挿入される
+        assert_eq!(result, "feat: add feature\n\ndetail line");
+    }
+
+    #[test]
+    fn test_clean_message_multiline_with_separator() {
+        // 既に空行セパレータがある場合はそのまま
+        let msg = "feat: add feature\n\n- detail 1\n- detail 2";
+        assert_eq!(AiService::clean_message(msg), msg);
+    }
+
+    // ============================================================
+    // ensure_body_separator のテスト
+    // ============================================================
+
+    #[test]
+    fn test_ensure_body_separator_single_line() {
+        assert_eq!(AiService::ensure_body_separator("feat: add"), "feat: add");
+    }
+
+    #[test]
+    fn test_ensure_body_separator_already_separated() {
+        let msg = "title\n\nbody";
+        assert_eq!(AiService::ensure_body_separator(msg), msg);
+    }
+
+    #[test]
+    fn test_ensure_body_separator_no_separator() {
+        let msg = "title\nbody";
+        assert_eq!(AiService::ensure_body_separator(msg), "title\n\nbody");
+    }
+
+    #[test]
+    fn test_ensure_body_separator_multiple_body_lines() {
+        let msg = "title\nline1\nline2\nline3";
+        assert_eq!(
+            AiService::ensure_body_separator(msg),
+            "title\n\nline1\nline2\nline3"
+        );
+    }
+
+    // ============================================================
+    // extract_error のテスト
+    // ============================================================
+
+    #[test]
+    fn test_extract_error_gemini_api_error() {
+        let stderr = "Some info\n[API Error: rate limit exceeded]\nMore info";
+        assert_eq!(
+            AiService::extract_error(stderr, &AiProvider::Gemini),
+            "[API Error: rate limit exceeded]"
+        );
+    }
+
+    #[test]
+    fn test_extract_error_gemini_critical_error() {
+        let stderr = "An unexpected critical error occurred:Error: something broke";
+        let result = AiService::extract_error(stderr, &AiProvider::Gemini);
+        assert!(result.contains("critical error"));
+    }
+
+    #[test]
+    fn test_extract_error_gemini_no_match() {
+        let stderr = "some random output";
+        assert_eq!(
+            AiService::extract_error(stderr, &AiProvider::Gemini),
+            "Gemini API request failed"
+        );
+    }
+
+    #[test]
+    fn test_extract_error_codex_error_line() {
+        let stderr = "Reading prompt...\nERROR: Your access token expired\nReconnecting...";
+        assert_eq!(
+            AiService::extract_error(stderr, &AiProvider::Codex),
+            "ERROR: Your access token expired"
+        );
+    }
+
+    #[test]
+    fn test_extract_error_codex_lowercase_error() {
+        let stderr = "Reading prompt...\nSomething error happened\n";
+        assert_eq!(
+            AiService::extract_error(stderr, &AiProvider::Codex),
+            "Something error happened"
+        );
+    }
+
+    #[test]
+    fn test_extract_error_codex_fallback_last_line() {
+        let stderr = "Reading prompt...\nReconnecting...\nUnknown issue";
+        assert_eq!(
+            AiService::extract_error(stderr, &AiProvider::Codex),
+            "Unknown issue"
+        );
+    }
+
+    #[test]
+    fn test_extract_error_claude_first_line() {
+        let stderr = "Connection refused\nRetrying...";
+        assert_eq!(
+            AiService::extract_error(stderr, &AiProvider::Claude),
+            "Connection refused"
+        );
+    }
+
+    #[test]
+    fn test_extract_error_claude_empty() {
+        assert_eq!(
+            AiService::extract_error("", &AiProvider::Claude),
+            "API request failed"
+        );
+    }
+
+    #[test]
+    fn test_extract_error_opencode_error_keyword() {
+        let stderr = "info: starting\nerror: model not found\n";
+        assert_eq!(
+            AiService::extract_error(stderr, &AiProvider::Opencode),
+            "error: model not found"
+        );
+    }
+
+    #[test]
+    fn test_extract_error_opencode_failed_keyword() {
+        let stderr = "Request failed due to timeout\n";
+        assert_eq!(
+            AiService::extract_error(stderr, &AiProvider::Opencode),
+            "Request failed due to timeout"
+        );
+    }
+
+    #[test]
+    fn test_extract_error_apple_intelligence() {
+        let stderr = "Info: loading model\nError: model unavailable\n";
+        assert_eq!(
+            AiService::extract_error(stderr, &AiProvider::AppleIntelligence),
+            "Error: model unavailable"
+        );
+    }
+
+    // ============================================================
+    // process_provider_output のテスト
+    // ============================================================
+
+    #[test]
+    fn test_process_provider_output_success() {
+        use std::process::Command;
+        // 正常終了のExitStatusを取得
+        let status = Command::new("true").status().unwrap();
+        let result =
+            AiService::process_provider_output(&AiProvider::Gemini, status, "feat: add\n", "");
+        assert_eq!(result.unwrap(), "feat: add");
+    }
+
+    #[test]
+    fn test_process_provider_output_empty_stdout() {
+        use std::process::Command;
+        let status = Command::new("true").status().unwrap();
+        let result = AiService::process_provider_output(&AiProvider::Gemini, status, "", "");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("empty response"));
+    }
+
+    #[test]
+    fn test_process_provider_output_failed_exit() {
+        use std::process::Command;
+        let status = Command::new("false").status().unwrap();
+        let result = AiService::process_provider_output(
+            &AiProvider::Gemini,
+            status,
+            "",
+            "some error output",
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_process_provider_output_stderr_error_for_gemini() {
+        use std::process::Command;
+        let status = Command::new("true").status().unwrap();
+        // Gemini はstderrに "error:" があるとエラー扱い
+        let result = AiService::process_provider_output(
+            &AiProvider::Gemini,
+            status,
+            "feat: add",
+            "error: something",
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_process_provider_output_stderr_ignored_for_codex() {
+        use std::process::Command;
+        let status = Command::new("true").status().unwrap();
+        // Codex はstderrに "error:" があっても無視
+        let result = AiService::process_provider_output(
+            &AiProvider::Codex,
+            status,
+            "feat: add\n",
+            "error: some debug info",
+        );
+        assert_eq!(result.unwrap(), "feat: add");
+    }
+
+    #[test]
+    fn test_process_provider_output_stderr_ignored_for_claude() {
+        use std::process::Command;
+        let status = Command::new("true").status().unwrap();
+        // Claude もstderrのエラーチェックをスキップ
+        let result = AiService::process_provider_output(
+            &AiProvider::Claude,
+            status,
+            "fix: resolve bug\n",
+            "error: debug output",
+        );
+        assert_eq!(result.unwrap(), "fix: resolve bug");
+    }
+
+    // ============================================================
+    // format_command_for_debug のテスト
+    // ============================================================
+
+    #[test]
+    fn test_format_command_gemini() {
+        let service = AiService {
+            providers: vec![AiProvider::Gemini],
+            language: "Japanese".to_string(),
+            models: ModelsConfig {
+                gemini: "gemini-2.5-flash".to_string(),
+                ..Default::default()
+            },
+            cooldown_minutes: 60,
+            timeout_seconds: 60,
+            debug: false,
+            provider_override: false,
+            stop_hook_active: false,
+        };
+        let cmd = service.format_command_for_debug(&AiProvider::Gemini, "test prompt", None);
+        assert!(cmd.contains("gemini"));
+        assert!(cmd.contains("-m 'gemini-2.5-flash'"));
+        assert!(cmd.contains("-p 'test prompt'"));
+    }
+
+    #[test]
+    fn test_format_command_gemini_empty_model() {
+        let service = AiService {
+            providers: vec![AiProvider::Gemini],
+            language: "Japanese".to_string(),
+            models: ModelsConfig {
+                gemini: String::new(),
+                ..Default::default()
+            },
+            cooldown_minutes: 60,
+            timeout_seconds: 60,
+            debug: false,
+            provider_override: false,
+            stop_hook_active: false,
+        };
+        let cmd = service.format_command_for_debug(&AiProvider::Gemini, "prompt", None);
+        assert!(!cmd.contains("-m"));
+    }
+
+    #[test]
+    fn test_format_command_codex_with_stop_hook() {
+        let service = AiService {
+            providers: vec![AiProvider::Codex],
+            language: "Japanese".to_string(),
+            models: ModelsConfig::default(),
+            cooldown_minutes: 60,
+            timeout_seconds: 60,
+            debug: false,
+            provider_override: false,
+            stop_hook_active: true,
+        };
+        let cmd = service.format_command_for_debug(&AiProvider::Codex, "prompt", None);
+        assert!(cmd.contains("--disable codex_hooks"));
+    }
+
+    #[test]
+    fn test_format_command_claude() {
+        let service = AiService {
+            providers: vec![AiProvider::Claude],
+            language: "Japanese".to_string(),
+            models: ModelsConfig {
+                claude: "haiku".to_string(),
+                ..Default::default()
+            },
+            cooldown_minutes: 60,
+            timeout_seconds: 60,
+            debug: false,
+            provider_override: false,
+            stop_hook_active: false,
+        };
+        let cmd = service.format_command_for_debug(&AiProvider::Claude, "prompt", None);
+        assert!(cmd.contains("claude"));
+        assert!(cmd.contains("--model 'haiku'"));
+        assert!(cmd.contains("-p"));
+    }
+
+    #[test]
+    fn test_format_command_prompt_with_single_quotes() {
+        // シングルクォートを含むプロンプトのエスケープ
+        let service = AiService::new();
+        let cmd = service.format_command_for_debug(&AiProvider::Gemini, "it's a test", None);
+        assert!(cmd.contains("it'\\''s a test"));
+    }
+
+    // ============================================================
+    // AiService::from_config のテスト
+    // ============================================================
+
+    #[test]
+    fn test_from_config_default() {
+        let config = Config::default();
+        let service = AiService::from_config(&config);
+        assert_eq!(service.language, "Japanese");
+        assert!(!service.providers.is_empty());
+    }
+
+    #[test]
+    fn test_from_config_custom_language() {
+        let config = Config {
+            language: "English".to_string(),
+            ..Default::default()
+        };
+        let service = AiService::from_config(&config);
+        assert_eq!(service.language, "English");
+    }
+
+    #[test]
+    fn test_from_config_empty_providers_fallback() {
+        // 空のプロバイダーリストではデフォルトにフォールバック
+        let config = Config {
+            providers: vec![],
+            ..Default::default()
+        };
+        let service = AiService::from_config(&config);
+        assert!(!service.providers.is_empty());
+    }
+
+    #[test]
+    fn test_from_config_invalid_providers_fallback() {
+        // 無効なプロバイダー名のみの場合もデフォルトにフォールバック
+        let config = Config {
+            providers: vec!["invalid1".to_string(), "invalid2".to_string()],
+            ..Default::default()
+        };
+        let service = AiService::from_config(&config);
+        assert!(!service.providers.is_empty());
+    }
+
+    #[test]
+    fn test_from_config_custom_timeout() {
+        let config = Config {
+            provider_timeout_seconds: 120,
+            ..Default::default()
+        };
+        let service = AiService::from_config(&config);
+        assert_eq!(service.timeout_seconds, 120);
+    }
+
+    #[test]
+    fn test_from_config_custom_cooldown() {
+        let config = Config {
+            provider_cooldown_minutes: 30,
+            ..Default::default()
+        };
+        let service = AiService::from_config(&config);
+        assert_eq!(service.cooldown_minutes, 30);
+    }
 }
