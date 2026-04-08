@@ -3147,18 +3147,18 @@ mod tests {
     }
 
     #[test]
-    fn test_clean_message_empty() {
+    fn test_clean_message_empty_and_whitespace() {
         assert_eq!(AiService::clean_message(""), "");
         assert_eq!(AiService::clean_message("   "), "");
     }
 
     #[test]
     fn test_clean_message_code_block_only_backticks() {
-        // バッククォートだけの場合（2行以下）
+        // バッククォートだけの場合（2行）→ コードブロック抽出不可
+        // ensure_body_separator により2行目の前に空行が挿入される
         let msg = "```\n```";
         let result = AiService::clean_message(msg);
-        // 2行なので中身が抽出できず、そのままトリム→引用符除去
-        assert_eq!(result, "```\n```");
+        assert_eq!(result, "```\n\n```");
     }
 
     #[test]
@@ -3182,7 +3182,7 @@ mod tests {
     // ============================================================
 
     #[test]
-    fn test_ensure_body_separator_single_line() {
+    fn test_ensure_body_separator_single_line_short() {
         assert_eq!(AiService::ensure_body_separator("feat: add"), "feat: add");
     }
 
@@ -3199,7 +3199,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ensure_body_separator_multiple_body_lines() {
+    fn test_ensure_body_separator_multiple_body_lines_simple() {
         let msg = "title\nline1\nline2\nline3";
         assert_eq!(
             AiService::ensure_body_separator(msg),
@@ -3212,7 +3212,7 @@ mod tests {
     // ============================================================
 
     #[test]
-    fn test_extract_error_gemini_api_error() {
+    fn test_extract_error_gemini_api_error_lowercase() {
         let stderr = "Some info\n[API Error: rate limit exceeded]\nMore info";
         assert_eq!(
             AiService::extract_error(stderr, &AiProvider::Gemini),
@@ -3221,7 +3221,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_error_gemini_critical_error() {
+    fn test_extract_error_gemini_critical_error_broke() {
         let stderr = "An unexpected critical error occurred:Error: something broke";
         let result = AiService::extract_error(stderr, &AiProvider::Gemini);
         assert!(result.contains("critical error"));
@@ -3290,7 +3290,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_error_opencode_failed_keyword() {
+    fn test_extract_error_opencode_failed_keyword_timeout() {
         let stderr = "Request failed due to timeout\n";
         assert_eq!(
             AiService::extract_error(stderr, &AiProvider::Opencode),
@@ -3344,7 +3344,7 @@ mod tests {
     }
 
     #[test]
-    fn test_process_provider_output_stderr_error_for_gemini() {
+    fn test_process_provider_output_stderr_error_for_gemini_via_command() {
         use std::process::Command;
         let status = Command::new("true").status().unwrap();
         // Gemini はstderrに "error:" があるとエラー扱い

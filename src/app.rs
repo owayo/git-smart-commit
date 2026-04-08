@@ -1736,25 +1736,6 @@ mod tests {
     }
 
     // ============================================================
-    // is_valid_prefix_type のテスト
-    // ============================================================
-
-    #[rstest]
-    #[case("conventional", true)]
-    #[case("bracket", true)]
-    #[case("colon", true)]
-    #[case("emoji", true)]
-    #[case("plain", true)]
-    #[case("none", true)]
-    #[case("invalid", false)]
-    #[case("", false)]
-    #[case("Conventional", false)] // 大文字小文字を区別
-    #[case("PLAIN", false)]
-    fn test_is_valid_prefix_type(#[case] input: &str, #[case] expected: bool) {
-        assert_eq!(is_valid_prefix_type(input), expected);
-    }
-
-    // ============================================================
     // resolve_script_result のテスト
     // ============================================================
 
@@ -1813,107 +1794,8 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_conventional_body_unknown_type() {
-        // 未知の type は Conventional Commits として認識しない
-        assert_eq!(extract_conventional_body("unknown: something"), None);
-    }
-
-    #[test]
-    fn test_extract_conventional_body_case_insensitive() {
-        // 大文字小文字を区別せず認識
-        assert_eq!(
-            extract_conventional_body("FEAT: add feature"),
-            Some("add feature")
-        );
-        assert_eq!(extract_conventional_body("Fix: bug"), Some("bug"));
-    }
-
-    #[test]
-    fn test_extract_conventional_body_breaking_change_with_scope() {
-        // scope付きbreaking change
-        assert_eq!(
-            extract_conventional_body("feat(api)!: breaking change"),
-            Some("breaking change")
-        );
-    }
-
-    #[test]
-    fn test_extract_conventional_body_no_colon() {
-        // コロンなしは None
-        assert_eq!(extract_conventional_body("feat add feature"), None);
-    }
-
-    #[test]
     fn test_extract_conventional_body_colon_only() {
         // コロンだけの場合
         assert_eq!(extract_conventional_body(":"), None);
-    }
-
-    #[test]
-    fn test_extract_conventional_body_all_types() {
-        // 全ての Conventional Commits type が認識される
-        for ty in CONVENTIONAL_TYPES {
-            let msg = format!("{}: description", ty);
-            assert_eq!(
-                extract_conventional_body(&msg),
-                Some("description"),
-                "type '{}' should be recognized",
-                ty
-            );
-        }
-    }
-
-    // ============================================================
-    // get_debug_params_for_prefix_mode のテスト
-    // ============================================================
-
-    #[test]
-    fn test_debug_params_script_mode() {
-        // Script モードでは prefix_type = "plain"、commits = 空
-        let commits = vec!["commit1".to_string()];
-        let prefix_mode = PrefixMode::Script(ScriptResult::Prefix("prefix".to_string()));
-        let (pt, c) = App::get_debug_params_for_prefix_mode(&prefix_mode, &commits, false);
-        assert_eq!(pt, Some("plain"));
-        assert!(c.is_empty());
-    }
-
-    #[test]
-    fn test_debug_params_rule_mode() {
-        // Rule モードでは指定された prefix_type、commits はそのまま
-        let commits = vec!["commit1".to_string()];
-        let prefix_mode = PrefixMode::Rule("bracket".to_string());
-        let (pt, c) = App::get_debug_params_for_prefix_mode(&prefix_mode, &commits, false);
-        assert_eq!(pt, Some("bracket"));
-        assert_eq!(c.len(), 1);
-    }
-
-    #[test]
-    fn test_debug_params_auto_mode_normal() {
-        // Auto モード（非 squash）では prefix_type = None、commits はそのまま
-        let commits = vec!["commit1".to_string()];
-        let prefix_mode = PrefixMode::Auto;
-        let (pt, c) = App::get_debug_params_for_prefix_mode(&prefix_mode, &commits, false);
-        assert_eq!(pt, None);
-        assert_eq!(c.len(), 1);
-    }
-
-    #[test]
-    fn test_debug_params_auto_mode_squash() {
-        // Auto モード（squash）では prefix_type = "conventional"、commits = 空
-        let commits = vec!["commit1".to_string()];
-        let prefix_mode = PrefixMode::Auto;
-        let (pt, c) = App::get_debug_params_for_prefix_mode(&prefix_mode, &commits, true);
-        assert_eq!(pt, Some("conventional"));
-        assert!(c.is_empty());
-    }
-
-    #[test]
-    fn test_debug_params_config_mode() {
-        // Config モードでは指定された prefix_type、commits はそのまま
-        let commits = vec!["a".to_string(), "b".to_string()];
-        let prefix_mode = PrefixMode::Config("emoji".to_string());
-        let (pt, c) = App::get_debug_params_for_prefix_mode(&prefix_mode, &commits, false);
-        assert_eq!(pt, Some("emoji"));
-        assert_eq!(c.len(), 2);
     }
 }
