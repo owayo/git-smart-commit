@@ -1801,4 +1801,83 @@ gemini = "gemini-2.5-pro"
 
         assert_eq!(config.language, "English");
     }
+
+    // ============================================================
+    // default_config_content のテスト
+    // ============================================================
+
+    #[test]
+    fn test_default_config_content_is_valid_toml() {
+        // デフォルト設定内容が有効な TOML として解析できる
+        let content = Config::default_config_content();
+        let result: Result<PartialConfig, _> = toml::from_str(&content);
+        assert!(
+            result.is_ok(),
+            "default_config_content は有効な TOML であるべき: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_default_config_content_contains_required_fields() {
+        // 必須フィールドが含まれている
+        let content = Config::default_config_content();
+        assert!(content.contains("providers"));
+        assert!(content.contains("language"));
+        assert!(content.contains("provider_cooldown_minutes"));
+        assert!(content.contains("provider_timeout_seconds"));
+        assert!(content.contains("[models]"));
+    }
+
+    #[test]
+    fn test_default_config_content_providers_not_empty() {
+        // providers が空でない
+        let content = Config::default_config_content();
+        let partial: PartialConfig = toml::from_str(&content).unwrap();
+        assert!(
+            partial.providers.is_some_and(|p| !p.is_empty()),
+            "providers は空であってはならない"
+        );
+    }
+
+    // ============================================================
+    // PartialConfig::merge_into: 空コレクションのエッジケース
+    // ============================================================
+
+    #[test]
+    fn test_partial_merge_empty_providers_does_not_clear_global() {
+        // providers = [] はグローバルのprovidersをクリアしない
+        let mut config = Config {
+            providers: vec!["gemini".to_string(), "claude".to_string()],
+            ..Default::default()
+        };
+
+        let toml = r#"providers = []"#;
+        let partial: PartialConfig = toml::from_str(toml).unwrap();
+        partial.merge_into(&mut config);
+
+        assert_eq!(
+            config.providers,
+            vec!["gemini".to_string(), "claude".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_partial_merge_empty_prefix_scripts_does_not_clear_global() {
+        // prefix_scripts を持つグローバル設定がプロジェクト設定で上書きされる
+        let mut config = Config {
+            prefix_scripts: vec![PrefixScriptConfig {
+                url_pattern: ".*".to_string(),
+                script: "test.sh".to_string(),
+            }],
+            ..Default::default()
+        };
+
+        let toml = "[[prefix_scripts]]\nurl_pattern = \"new\"\nscript = \"new.sh\"";
+        let partial: PartialConfig = toml::from_str(toml).unwrap();
+        partial.merge_into(&mut config);
+
+        assert_eq!(config.prefix_scripts.len(), 1);
+        assert_eq!(config.prefix_scripts[0].script, "new.sh");
+    }
 }

@@ -2994,4 +2994,114 @@ Binary files /dev/null and b/script.bin differ"#;
         };
         assert!(git.has_staged_changes());
     }
+
+    // ============================================================
+    // truncate_diff: 境界値テスト
+    // ============================================================
+
+    #[test]
+    fn test_truncate_diff_exact_boundary() {
+        // ちょうど MAX_DIFF_CHARS の場合は切り詰めない
+        let diff: String = "a".repeat(MAX_DIFF_CHARS);
+        let result = GitService::truncate_diff(&diff);
+        assert_eq!(result.len(), MAX_DIFF_CHARS);
+        assert!(!result.contains("truncated"));
+    }
+
+    #[test]
+    fn test_truncate_diff_one_over_boundary() {
+        // MAX_DIFF_CHARS + 1 の場合は切り詰める
+        let diff: String = "a".repeat(MAX_DIFF_CHARS + 1);
+        let result = GitService::truncate_diff(&diff);
+        assert!(result.contains("truncated"));
+    }
+
+    #[test]
+    fn test_truncate_diff_no_newline_falls_to_else_branch() {
+        // 改行がない長大な文字列の切り詰め（else 分岐）
+        let diff: String = "x".repeat(MAX_DIFF_CHARS + 100);
+        let result = GitService::truncate_diff(&diff);
+        assert!(result.contains("truncated"));
+        // 改行がないため rfind('\n') は None → そのまま切り詰め
+        assert!(result.starts_with("xxxx"));
+    }
+
+    #[test]
+    fn test_truncate_diff_multibyte_boundary() {
+        // マルチバイト文字が境界付近にある場合
+        // "あ" は3バイトだが1文字 → chars().take() は文字単位でカット
+        let prefix: String = "a".repeat(MAX_DIFF_CHARS - 2);
+        let diff = format!("{}\nあいう", prefix);
+        let result = GitService::truncate_diff(&diff);
+        assert!(result.contains("truncated"));
+        // 文字単位でカットされ、バイト列の破損はない
+        assert!(result.is_char_boundary(0));
+    }
+
+    // ============================================================
+    // filter_binary_diff: 追加エッジケース
+    // ============================================================
+
+    #[test]
+    fn test_filter_binary_diff_consecutive_binary_add_and_delete() {
+        // 追加と削除のバイナリファイルが連続する場合
+        let diff = "diff --git a/a.png b/a.png\n\
+                     new file mode 100644\n\
+                     Binary files /dev/null and b/a.png differ\n\
+                     diff --git a/b.jpg b/b.jpg\n\
+                     deleted file mode 100644\n\
+                     Binary files a/b.jpg and /dev/null differ";
+        let result = GitService::filter_binary_diff(diff);
+        assert!(result.contains("[Binary] added: a.png"));
+        assert!(result.contains("[Binary] deleted: b.jpg"));
+    }
+
+    #[test]
+    fn test_filter_binary_diff_binary_then_text() {
+        // バイナリファイルの直後にテキストファイルが続く場合
+        let diff = "diff --git a/icon.png b/icon.png\n\
+                     Binary files a/icon.png and b/icon.png differ\n\
+                     diff --git a/main.rs b/main.rs\n\
+                     --- a/main.rs\n\
+                     +++ b/main.rs\n\
+                     @@ -1 +1 @@\n\
+                     -old\n\
+                     +new";
+        let result = GitService::filter_binary_diff(diff);
+        assert!(result.contains("[Binary] modified: icon.png"));
+        assert!(result.contains("+new"));
+        assert!(result.contains("-old"));
+    }
+
+    // ============================================================
+    // filter_ignored_files: ディレクトリパターンのテスト
+    // ============================================================
+
+    #[test]
+    fn test_filter_ignored_files_directory_glob_pattern() {
+        // ディレクトリのグロブパターンでフィルタ
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+        std::fs::write(root.join(".gitignore"), "generated/**\n").unwrap();
+
+        let mut builder = ignore::gitignore::GitignoreBuilder::new(root);
+        builder.add(root.join(".gitignore"));
+        let ignore = builder.build().unwrap();
+
+        let diff = "diff --git a/src/main.rs b/src/main.rs\n\
+                     --- a/src/main.rs\n\
+                     +++ b/src/main.rs\n\
+                     -old\n\
+                     +new\n\
+                     diff --git a/generated/out.rs b/generated/out.rs\n\
+                     --- a/generated/out.rs\n\
+                     +++ b/generated/out.rs\n\
+                     -x\n\
+                     +y";
+        let result = GitService::filter_ignored_files(diff, &ignore);
+        assert!(result.contains("src/main.rs"));
+        assert!(!result.contains("generated/out.rs"));
+    }
 }

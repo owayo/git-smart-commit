@@ -1798,4 +1798,137 @@ mod tests {
         // コロンだけの場合
         assert_eq!(extract_conventional_body(":"), None);
     }
+
+    // ============================================================
+    // extract_conventional_body: 追加エッジケース
+    // ============================================================
+
+    #[test]
+    fn test_extract_conventional_body_whitespace_only_scope() {
+        // スコープが空白のみの場合 → 有効なスコープとして扱われる
+        assert_eq!(
+            extract_conventional_body("feat( ): add feature"),
+            Some("add feature")
+        );
+    }
+
+    #[test]
+    fn test_extract_conventional_body_multibyte_scope() {
+        // マルチバイト文字のスコープ
+        assert_eq!(
+            extract_conventional_body("feat(認証): ログイン修正"),
+            Some("ログイン修正")
+        );
+    }
+
+    #[test]
+    fn test_extract_conventional_body_triple_colons_in_body() {
+        // 本文にコロンが3つ含まれる場合
+        assert_eq!(
+            extract_conventional_body("fix: resolve config: parsing: error"),
+            Some("resolve config: parsing: error")
+        );
+    }
+
+    #[test]
+    fn test_extract_conventional_body_body_with_many_newlines() {
+        // 本文に複数の空行がある場合
+        let msg = "feat: add feature\n\nline1\n\nline2\n\nline3";
+        assert_eq!(
+            extract_conventional_body(msg),
+            Some("add feature\n\nline1\n\nline2\n\nline3")
+        );
+    }
+
+    // ============================================================
+    // resolve_script_result: 追加エッジケース
+    // ============================================================
+
+    #[test]
+    fn test_resolve_script_result_all_valid_types() {
+        // 全ての有効な prefix_type が Rule に変換される
+        for ty in VALID_PREFIX_TYPES {
+            let result = resolve_script_result(ScriptResult::Prefix(ty.to_string()));
+            assert!(
+                matches!(result, PrefixMode::Rule(_)),
+                "'{}' は Rule に変換されるべき",
+                ty
+            );
+        }
+    }
+
+    #[test]
+    fn test_resolve_script_result_prefix_with_newline() {
+        // 改行を含むプレフィックス → trim されても有効な prefix_type なら Rule
+        let result = resolve_script_result(ScriptResult::Prefix("conventional\n".to_string()));
+        assert!(matches!(result, PrefixMode::Rule(_)));
+    }
+
+    #[test]
+    fn test_resolve_script_result_empty_string() {
+        // 空文字列のプレフィックスは Script のまま
+        let result = resolve_script_result(ScriptResult::Prefix(String::new()));
+        assert!(matches!(result, PrefixMode::Script(_)));
+    }
+
+    // ============================================================
+    // strip_type_prefix: 追加エッジケース
+    // ============================================================
+
+    #[test]
+    fn test_strip_type_prefix_non_conventional() {
+        // Conventional Commits 以外のメッセージはそのまま返る
+        assert_eq!(
+            TestHelper::strip_type_prefix("Update README"),
+            "Update README"
+        );
+    }
+
+    #[test]
+    fn test_strip_type_prefix_with_scope_and_breaking() {
+        // スコープ + breaking change マーカー付き
+        assert_eq!(
+            TestHelper::strip_type_prefix("feat(api)!: remove endpoint"),
+            "remove endpoint"
+        );
+    }
+
+    #[test]
+    fn test_strip_type_prefix_multiline() {
+        // 複数行メッセージのプレフィックス除去
+        let msg = "feat: add feature\n\n- detail 1\n- detail 2";
+        assert_eq!(
+            TestHelper::strip_type_prefix(msg),
+            "add feature\n\n- detail 1\n- detail 2"
+        );
+    }
+
+    // ============================================================
+    // apply_prefix: 追加エッジケース
+    // ============================================================
+
+    #[test]
+    fn test_apply_prefix_to_non_conventional() {
+        // Conventional Commits 以外のメッセージにプレフィックスを付加
+        assert_eq!(
+            TestHelper::apply_prefix("Update README", "TICKET-123 "),
+            "TICKET-123 Update README"
+        );
+    }
+
+    #[test]
+    fn test_apply_prefix_empty_prefix() {
+        // 空のプレフィックスの場合
+        assert_eq!(
+            TestHelper::apply_prefix("feat: add feature", ""),
+            "add feature"
+        );
+    }
+
+    #[test]
+    fn test_apply_prefix_multiline_message() {
+        // 複数行のメッセージにプレフィックスを付加
+        let result = TestHelper::apply_prefix("feat: add feature\n\nbody text", "PROJ-1 ");
+        assert_eq!(result, "PROJ-1 add feature\n\nbody text");
+    }
 }
