@@ -39,12 +39,15 @@ impl TempFile {
 
             match OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(mut file) => {
-                    file.write_all(content).map_err(|e| {
-                        AppError::AiProviderError(format!("Failed to write temp file: {}", e))
-                    })?;
-                    file.sync_all().map_err(|e| {
-                        AppError::AiProviderError(format!("Failed to sync temp file: {}", e))
-                    })?;
+                    // 書き込み/sync失敗時はファイルを削除してからエラーを返す
+                    if let Err(e) = file.write_all(content).and_then(|_| file.sync_all()) {
+                        drop(file);
+                        let _ = fs::remove_file(&path);
+                        return Err(AppError::AiProviderError(format!(
+                            "Failed to write temp file: {}",
+                            e
+                        )));
+                    }
                     drop(file); // 明示的にファイルハンドルを閉じる
                     return Ok(Self { path });
                 }
@@ -3536,5 +3539,86 @@ mod tests {
         };
         let service = AiService::from_config(&config);
         assert_eq!(service.cooldown_minutes, 30);
+    }
+
+    // ============================================================
+    // TempFile: 基本動作テスト
+    // ============================================================
+
+    #[test]
+    fn test_temp_file_content_written() {
+        // 書き込んだ内容が正しく保存される
+        let content = b"test prompt content";
+        let tmp = TempFile::create_with_content(content).unwrap();
+        let read_back = std::fs::read(tmp.path()).unwrap();
+        assert_eq!(read_back, content);
+    }
+
+    #[test]
+    fn test_temp_file_unique_paths() {
+        // 複数のファイルが異なるパスを持つ
+        let tmp1 = TempFile::create_with_content(b"a").unwrap();
+        let tmp2 = TempFile::create_with_content(b"b").unwrap();
+        assert_ne!(tmp1.path(), tmp2.path());
+    }
+
+    #[test]
+    fn test_temp_file_drop_cleanup() {
+        // Drop後にファイルが削除される
+        let path = {
+            let tmp = TempFile::create_with_content(b"temp").unwrap();
+            let p = tmp.path().to_path_buf();
+            assert!(p.exists());
+            p
+        };
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn test_temp_file_multibyte_content() {
+        // マルチバイト文字を含むコンテンツが正しく保存される
+        let content = "日本語プロンプト 🚀".as_bytes();
+        let tmp = TempFile::create_with_content(content).unwrap();
+        let read_back = std::fs::read_to_string(tmp.path()).unwrap();
+        assert_eq!(read_back, "日本語プロンプト 🚀");
+    }
+
+    #[test]
+    fn test_temp_file_empty_content() {
+        // 空コンテンツでもファイルは正常に作成される
+        let tmp = TempFile::create_with_content(b"").unwrap();
+        let read_back = std::fs::read(tmp.path()).unwrap();
+        assert!(read_back.is_empty());
+    }
+
+    // ============================================================
+    // extract_error: 追加エッジケーステスト
+    // ============================================================
+
+    #[test]
+    fn test_extract_error_codex_reading_prompt_skipped() {
+        // "Reading prompt" で始まる行はスキップされる
+        let stderr = "Reading prompt from stdin\n";
+        let result = AiService::extract_error(stderr, &AiProvider::Codex);
+        assert_eq!(result, "Codex API request failed");
+    }
+
+    #[test]
+    fn test_extract_error_claude_whitespace_only() {
+        let result = AiService::extract_error("   \n   \n   ", &AiProvider::Claude);
+        assert_eq!(result, "API request failed");
+    }
+
+    #[test]
+    fn test_extract_error_opencode_empty_stderr() {
+        let result = AiService::extract_error("", &AiProvider::Opencode);
+        assert_eq!(result, "opencode request failed");
+    }
+
+    #[test]
+    fn test_extract_error_apple_intelligence_non_error_line() {
+        let stderr = "just some info output";
+        let result = AiService::extract_error(stderr, &AiProvider::AppleIntelligence);
+        assert_eq!(result, "just some info output");
     }
 }

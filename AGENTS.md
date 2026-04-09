@@ -66,6 +66,9 @@ Prefix script behavior note:
 - If a prefix script returns empty output, `App` preserves the generated message and removes only a leading Conventional Commits type prefix (`feat:`, `fix(scope):`, `feat!:` etc.) when present.
 - Relative `script` paths in project-level `.git-sc` are resolved from the Git repository root, and prefix scripts run with the Git root as their working directory.
 
+Commit hash validation note:
+- `verify_commit_hash()` uses `^{commit}` suffix to constrain to commit objects only. Tree, blob, and other non-commit objects are rejected with `InvalidCommitHash` error.
+
 Reword safety note:
 - `GitService` validates that a `--reword` target hash is in the current `HEAD` history before merge-range checks and position calculation.
 - If the hash exists but is outside the current history (e.g., another branch), reword fails with an error.
@@ -83,6 +86,10 @@ Each provider is called via CLI subprocess:
 - **gemini**: Uses `-p` flag for prompt input
 - **codex/claude**: Uses stdin for prompt input
 - **apple-intelligence**: fm-rs (Rust FFI) via Foundation Models on-device (macOS 26+, Apple Intelligence enabled)
+
+Temp file safety note:
+- `TempFile` and `TempRewordMessageFile` use RAII (Drop) for automatic cleanup.
+- On write/sync failure, the file is explicitly deleted before returning the error to prevent orphaned temp files.
 
 When a provider fails, it enters cooldown (default: 60 minutes) and the next provider is tried.
 

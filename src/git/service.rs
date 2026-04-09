@@ -48,12 +48,18 @@ impl TempRewordMessageFile {
 
             match OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(mut file) => {
-                    file.write_all(message.as_bytes()).map_err(|e| {
-                        AppError::GitError(format!("Failed to write temp file: {}", e))
-                    })?;
-                    file.sync_all().map_err(|e| {
-                        AppError::GitError(format!("Failed to sync temp file: {}", e))
-                    })?;
+                    // 書き込み/sync失敗時はファイルを削除してからエラーを返す
+                    if let Err(e) = file
+                        .write_all(message.as_bytes())
+                        .and_then(|_| file.sync_all())
+                    {
+                        drop(file);
+                        let _ = std::fs::remove_file(&path);
+                        return Err(AppError::GitError(format!(
+                            "Failed to write temp file: {}",
+                            e
+                        )));
+                    }
                     drop(file);
                     return Ok(Self { path });
                 }
@@ -151,9 +157,12 @@ impl GitService {
     }
 
     /// コミットハッシュが有効か検証し、無効な場合は InvalidCommitHash エラーを返す
+    ///
+    /// `^{commit}` サフィックスで型制約し、tree/blob 等の非コミットオブジェクトを拒否する。
     fn verify_commit_hash(&self, hash: &str) -> Result<(), AppError> {
+        let rev = format!("{}^{{commit}}", hash);
         let output = Command::new("git")
-            .args(["rev-parse", "--verify", hash])
+            .args(["rev-parse", "--verify", "--quiet", "--end-of-options", &rev])
             .current_dir(&self.repo_path)
             .output()
             .map_err(|e| AppError::GitError(e.to_string()))?;
@@ -3103,5 +3112,287 @@ Binary files /dev/null and b/script.bin differ"#;
         let result = GitService::filter_ignored_files(diff, &ignore);
         assert!(result.contains("src/main.rs"));
         assert!(!result.contains("generated/out.rs"));
+    }
+
+    // ============================================================
+    // verify_commit_hash: 非コミットオブジェクトの拒否テスト
+    // ============================================================
+
+    #[test]
+    fn test_verify_commit_hash_rejects_tree_object() {
+        // treeオブジェクトはコミットではないため拒否されること
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let repo = temp_dir.path();
+
+        run_git_in(repo, &["init"]);
+        run_git_in(repo, &["config", "user.name", "Test User"]);
+        run_git_in(repo, &["config", "user.email", "test@example.com"]);
+
+        std::fs::write(repo.join("file.txt"), "content\n").unwrap();
+        run_git_in(repo, &["add", "file.txt"]);
+        run_git_in(repo, &["commit", "-m", "test"]);
+
+        let service = GitService {
+            repo_path: repo.to_path_buf(),
+        };
+
+        // HEAD^{tree} は有効なオブジェクトだが、コミットではない
+        let result = service.verify_commit_hash("HEAD^{tree}");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_verify_commit_hash_accepts_valid_short_hash() {
+        // 短縮ハッシュもコミットとして検証される
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let repo = temp_dir.path();
+
+        run_git_in(repo, &["init"]);
+        run_git_in(repo, &["config", "user.name", "Test User"]);
+        run_git_in(repo, &["config", "user.email", "test@example.com"]);
+
+        std::fs::write(repo.join("file.txt"), "content\n").unwrap();
+        run_git_in(repo, &["add", "file.txt"]);
+        run_git_in(repo, &["commit", "-m", "test"]);
+
+        let service = GitService {
+            repo_path: repo.to_path_buf(),
+        };
+
+        // git rev-parse --short HEAD で短縮ハッシュを取得
+        let short_hash = Command::new("git")
+            .args(["rev-parse", "--short", "HEAD"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        let short_hash = String::from_utf8_lossy(&short_hash.stdout)
+            .trim()
+            .to_string();
+
+        assert!(service.verify_commit_hash(&short_hash).is_ok());
+    }
+
+    #[test]
+    fn test_verify_commit_hash_rejects_empty_string() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let repo = temp_dir.path();
+        run_git_in(repo, &["init"]);
+
+        let service = GitService {
+            repo_path: repo.to_path_buf(),
+        };
+
+        let result = service.verify_commit_hash("");
+        assert!(result.is_err());
+    }
+
+    // ============================================================
+    // apply_all_filters: フィルタ合成のテスト
+    // ============================================================
+
+    #[test]
+    fn test_apply_all_filters_ignore_before_binary() {
+        // ignoreフィルタがバイナリフィルタより先に適用されることを検証
+        // ignoreパターンにマッチするバイナリファイルは完全に除外される
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let repo = temp_dir.path();
+
+        run_git_in(repo, &["init"]);
+        std::fs::write(repo.join(".git-sc-ignore"), "*.png\n").unwrap();
+
+        let diff = "diff --git a/src/main.rs b/src/main.rs\n\
+                     --- a/src/main.rs\n\
+                     +++ b/src/main.rs\n\
+                     -old\n\
+                     +new\n\
+                     diff --git a/image.png b/image.png\n\
+                     Binary files /dev/null and b/image.png differ";
+
+        let service = GitService {
+            repo_path: repo.to_path_buf(),
+        };
+        let result = service.apply_all_filters(diff);
+
+        // テキストファイルは含まれる
+        assert!(result.contains("src/main.rs"));
+        // バイナリ+ignoreのファイルは完全に除外（[Binary]サマリーも出ない）
+        assert!(!result.contains("image.png"));
+    }
+
+    #[test]
+    fn test_apply_all_filters_no_ignore_file() {
+        // .git-sc-ignoreが無い場合はフィルタなしで動作
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let repo = temp_dir.path();
+        run_git_in(repo, &["init"]);
+
+        let diff = "diff --git a/src/main.rs b/src/main.rs\n\
+                     --- a/src/main.rs\n\
+                     +++ b/src/main.rs\n\
+                     -old\n\
+                     +new";
+
+        let service = GitService {
+            repo_path: repo.to_path_buf(),
+        };
+        let result = service.apply_all_filters(diff);
+        assert!(result.contains("src/main.rs"));
+    }
+
+    #[test]
+    fn test_apply_all_filters_truncation_applied_last() {
+        // 文字数制限はフィルタリング後に適用される
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let repo = temp_dir.path();
+        run_git_in(repo, &["init"]);
+
+        // MAX_DIFF_CHARS を超える入力を生成
+        let mut diff = String::from("diff --git a/big.rs b/big.rs\n--- a/big.rs\n+++ b/big.rs\n");
+        for i in 0..2000 {
+            diff.push_str(&format!("+line {} with some content\n", i));
+        }
+
+        let service = GitService {
+            repo_path: repo.to_path_buf(),
+        };
+        let result = service.apply_all_filters(&diff);
+        assert!(result.contains("diff truncated"));
+    }
+
+    // ============================================================
+    // TempRewordMessageFile: 基本動作テスト
+    // ============================================================
+
+    #[test]
+    fn test_temp_reword_message_file_content() {
+        // 書き込んだ内容が正しく保存される
+        let msg = "feat: テスト用コミットメッセージ";
+        let tmp = TempRewordMessageFile::create(msg).unwrap();
+        let content = std::fs::read_to_string(tmp.path()).unwrap();
+        assert_eq!(content, msg);
+    }
+
+    #[test]
+    fn test_temp_reword_message_file_unique_paths() {
+        // 複数のファイルがそれぞれ異なるパスを持つ
+        let tmp1 = TempRewordMessageFile::create("msg1").unwrap();
+        let tmp2 = TempRewordMessageFile::create("msg2").unwrap();
+        assert_ne!(tmp1.path(), tmp2.path());
+    }
+
+    #[test]
+    fn test_temp_reword_message_file_drop_cleanup() {
+        // Drop後にファイルが削除される
+        let path = {
+            let tmp = TempRewordMessageFile::create("temp msg").unwrap();
+            let p = tmp.path().to_path_buf();
+            assert!(p.exists());
+            p
+        };
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn test_temp_reword_message_file_multibyte_content() {
+        // マルチバイト文字（日本語）を含むメッセージが正しく保存される
+        let msg = "feat: 日本語コミットメッセージ 🎉";
+        let tmp = TempRewordMessageFile::create(msg).unwrap();
+        let content = std::fs::read_to_string(tmp.path()).unwrap();
+        assert_eq!(content, msg);
+    }
+
+    // ============================================================
+    // validate_reword_target_hash: 境界テスト
+    // ============================================================
+
+    #[test]
+    fn test_validate_reword_target_hash_not_in_history() {
+        // 別ブランチのコミットはreword対象として拒否される
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let repo = temp_dir.path();
+
+        run_git_in(repo, &["init"]);
+        run_git_in(repo, &["config", "user.name", "Test User"]);
+        run_git_in(repo, &["config", "user.email", "test@example.com"]);
+
+        // mainブランチにコミット
+        std::fs::write(repo.join("file.txt"), "v1\n").unwrap();
+        run_git_in(repo, &["add", "file.txt"]);
+        run_git_in(repo, &["commit", "-m", "first"]);
+
+        // 別ブランチを作成してコミット
+        run_git_in(repo, &["checkout", "-b", "other"]);
+        std::fs::write(repo.join("other.txt"), "other\n").unwrap();
+        run_git_in(repo, &["add", "other.txt"]);
+        run_git_in(repo, &["commit", "-m", "other commit"]);
+
+        let other_hash = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        let other_hash = String::from_utf8_lossy(&other_hash.stdout)
+            .trim()
+            .to_string();
+
+        // mainブランチに戻る
+        run_git_in(repo, &["checkout", "master"]);
+
+        // masterに2つ目のコミットを追加（otherとは別の履歴）
+        std::fs::write(repo.join("file2.txt"), "v2\n").unwrap();
+        run_git_in(repo, &["add", "file2.txt"]);
+        run_git_in(repo, &["commit", "-m", "second on master"]);
+
+        let service = GitService {
+            repo_path: repo.to_path_buf(),
+        };
+
+        // otherブランチのコミットはmasterのHEAD履歴外
+        // ただしfirst commitが共通祖先であり、otherのコミットはfirstの子
+        // master側にも子があるのでotherは祖先ではない
+        let result = service.validate_reword_target_hash(&other_hash);
+        assert!(result.is_err());
+    }
+
+    // ============================================================
+    // get_commit_diff_by_hash: 非コミットオブジェクト拒否テスト
+    // ============================================================
+
+    #[test]
+    fn test_get_commit_diff_by_hash_rejects_tree() {
+        // treeオブジェクトはdiff取得で拒否される
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let repo = temp_dir.path();
+
+        run_git_in(repo, &["init"]);
+        run_git_in(repo, &["config", "user.name", "Test User"]);
+        run_git_in(repo, &["config", "user.email", "test@example.com"]);
+
+        std::fs::write(repo.join("file.txt"), "content\n").unwrap();
+        run_git_in(repo, &["add", "file.txt"]);
+        run_git_in(repo, &["commit", "-m", "test"]);
+
+        let service = GitService {
+            repo_path: repo.to_path_buf(),
+        };
+
+        let result = service.get_commit_diff_by_hash("HEAD^{tree}");
+        assert!(result.is_err());
     }
 }
