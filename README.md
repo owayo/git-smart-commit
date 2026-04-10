@@ -35,6 +35,7 @@
 - **Multi-Provider Support**: Supports Gemini CLI, Codex CLI, Claude Code, opencode, and Apple Intelligence with automatic fallback
 - **Smart Cooldown**: Automatically demotes failed providers for 1 hour (configurable)
 - **Format Detection**: Detects commit format from recent commits (Conventional, Bracket, Emoji, etc.)
+- **Empty Repo Safe**: Auto format detection falls back cleanly even when the repository has no commits and Git outputs localized messages
 - **Interactive**: Prompts for confirmation before committing (skip with `-y`)
 - **Dry Run**: Preview generated messages without committing (`-n`)
 - **Quiet Mode**: Suppresses progress output for hook/scripting use (`-q`)
@@ -328,6 +329,7 @@ echo "conventional"
 ### .git-sc-ignore
 
 Patterns are matched against the decoded Git path, so quoted diff headers such as Japanese filenames escaped by Git are excluded correctly as well.
+Rename diffs are checked against both the source path and destination path, so moving a file into an ignored directory is excluded consistently too.
 
 ```gitignore
 package-lock.json

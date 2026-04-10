@@ -62,6 +62,9 @@ src/
 | `Config` | Hierarchical config: global (~/.config/git-sc/config.toml) + project (.git-sc), via `PartialConfig` merge |
 | `ProviderState` | Tracks failed providers with 1-hour cooldown |
 
+Recent-commit detection note:
+- `GitService::get_recent_commits()` checks whether `HEAD` exists before calling `git log`, so empty repositories work regardless of Git locale or localized stderr text.
+
 Prefix script behavior note:
 - If a prefix script returns empty output, `App` preserves the generated message and removes only a leading Conventional Commits type prefix (`feat:`, `fix(scope):`, `feat!:` etc.) when present.
 - Relative `script` paths in project-level `.git-sc` are resolved from the Git repository root, and prefix scripts run with the Git root as their working directory.
@@ -112,6 +115,7 @@ Config merge note:
 
 `.git-sc-ignore` note:
 - Patterns are matched against decoded Git paths, including quoted diff headers with non-ASCII filenames.
+- For rename diffs, ignore matching checks both the pre-rename and post-rename path so moves into ignored directories are excluded consistently.
 - Patterns apply to both text and binary files. Ignore filtering runs before binary-to-summary conversion so that binary files matching ignore patterns are fully excluded from the diff.
 - `decode_quoted_diff_path` validates that 3-digit octal escape values are within the u8 range (0-377). Values exceeding 255 (e.g., `\400`) are rejected as invalid input.
 

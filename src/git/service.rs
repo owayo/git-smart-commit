@@ -236,12 +236,16 @@ impl GitService {
             if line.starts_with("diff --git") {
                 // ファイルパスを抽出 (例: "diff --git a/path/to/file b/path/to/file")
                 let block_start = i;
-                let file_path = Self::extract_file_path_from_diff_header(line);
+                let file_paths = Self::extract_file_paths_from_diff_header(line);
 
                 // ignoreパターンにマッチするかチェック
-                let should_ignore = file_path
-                    .as_deref()
-                    .map(|p| ignore.matched_path_or_any_parents(p, false).is_ignore())
+                let should_ignore = file_paths
+                    .as_ref()
+                    .map(|(before_path, after_path)| {
+                        [before_path.as_str(), after_path.as_str()]
+                            .into_iter()
+                            .any(|path| ignore.matched_path_or_any_parents(path, false).is_ignore())
+                    })
                     .unwrap_or(false);
 
                 // このブロックの終端を見つける
@@ -266,25 +270,46 @@ impl GitService {
         filtered_lines.join("\n")
     }
 
+    /// diffヘッダーから変更前/変更後のファイルパスを抽出
+    fn extract_file_paths_from_diff_header(header: &str) -> Option<(String, String)> {
+        let rest = header.strip_prefix("diff --git ")?;
+        let (before_path, rest) = Self::take_diff_header_path(rest.trim_start())?;
+        let (after_path, _) = Self::take_diff_header_path(rest.trim_start())?;
+
+        Some((
+            before_path.strip_prefix("a/")?.to_string(),
+            after_path
+                .strip_prefix("b/")
+                .unwrap_or(&after_path)
+                .to_string(),
+        ))
+    }
+
+    /// diffヘッダーからファイルパスを1つ読み取る
+    fn take_diff_header_path(input: &str) -> Option<(String, &str)> {
+        let input = input.trim_start();
+
+        if let Some(after_quote) = input.strip_prefix('"') {
+            Self::decode_quoted_diff_path_with_rest(after_quote)
+        } else {
+            let end = input.find(char::is_whitespace).unwrap_or(input.len());
+            if end == 0 {
+                return None;
+            }
+            Some((input[..end].to_string(), &input[end..]))
+        }
+    }
+
     /// diffヘッダーからファイルパスを抽出
     fn extract_file_path_from_diff_header(header: &str) -> Option<String> {
-        let rest = header.strip_prefix("diff --git ")?;
-        let rest = rest.trim_start();
-
-        let a_path = if let Some(after_quote) = rest.strip_prefix('"') {
-            Self::decode_quoted_diff_path(after_quote)?
-        } else {
-            rest.split_whitespace().next()?.to_string()
-        };
-
-        a_path.strip_prefix("a/").map(str::to_string)
+        Self::extract_file_paths_from_diff_header(header).map(|(path, _)| path)
     }
 
     /// Git の quoted path をデコードする
     ///
     /// Git は `core.quotePath=true` のとき、非 ASCII 文字を 8 進エスケープで出力する。
     /// `.git-sc-ignore` との照合に使うため、実際のパス文字列へ復元する。
-    fn decode_quoted_diff_path(input: &str) -> Option<String> {
+    fn decode_quoted_diff_path_with_rest(input: &str) -> Option<(String, &str)> {
         fn is_octal(byte: u8) -> bool {
             matches!(byte, b'0'..=b'7')
         }
@@ -298,6 +323,7 @@ impl GitService {
             match bytes[i] {
                 b'"' => {
                     closed_quote = true;
+                    i += 1;
                     break;
                 }
                 b'\\' => {
@@ -341,7 +367,13 @@ impl GitService {
             return None;
         }
 
-        Some(String::from_utf8_lossy(&decoded).into_owned())
+        Some((String::from_utf8_lossy(&decoded).into_owned(), &input[i..]))
+    }
+
+    /// Git の quoted path をデコードする
+    #[cfg(test)]
+    fn decode_quoted_diff_path(input: &str) -> Option<String> {
+        Self::decode_quoted_diff_path_with_rest(input).map(|(path, _)| path)
     }
 
     /// diffを最大文字数に切り詰める
@@ -492,6 +524,12 @@ impl GitService {
 
     /// 直近のコミットメッセージを取得
     pub fn get_recent_commits(&self, count: usize) -> Result<Vec<String>, AppError> {
+        // 空リポジトリでは `git log` のエラーメッセージがロケール依存になるため、
+        // 先に HEAD コミットの有無を機械的に判定してから `git log` を呼び出す。
+        if !self.has_head_commit()? {
+            return Ok(Vec::new());
+        }
+
         let output = Command::new("git")
             .args(["log", "--format=%s", "-n", &count.to_string()])
             .current_dir(&self.repo_path)
@@ -499,12 +537,18 @@ impl GitService {
             .map_err(|e| AppError::GitError(e.to_string()))?;
 
         if !output.status.success() {
-            // コミットがまだない場合は空のベクタを返す
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("does not have any commits") {
-                return Ok(Vec::new());
-            }
-            return Err(AppError::GitError(stderr.to_string()));
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let msg = if stderr.is_empty() {
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if stdout.is_empty() {
+                    format!("exit code: {}", output.status)
+                } else {
+                    stdout
+                }
+            } else {
+                stderr
+            };
+            return Err(AppError::GitError(msg));
         }
 
         let commits: Vec<String> = String::from_utf8_lossy(&output.stdout)
@@ -697,6 +741,34 @@ impl GitService {
         count_str
             .parse()
             .map_err(|_| AppError::GitError("Failed to parse commit count".to_string()))
+    }
+
+    /// HEAD が有効なコミットを指しているか確認
+    fn has_head_commit(&self) -> Result<bool, AppError> {
+        let output = Command::new("git")
+            .args(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
+            .current_dir(&self.repo_path)
+            .output()
+            .map_err(|e| AppError::GitError(e.to_string()))?;
+
+        match output.status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            _ => {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                let msg = if stderr.is_empty() {
+                    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if stdout.is_empty() {
+                        format!("exit code: {}", output.status)
+                    } else {
+                        stdout
+                    }
+                } else {
+                    stderr
+                };
+                Err(AppError::GitError(msg))
+            }
+        }
     }
 
     /// 指定されたコミットハッシュの差分を取得
@@ -1147,6 +1219,18 @@ index 1234567..abcdefg 100644
         assert!(commits.len() <= 2);
     }
 
+    #[test]
+    fn test_get_recent_commits_empty_repo_without_locale_specific_stderr_parsing() {
+        let temp_dir = setup_temp_git_repo();
+        let repo = temp_dir.path();
+        let service = GitService {
+            repo_path: repo.to_path_buf(),
+        };
+
+        let commits = service.get_recent_commits(5).unwrap();
+        assert!(commits.is_empty());
+    }
+
     // ============================================================
     // branch_exists のテスト
     // ============================================================
@@ -1519,6 +1603,21 @@ index 1234567..abcdefg 100644
         let result = GitService::filter_ignored_files(diff, &ignore);
         assert!(result.contains("src/main.rs"));
         assert!(result.contains("new line"));
+    }
+
+    #[test]
+    fn test_filter_ignored_files_matches_rename_destination_path() {
+        let mut builder = GitignoreBuilder::new(".");
+        builder.add_line(None, "generated/**").unwrap();
+        let ignore = builder.build().unwrap();
+
+        let diff = "diff --git a/src/main.rs b/generated/main.rs\n\
+                    similarity index 100%\n\
+                    rename from src/main.rs\n\
+                    rename to generated/main.rs\n";
+
+        let result = GitService::filter_ignored_files(diff, &ignore);
+        assert!(result.is_empty());
     }
 
     // ============================================================

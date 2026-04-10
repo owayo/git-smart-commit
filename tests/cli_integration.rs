@@ -78,6 +78,89 @@ fn setup_fake_opencode_path(dir: &TempDir) -> String {
     format!("{}{}{}", bin_dir.display(), separator, current_path)
 }
 
+fn resolve_real_git_path() -> String {
+    #[cfg(windows)]
+    let output = std::process::Command::new("where")
+        .arg("git")
+        .output()
+        .unwrap();
+    #[cfg(not(windows))]
+    let output = std::process::Command::new("which")
+        .arg("git")
+        .output()
+        .unwrap();
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .next()
+        .unwrap()
+        .trim()
+        .to_string()
+}
+
+/// テスト用ヘルパー: フェイク opencode とローカライズ済み git ラッパーを配置した PATH を作成
+fn setup_fake_opencode_and_localized_git_path(dir: &TempDir) -> String {
+    let bin_dir = dir.path().join("fake-bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+
+    #[cfg(windows)]
+    let opencode_path = bin_dir.join("opencode.cmd");
+    #[cfg(not(windows))]
+    let opencode_path = bin_dir.join("opencode");
+
+    #[cfg(windows)]
+    let opencode_body = "@echo off\r\necho feat: quiet integration test\r\n";
+    #[cfg(not(windows))]
+    let opencode_body = "#!/bin/sh\necho \"feat: quiet integration test\"\n";
+
+    std::fs::write(&opencode_path, opencode_body).unwrap();
+
+    #[cfg(windows)]
+    let git_path = bin_dir.join("git.cmd");
+    #[cfg(not(windows))]
+    let git_path = bin_dir.join("git");
+
+    let real_git = resolve_real_git_path();
+
+    #[cfg(windows)]
+    let git_body = format!(
+        "@echo off\r\n\
+if \"%1\"==\"log\" if \"%2\"==\"--format=%s\" (\r\n\
+  >&2 echo fatal: このブランチにはまだコミットがありません\r\n\
+  exit /b 128\r\n\
+)\r\n\
+\"{}\" %*\r\n",
+        real_git
+    );
+    #[cfg(not(windows))]
+    let git_body = format!(
+        "#!/bin/sh\n\
+if [ \"$1\" = \"log\" ] && [ \"$2\" = \"--format=%s\" ]; then\n\
+  echo \"fatal: このブランチにはまだコミットがありません\" >&2\n\
+  exit 128\n\
+fi\n\
+exec \"{}\" \"$@\"\n",
+        real_git
+    );
+
+    std::fs::write(&git_path, git_body).unwrap();
+
+    #[cfg(unix)]
+    {
+        let mut opencode_perms = std::fs::metadata(&opencode_path).unwrap().permissions();
+        opencode_perms.set_mode(0o755);
+        std::fs::set_permissions(&opencode_path, opencode_perms).unwrap();
+
+        let mut git_perms = std::fs::metadata(&git_path).unwrap().permissions();
+        git_perms.set_mode(0o755);
+        std::fs::set_permissions(&git_path, git_perms).unwrap();
+    }
+
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    let separator = if cfg!(windows) { ";" } else { ":" };
+    format!("{}{}{}", bin_dir.display(), separator, current_path)
+}
+
 fn stage_change(dir: &TempDir, contents: &str) {
     std::fs::write(dir.path().join("README.md"), contents).unwrap();
     std::process::Command::new("git")
@@ -340,6 +423,30 @@ fn test_quiet_dry_run_with_ai_generation_suppresses_provider_output() {
 
     git_sc!()
         .args(["--quiet", "--dry-run"])
+        .env("PATH", path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("feat:"))
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn test_empty_repo_with_localized_git_stderr_still_generates_message() {
+    let dir = setup_git_repo();
+    let path = setup_fake_opencode_and_localized_git_path(&dir);
+
+    std::fs::write(dir.path().join("README.md"), "# Test\n").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "README.md"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    git_sc!()
+        .args(["--quiet", "--dry-run", "--provider", "opencode"])
         .env("PATH", path)
         .env("HOME", dir.path())
         .env("XDG_CONFIG_HOME", dir.path())
