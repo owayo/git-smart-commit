@@ -256,14 +256,9 @@ impl AiService {
                 } else {
                     format!(" --model '{}'", self.models.codex)
                 };
-                let hooks_arg = if self.stop_hook_active {
-                    " --disable codex_hooks"
-                } else {
-                    ""
-                };
                 format!(
-                    "echo '{}' | codex{} exec{}",
-                    escaped_prompt, hooks_arg, model_arg
+                    "echo '{}' | codex --disable codex_hooks exec{}",
+                    escaped_prompt, model_arg
                 )
             }
             AiProvider::Claude => {
@@ -625,11 +620,11 @@ Instructions:
                 false
             }
             AiProvider::Codex => {
-                // Stop hook ループ防止: claw-hooks の stop hook 経由で呼ばれた場合、
-                // Codex のフックを無効化して再帰的な stop hook 発火を防ぐ
-                if self.stop_hook_active {
-                    cmd.args(["--disable", "codex_hooks"]);
-                }
+                // Codex のフックを常に無効化する。
+                // git-sc は Codex をメッセージ生成器として使用しており、
+                // stop hook が発火すると git-sc が再帰的に呼ばれて
+                // 先にコミットされてしまう問題を防ぐ。
+                cmd.args(["--disable", "codex_hooks"]);
                 cmd.arg("exec");
                 if !self.models.codex.is_empty() {
                     cmd.args(["--model", &self.models.codex]);
@@ -1806,7 +1801,7 @@ mod tests {
     fn test_format_command_for_debug_codex() {
         let service = AiService::new();
         let cmd = service.format_command_for_debug(&AiProvider::Codex, "test prompt", None);
-        assert!(cmd.contains("codex exec --model"));
+        assert!(cmd.contains("codex --disable codex_hooks exec"));
         assert!(cmd.contains("echo 'test prompt'"));
     }
 
@@ -1881,30 +1876,19 @@ mod tests {
         let mut service = AiService::new();
         service.models.codex = String::new();
         let cmd = service.format_command_for_debug(&AiProvider::Codex, "test", None);
-        assert!(cmd.contains("codex exec"));
+        assert!(cmd.contains("codex --disable codex_hooks exec"));
         assert!(!cmd.contains("--model"));
     }
 
     #[test]
-    fn test_format_command_for_debug_codex_stop_hook_active() {
-        let mut service = AiService::new();
-        service.stop_hook_active = true;
-        let cmd = service.format_command_for_debug(&AiProvider::Codex, "test", None);
-        assert!(
-            cmd.contains("--disable codex_hooks"),
-            "stop_hook_active=true should add --disable codex_hooks, got: {}",
-            cmd
-        );
-    }
-
-    #[test]
-    fn test_format_command_for_debug_codex_stop_hook_inactive() {
+    fn test_format_command_for_debug_codex_always_disables_hooks() {
+        // stop_hook_active に関係なく常に --disable codex_hooks が付く
         let mut service = AiService::new();
         service.stop_hook_active = false;
         let cmd = service.format_command_for_debug(&AiProvider::Codex, "test", None);
         assert!(
-            !cmd.contains("--disable codex_hooks"),
-            "stop_hook_active=false should not add --disable codex_hooks, got: {}",
+            cmd.contains("--disable codex_hooks"),
+            "Codex 呼び出しでは常に --disable codex_hooks が付くべき: {}",
             cmd
         );
     }
@@ -3498,7 +3482,8 @@ mod tests {
     }
 
     #[test]
-    fn test_format_command_codex_with_stop_hook() {
+    fn test_format_command_codex_always_disables_hooks() {
+        // stop_hook_active = false でも常に --disable codex_hooks が付く
         let service = AiService {
             providers: vec![AiProvider::Codex],
             language: "Japanese".to_string(),
@@ -3507,7 +3492,7 @@ mod tests {
             timeout_seconds: 60,
             debug: false,
             provider_override: false,
-            stop_hook_active: true,
+            stop_hook_active: false,
         };
         let cmd = service.format_command_for_debug(&AiProvider::Codex, "prompt", None);
         assert!(cmd.contains("--disable codex_hooks"));
