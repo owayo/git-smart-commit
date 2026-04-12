@@ -844,6 +844,21 @@ Instructions:
     ) -> Result<String, AppError> {
         if !exit_status.success() {
             let error_msg = Self::extract_error(stderr_str, provider);
+            // Claude Code はエラーメッセージを stdout に出力することがあるため、
+            // stderr が空（ジェネリックフォールバック）の場合は stdout も確認する
+            if matches!(provider, AiProvider::Claude) && !stdout_str.trim().is_empty() {
+                let stderr_fallback = Self::extract_error("", provider);
+                if error_msg == stderr_fallback {
+                    return Err(AppError::AiProviderError(
+                        stdout_str
+                            .lines()
+                            .find(|l| !l.trim().is_empty())
+                            .unwrap_or(&error_msg)
+                            .trim()
+                            .to_string(),
+                    ));
+                }
+            }
             return Err(AppError::AiProviderError(error_msg));
         }
 
@@ -2594,6 +2609,56 @@ mod tests {
             "File not found: /path/to/bin",
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_process_provider_output_claude_error_in_stdout() {
+        // Claude Code はエラーメッセージを stdout に出力するため、
+        // exit code 非0 + stderr 空 + stdout にエラーがある場合は stdout からエラーを取得
+        let status = exit_status(false);
+        let result = AiService::process_provider_output(
+            &AiProvider::Claude,
+            status,
+            "There's an issue with the selected model (haiku). It may not exist or you may not have access to it.",
+            "",
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("issue with the selected model"),
+            "Claude の stdout エラーが取得されるべき: {err}"
+        );
+    }
+
+    #[test]
+    fn test_process_provider_output_claude_error_prefers_stderr() {
+        // stderr にもエラーがある場合は stderr を優先
+        let status = exit_status(false);
+        let result = AiService::process_provider_output(
+            &AiProvider::Claude,
+            status,
+            "stdout error message",
+            "stderr error message",
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("stderr error message"),
+            "stderr が空でない場合は stderr を優先: {err}"
+        );
+    }
+
+    #[test]
+    fn test_process_provider_output_claude_error_empty_both() {
+        // stdout も stderr も空の場合はフォールバック
+        let status = exit_status(false);
+        let result = AiService::process_provider_output(&AiProvider::Claude, status, "", "");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("API request failed"),
+            "両方空の場合はフォールバック: {err}"
+        );
     }
 
     #[test]
