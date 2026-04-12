@@ -159,6 +159,7 @@ git-sc -n
 `--reword` note:
 - Only accepts commits reachable from the current `HEAD` history.
 - Passing a hash from another branch (not in current history) fails with an error.
+- Passing a merge commit hash also fails, even when the merge commit itself is the reword target.
 - Rewording the oldest commit in current history is also supported (internally uses `git rebase -i --root` when required).
 
 #### Settings

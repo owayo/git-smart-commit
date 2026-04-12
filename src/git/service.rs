@@ -837,11 +837,10 @@ impl GitService {
 
     /// 指定されたコミットハッシュからHEADまでにマージコミットが含まれているかチェック
     pub fn has_merge_commits_in_range_by_hash(&self, hash: &str) -> Result<bool, AppError> {
-        self.validate_reword_target_hash(hash)?;
-
-        // マージコミットは親が2つ以上ある
-        let merges = self.run_git(&["rev-list", "--merges", &format!("{}..HEAD", hash)])?;
-        Ok(!merges.is_empty())
+        // 対象コミット自身がマージコミットの場合も拒否対象に含める必要があるため、
+        // ハッシュ指定を HEAD からの位置に変換し、既存の位置ベース判定を再利用する。
+        let n = self.get_commit_position_by_hash(hash)?;
+        self.has_merge_commits_in_range(n)
     }
 
     /// 指定されたコミットハッシュのメッセージを変更（rebase使用）
@@ -3465,6 +3464,64 @@ Binary files /dev/null and b/script.bin differ"#;
         // master側にも子があるのでotherは祖先ではない
         let result = service.validate_reword_target_hash(&other_hash);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_has_merge_commits_in_range_by_hash_detects_target_merge_commit() {
+        let temp_dir = setup_temp_git_repo();
+        let repo = temp_dir.path();
+
+        std::fs::write(repo.join("base.txt"), "base\n").unwrap();
+        run_git_in(repo, &["add", "base.txt"]);
+        run_git_in(repo, &["commit", "-m", "base commit"]);
+
+        let branch_output = Command::new("git")
+            .args(["branch", "--show-current"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        let base_branch = String::from_utf8_lossy(&branch_output.stdout)
+            .trim()
+            .to_string();
+
+        run_git_in(repo, &["checkout", "-b", "feature/reword-merge"]);
+        std::fs::write(repo.join("feature.txt"), "feature\n").unwrap();
+        run_git_in(repo, &["add", "feature.txt"]);
+        run_git_in(repo, &["commit", "-m", "feature commit"]);
+
+        run_git_in(repo, &["checkout", &base_branch]);
+        std::fs::write(repo.join("main.txt"), "main\n").unwrap();
+        run_git_in(repo, &["add", "main.txt"]);
+        run_git_in(repo, &["commit", "-m", "main commit"]);
+        run_git_in(
+            repo,
+            &[
+                "merge",
+                "--no-ff",
+                "feature/reword-merge",
+                "-m",
+                "merge feature",
+            ],
+        );
+
+        let merge_hash_output = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        let merge_hash = String::from_utf8_lossy(&merge_hash_output.stdout)
+            .trim()
+            .to_string();
+
+        let service = GitService {
+            repo_path: repo.to_path_buf(),
+        };
+
+        assert!(
+            service
+                .has_merge_commits_in_range_by_hash(&merge_hash)
+                .unwrap()
+        );
     }
 
     // ============================================================

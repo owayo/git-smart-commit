@@ -190,6 +190,72 @@ fn head_hash(dir: &TempDir) -> String {
         .to_string()
 }
 
+fn setup_git_repo_with_merge_commit() -> (TempDir, String) {
+    let dir = setup_git_repo_with_commit();
+    let branch_output = std::process::Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let base_branch = String::from_utf8_lossy(&branch_output.stdout)
+        .trim()
+        .to_string();
+
+    std::process::Command::new("git")
+        .args(["checkout", "-b", "feature/reword-merge"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    std::fs::write(dir.path().join("feature.txt"), "feature\n").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "feature.txt"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "feature commit"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    std::process::Command::new("git")
+        .args(["checkout", &base_branch])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    std::fs::write(dir.path().join("main.txt"), "main\n").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "main.txt"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "main commit"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    let merge_output = std::process::Command::new("git")
+        .args([
+            "merge",
+            "--no-ff",
+            "feature/reword-merge",
+            "-m",
+            "merge feature",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        merge_output.status.success(),
+        "git merge failed: {}",
+        String::from_utf8_lossy(&merge_output.stderr)
+    );
+
+    let merge_hash = head_hash(&dir);
+    (dir, merge_hash)
+}
+
 // ============================================================
 // --help のテスト
 // ============================================================
@@ -412,6 +478,21 @@ fn test_quiet_reword_hash_outside_head_history_fails() {
         .stdout(predicate::str::is_empty())
         .stderr(predicate::str::contains(
             "無効なreword対象です。有効なコミットハッシュを指定してください。",
+        ));
+}
+
+#[test]
+fn test_quiet_reword_merge_commit_target_fails() {
+    let (dir, merge_hash) = setup_git_repo_with_merge_commit();
+
+    git_sc!()
+        .args(["--quiet", "--reword", &merge_hash, "--dry-run"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "指定範囲にマージコミットが含まれています。rewordはマージコミットを含む範囲では使用できません。",
         ));
 }
 

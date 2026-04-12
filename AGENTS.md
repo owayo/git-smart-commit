@@ -75,6 +75,7 @@ Commit hash validation note:
 Reword safety note:
 - `GitService` validates that a `--reword` target hash is in the current `HEAD` history before merge-range checks and position calculation.
 - If the hash exists but is outside the current history (e.g., another branch), reword fails with an error.
+- If the target hash itself is a merge commit, reword also fails instead of silently treating it as a normal commit.
 - Rewording the oldest commit in the current branch is supported by switching to `git rebase -i --root` when needed.
 - The temporary message file used during reword is created with a unique name and cleaned up automatically to avoid collisions between concurrent runs.
 - `GIT_EDITOR` passes the message file path via `GIT_SC_MSG_FILE` environment variable (not shell string interpolation) to prevent injection attacks from paths containing special characters.
