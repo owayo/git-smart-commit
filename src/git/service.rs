@@ -3494,4 +3494,145 @@ Binary files /dev/null and b/script.bin differ"#;
         let result = service.get_commit_diff_by_hash("HEAD^{tree}");
         assert!(result.is_err());
     }
+
+    // ============================================================
+    // extract_file_paths_from_diff_header: ユニットテスト
+    // ============================================================
+
+    #[test]
+    fn test_extract_file_paths_from_diff_header_standard() {
+        let result = GitService::extract_file_paths_from_diff_header(
+            "diff --git a/src/main.rs b/src/main.rs",
+        );
+        assert_eq!(
+            result,
+            Some(("src/main.rs".to_string(), "src/main.rs".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_file_paths_from_diff_header_rename() {
+        let result =
+            GitService::extract_file_paths_from_diff_header("diff --git a/old.rs b/new.rs");
+        assert_eq!(result, Some(("old.rs".to_string(), "new.rs".to_string())));
+    }
+
+    #[test]
+    fn test_extract_file_paths_from_diff_header_nested_path() {
+        let result = GitService::extract_file_paths_from_diff_header(
+            "diff --git a/src/deep/nested/file.rs b/src/deep/nested/file.rs",
+        );
+        assert_eq!(
+            result,
+            Some((
+                "src/deep/nested/file.rs".to_string(),
+                "src/deep/nested/file.rs".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn test_extract_file_paths_from_diff_header_no_a_prefix() {
+        // a/ プレフィックスがない場合は None
+        let result =
+            GitService::extract_file_paths_from_diff_header("diff --git src/main.rs src/main.rs");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_file_paths_from_diff_header_empty() {
+        let result = GitService::extract_file_paths_from_diff_header("diff --git ");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_file_paths_from_diff_header_not_diff() {
+        let result = GitService::extract_file_paths_from_diff_header("not a diff header");
+        assert!(result.is_none());
+    }
+
+    // ============================================================
+    // take_diff_header_path: ユニットテスト
+    // ============================================================
+
+    #[test]
+    fn test_take_diff_header_path_unquoted() {
+        let (path, rest) = GitService::take_diff_header_path("a/file.rs b/file.rs").unwrap();
+        assert_eq!(path, "a/file.rs");
+        assert_eq!(rest, " b/file.rs");
+    }
+
+    #[test]
+    fn test_take_diff_header_path_quoted_utf8() {
+        // クオート付きUTF-8パス（日本語ファイル名）
+        let (path, _) = GitService::take_diff_header_path(
+            "\"a/\\343\\203\\206\\343\\202\\271\\343\\203\\210.rs\" b/test.rs",
+        )
+        .unwrap();
+        assert_eq!(path, "a/テスト.rs");
+    }
+
+    #[test]
+    fn test_take_diff_header_path_empty_input() {
+        assert!(GitService::take_diff_header_path("").is_none());
+    }
+
+    #[test]
+    fn test_take_diff_header_path_whitespace_only() {
+        assert!(GitService::take_diff_header_path("   ").is_none());
+    }
+
+    // ============================================================
+    // decode_quoted_diff_path: 追加エッジケース
+    // ============================================================
+
+    #[test]
+    fn test_decode_quoted_diff_path_escaped_backslash() {
+        assert_eq!(
+            GitService::decode_quoted_diff_path("path\\\\file\""),
+            Some("path\\file".to_string())
+        );
+    }
+
+    #[test]
+    fn test_decode_quoted_diff_path_tab_escape() {
+        assert_eq!(
+            GitService::decode_quoted_diff_path("tab\\there\""),
+            Some("tab\there".to_string())
+        );
+    }
+
+    #[test]
+    fn test_decode_quoted_diff_path_newline_escape() {
+        assert_eq!(
+            GitService::decode_quoted_diff_path("new\\nline\""),
+            Some("new\nline".to_string())
+        );
+    }
+
+    #[test]
+    fn test_decode_quoted_diff_path_unclosed_quote() {
+        // 閉じ引用符がない場合は None
+        assert!(GitService::decode_quoted_diff_path("no closing quote").is_none());
+    }
+
+    #[test]
+    fn test_decode_quoted_diff_path_empty_content() {
+        // 空のクオート内容は None（直後に閉じ引用符）
+        assert!(GitService::decode_quoted_diff_path("\"").is_none());
+    }
+
+    #[test]
+    fn test_decode_quoted_diff_path_partial_octal() {
+        // 不完全な8進シーケンス（2桁のみ）は None
+        assert!(GitService::decode_quoted_diff_path("\\34\"").is_none());
+    }
+
+    #[test]
+    fn test_decode_quoted_diff_path_escaped_double_quote() {
+        assert_eq!(
+            GitService::decode_quoted_diff_path("a\\\"b\""),
+            Some("a\"b".to_string())
+        );
+    }
 }
