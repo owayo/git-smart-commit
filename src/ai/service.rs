@@ -141,9 +141,6 @@ impl AiProvider {
     }
 }
 
-/// claw-hooks の stop hook 経由で呼ばれたことを示す環境変数
-const STOP_ACTIVE_ENV: &str = "CLAW_HOOKS_STOP_ACTIVE";
-
 /// フォールバック機能付きのAIサービス
 pub struct AiService {
     providers: Vec<AiProvider>,
@@ -153,8 +150,6 @@ pub struct AiService {
     timeout_seconds: u64,
     debug: bool,
     provider_override: bool,
-    /// stop hook コンテキスト内で実行中かどうか（ループ防止用）
-    stop_hook_active: bool,
 }
 
 impl AiService {
@@ -203,7 +198,6 @@ impl AiService {
             timeout_seconds: config.provider_timeout_seconds,
             debug: false,
             provider_override: false,
-            stop_hook_active: std::env::var(STOP_ACTIVE_ENV).is_ok(),
         }
     }
 
@@ -217,7 +211,6 @@ impl AiService {
             timeout_seconds: 60,  // デフォルト60秒（Config::defaultと同値）
             debug: false,
             provider_override: false,
-            stop_hook_active: std::env::var(STOP_ACTIVE_ENV).is_ok(),
         }
     }
 
@@ -1882,9 +1875,7 @@ mod tests {
 
     #[test]
     fn test_format_command_for_debug_codex_always_disables_hooks() {
-        // stop_hook_active に関係なく常に --disable codex_hooks が付く
-        let mut service = AiService::new();
-        service.stop_hook_active = false;
+        let service = AiService::new();
         let cmd = service.format_command_for_debug(&AiProvider::Codex, "test", None);
         assert!(
             cmd.contains("--disable codex_hooks"),
@@ -3454,7 +3445,6 @@ mod tests {
             timeout_seconds: 60,
             debug: false,
             provider_override: false,
-            stop_hook_active: false,
         };
         let cmd = service.format_command_for_debug(&AiProvider::Gemini, "test prompt", None);
         assert!(cmd.contains("gemini"));
@@ -3475,7 +3465,6 @@ mod tests {
             timeout_seconds: 60,
             debug: false,
             provider_override: false,
-            stop_hook_active: false,
         };
         let cmd = service.format_command_for_debug(&AiProvider::Gemini, "prompt", None);
         assert!(!cmd.contains("-m"));
@@ -3492,7 +3481,6 @@ mod tests {
             timeout_seconds: 60,
             debug: false,
             provider_override: false,
-            stop_hook_active: false,
         };
         let cmd = service.format_command_for_debug(&AiProvider::Codex, "prompt", None);
         assert!(cmd.contains("--disable codex_hooks"));
@@ -3511,7 +3499,6 @@ mod tests {
             timeout_seconds: 60,
             debug: false,
             provider_override: false,
-            stop_hook_active: false,
         };
         let cmd = service.format_command_for_debug(&AiProvider::Claude, "prompt", None);
         assert!(cmd.contains("claude"));
