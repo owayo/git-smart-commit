@@ -3057,23 +3057,14 @@ Binary files /dev/null and b/script.bin differ"#;
     fn test_has_staged_changes_in_clean_repo() {
         // クリーンなリポジトリでは false を返す
         let temp = tempfile::tempdir().unwrap();
-        Command::new("git")
-            .args(["init"])
-            .current_dir(temp.path())
-            .output()
-            .unwrap();
+        let repo = temp.path();
+        run_git_in(repo, &["init"]);
+        run_git_in(repo, &["config", "user.name", "Test User"]);
+        run_git_in(repo, &["config", "user.email", "test@example.com"]);
         // 初期コミットを作成
-        std::fs::write(temp.path().join("file.txt"), "content").unwrap();
-        Command::new("git")
-            .args(["add", "."])
-            .current_dir(temp.path())
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["commit", "-m", "init"])
-            .current_dir(temp.path())
-            .output()
-            .unwrap();
+        std::fs::write(repo.join("file.txt"), "content").unwrap();
+        run_git_in(repo, &["add", "."]);
+        run_git_in(repo, &["commit", "-m", "init"]);
 
         let git = GitService {
             repo_path: temp.path().to_path_buf(),
