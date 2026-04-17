@@ -250,7 +250,7 @@ impl AiService {
                     format!(" --model '{}'", self.models.codex)
                 };
                 format!(
-                    "echo '{}' | codex --disable codex_hooks exec{}",
+                    "echo '{}' | codex --disable codex_hooks -c model_reasoning_effort='medium' exec{}",
                     escaped_prompt, model_arg
                 )
             }
@@ -618,6 +618,7 @@ Instructions:
                 // stop hook が発火すると git-sc が再帰的に呼ばれて
                 // 先にコミットされてしまう問題を防ぐ。
                 cmd.args(["--disable", "codex_hooks"]);
+                cmd.args(["-c", "model_reasoning_effort=medium"]);
                 cmd.arg("exec");
                 if !self.models.codex.is_empty() {
                     cmd.args(["--model", &self.models.codex]);
@@ -1794,7 +1795,9 @@ mod tests {
     fn test_format_command_for_debug_codex() {
         let service = AiService::new();
         let cmd = service.format_command_for_debug(&AiProvider::Codex, "test prompt", None);
-        assert!(cmd.contains("codex --disable codex_hooks exec"));
+        assert!(
+            cmd.contains("codex --disable codex_hooks -c model_reasoning_effort='medium' exec")
+        );
         assert!(cmd.contains("echo 'test prompt'"));
     }
 
@@ -1869,7 +1872,9 @@ mod tests {
         let mut service = AiService::new();
         service.models.codex = String::new();
         let cmd = service.format_command_for_debug(&AiProvider::Codex, "test", None);
-        assert!(cmd.contains("codex --disable codex_hooks exec"));
+        assert!(
+            cmd.contains("codex --disable codex_hooks -c model_reasoning_effort='medium' exec")
+        );
         assert!(!cmd.contains("--model"));
     }
 
