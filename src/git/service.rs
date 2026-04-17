@@ -271,18 +271,67 @@ impl GitService {
     }
 
     /// diffヘッダーから変更前/変更後のファイルパスを抽出
+    ///
+    /// Git は `diff --git` 行でファイル名にスペースが含まれる場合もクォート形式に
+    /// しないため、素朴な空白分割では誤抽出になる（例: `diff --git a/foo bar.txt
+    /// b/foo bar.txt` → `foo` と `bar.txt` に分割されてしまう）。
+    /// そのため、同一パスの対称ケースでは中央分割で正しく抽出する。
     fn extract_file_paths_from_diff_header(header: &str) -> Option<(String, String)> {
-        let rest = header.strip_prefix("diff --git ")?;
-        let (before_path, rest) = Self::take_diff_header_path(rest.trim_start())?;
-        let (after_path, _) = Self::take_diff_header_path(rest.trim_start())?;
+        let rest = header.strip_prefix("diff --git ")?.trim_start();
 
+        // 両側ともクォート形式（非ASCIIパス等）の場合
+        if rest.starts_with('"') {
+            let (before_path, rest_after) = Self::take_diff_header_path(rest)?;
+            let (after_path, _) = Self::take_diff_header_path(rest_after.trim_start())?;
+            return Some((
+                before_path.strip_prefix("a/")?.to_string(),
+                after_path.strip_prefix("b/")?.to_string(),
+            ));
+        }
+
+        // 非クォート同一パスの対称ケース: `a/PATH b/PATH` を中央で分割
+        // スペースを含むファイル名にも正しく対応するための経路
+        if let Some(paths) = Self::try_split_symmetric_unquoted_header(rest) {
+            return Some(paths);
+        }
+
+        // フォールバック: 空白分割（リネーム等の非対称ケース）
+        // この経路では、パスにスペースが含まれると正しく抽出できない
+        let (before_path, rest_after) = Self::take_diff_header_path(rest)?;
+        let (after_path, _) = Self::take_diff_header_path(rest_after.trim_start())?;
         Some((
             before_path.strip_prefix("a/")?.to_string(),
-            after_path
-                .strip_prefix("b/")
-                .unwrap_or(&after_path)
-                .to_string(),
+            after_path.strip_prefix("b/")?.to_string(),
         ))
+    }
+
+    /// 非クォートの `a/PATH b/PATH` 形式を中央分割で抽出する
+    ///
+    /// `a/PATH b/PATH` の全長は `5 + 2 * len(PATH)` となり必ず奇数であることを
+    /// 利用して中央位置を特定し、前後パートが `a/`・`b/` で始まり、
+    /// パス部分が一致する場合のみ成功とする。
+    fn try_split_symmetric_unquoted_header(rest: &str) -> Option<(String, String)> {
+        let total_len = rest.len();
+        // `a/x b/x` で最短7文字、全長は奇数である必要がある
+        if total_len < 7 || total_len.is_multiple_of(2) {
+            return None;
+        }
+        let mid = total_len / 2;
+        if rest.as_bytes().get(mid) != Some(&b' ') {
+            return None;
+        }
+        let before_part = &rest[..mid];
+        let after_part = &rest[mid + 1..];
+        let before_path = before_part.strip_prefix("a/")?;
+        let after_path = after_part.strip_prefix("b/")?;
+        if before_path != after_path {
+            return None;
+        }
+        // パス部にクォート文字が残る場合はこの経路では扱わない
+        if before_path.contains('"') {
+            return None;
+        }
+        Some((before_path.to_string(), after_path.to_string()))
     }
 
     /// diffヘッダーからファイルパスを1つ読み取る
