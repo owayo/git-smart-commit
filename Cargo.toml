@@ -10,7 +10,7 @@ license = "MIT"
 apple-ai = ["fm-rs"]
 
 [dependencies]
-clap = { version = "4.6.0", features = ["derive"] }
+clap = { version = "4.6.1", features = ["derive"] }
 anyhow = "1.0.102"
 thiserror = "2.0.18"
 regex = "1.12.3"
