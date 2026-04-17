@@ -169,6 +169,14 @@ impl App {
         println!("  models.opencode: {}", config.models.opencode);
         println!("  models.gemini: {}", config.models.gemini);
         println!("  models.codex: {}", config.models.codex);
+        println!(
+            "  codex_reasoning_effort: {}",
+            if config.codex_reasoning_effort.is_empty() {
+                "(omitted)".to_string()
+            } else {
+                config.codex_reasoning_effort.clone()
+            }
+        );
         println!("  models.claude: {}", config.models.claude);
         println!("  prefix_type: {:?}", config.prefix_type);
         println!("  auto_push: {:?}", config.auto_push);

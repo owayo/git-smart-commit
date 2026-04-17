@@ -73,6 +73,7 @@ struct PartialConfig {
     pub auto_push: Option<bool>,
     pub provider_timeout_seconds: Option<u64>,
     pub nano_buddy: Option<bool>,
+    pub codex_reasoning_effort: Option<String>,
 }
 
 impl PartialConfig {
@@ -99,6 +100,9 @@ impl PartialConfig {
                 .provider_timeout_seconds
                 .unwrap_or(defaults.provider_timeout_seconds),
             nano_buddy: self.nano_buddy.unwrap_or(defaults.nano_buddy),
+            codex_reasoning_effort: self
+                .codex_reasoning_effort
+                .unwrap_or(defaults.codex_reasoning_effort),
         }
     }
 
@@ -148,6 +152,9 @@ impl PartialConfig {
         }
         if let Some(nano_buddy) = self.nano_buddy {
             config.nano_buddy = nano_buddy;
+        }
+        if let Some(effort) = self.codex_reasoning_effort {
+            config.codex_reasoning_effort = effort;
         }
     }
 }
@@ -203,6 +210,10 @@ pub struct Config {
     /// NanoBuddy連携を有効化 (隠しオプション)
     #[serde(default)]
     pub nano_buddy: bool,
+    /// Codex の `-c model_reasoning_effort` に渡す値（low/medium/high）
+    /// 空文字列の場合は `-c` 指定を省略し codex の既定値を使用
+    #[serde(default = "default_codex_reasoning_effort")]
+    pub codex_reasoning_effort: String,
 }
 
 /// デフォルトのクールダウン時間（60分 = 1時間）
@@ -218,6 +229,11 @@ fn default_provider_timeout_seconds() -> u64 {
 /// デフォルトの言語
 fn default_language() -> String {
     "Japanese".to_string()
+}
+
+/// デフォルトの Codex 推論深度
+fn default_codex_reasoning_effort() -> String {
+    "low".to_string()
 }
 
 impl Default for Config {
@@ -242,6 +258,7 @@ impl Default for Config {
             auto_push: None,
             provider_timeout_seconds: default_provider_timeout_seconds(),
             nano_buddy: false,
+            codex_reasoning_effort: default_codex_reasoning_effort(),
         }
     }
 }
@@ -411,6 +428,10 @@ provider_timeout_seconds = 60
 # Auto push after commit
 # auto_push = false
 
+# Codex reasoning effort passed via `-c model_reasoning_effort=<value>`
+# Available: "low", "medium", "high" (or "" to omit and use codex default)
+codex_reasoning_effort = "low"
+
 # Model configuration for each provider
 [models]
 gemini = "gemini-2.5-flash-lite"
@@ -531,6 +552,30 @@ mod tests {
         assert!(config.prefix_rules.is_empty());
         assert_eq!(config.provider_cooldown_minutes, 60);
         assert_eq!(config.provider_timeout_seconds, 60);
+        assert_eq!(config.codex_reasoning_effort, "low");
+    }
+
+    #[test]
+    fn test_codex_reasoning_effort_parses_from_toml() {
+        let toml = r#"
+codex_reasoning_effort = "high"
+"#;
+        let config = Config::from_str(toml).unwrap();
+        assert_eq!(config.codex_reasoning_effort, "high");
+    }
+
+    #[test]
+    fn test_codex_reasoning_effort_project_override() {
+        let global_toml = r#"
+codex_reasoning_effort = "medium"
+"#;
+        let project_toml = r#"
+codex_reasoning_effort = "high"
+"#;
+        let mut global = Config::from_str(global_toml).unwrap();
+        let project_partial: PartialConfig = toml::from_str(project_toml).unwrap();
+        project_partial.merge_into(&mut global);
+        assert_eq!(global.codex_reasoning_effort, "high");
     }
 
     #[test]
@@ -1611,6 +1656,7 @@ gemini = "gemini-2.5-pro"
             auto_push: Some(true),
             provider_timeout_seconds: 120,
             nano_buddy: true,
+            codex_reasoning_effort: "high".to_string(),
         };
 
         // 空の TOML → 全フィールドが None の PartialConfig
@@ -1633,6 +1679,7 @@ gemini = "gemini-2.5-pro"
         assert_eq!(config.auto_push, Some(true));
         assert_eq!(config.provider_timeout_seconds, 120);
         assert!(config.nano_buddy);
+        assert_eq!(config.codex_reasoning_effort, "high");
     }
 
     /// 全フィールドが Some の PartialConfig ですべてのフィールドが上書きされる

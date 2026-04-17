@@ -146,6 +146,7 @@ pub struct AiService {
     providers: Vec<AiProvider>,
     language: String,
     models: ModelsConfig,
+    codex_reasoning_effort: String,
     cooldown_minutes: u64,
     timeout_seconds: u64,
     debug: bool,
@@ -194,6 +195,7 @@ impl AiService {
             providers,
             language: config.language.clone(),
             models: config.models.clone(),
+            codex_reasoning_effort: config.codex_reasoning_effort.clone(),
             cooldown_minutes: config.provider_cooldown_minutes,
             timeout_seconds: config.provider_timeout_seconds,
             debug: false,
@@ -207,6 +209,7 @@ impl AiService {
             providers: Self::default_providers(),
             language: "Japanese".to_string(),
             models: ModelsConfig::default(),
+            codex_reasoning_effort: "low".to_string(),
             cooldown_minutes: 60, // デフォルト1時間
             timeout_seconds: 60,  // デフォルト60秒（Config::defaultと同値）
             debug: false,
@@ -249,9 +252,17 @@ impl AiService {
                 } else {
                     format!(" --model '{}'", self.models.codex)
                 };
+                let effort_arg = if self.codex_reasoning_effort.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " -c model_reasoning_effort='{}'",
+                        self.codex_reasoning_effort
+                    )
+                };
                 format!(
-                    "echo '{}' | codex --disable codex_hooks -c model_reasoning_effort='low' exec{}",
-                    escaped_prompt, model_arg
+                    "echo '{}' | codex --disable codex_hooks{} exec{}",
+                    escaped_prompt, effort_arg, model_arg
                 )
             }
             AiProvider::Claude => {
@@ -618,7 +629,12 @@ Instructions:
                 // stop hook が発火すると git-sc が再帰的に呼ばれて
                 // 先にコミットされてしまう問題を防ぐ。
                 cmd.args(["--disable", "codex_hooks"]);
-                cmd.args(["-c", "model_reasoning_effort=low"]);
+                if !self.codex_reasoning_effort.is_empty() {
+                    cmd.args([
+                        "-c",
+                        &format!("model_reasoning_effort={}", self.codex_reasoning_effort),
+                    ]);
+                }
                 cmd.arg("exec");
                 if !self.models.codex.is_empty() {
                     cmd.args(["--model", &self.models.codex]);
@@ -1755,6 +1771,25 @@ mod tests {
         assert_eq!(service.models.claude, "opus");
     }
 
+    #[test]
+    fn test_ai_service_from_config_codex_reasoning_effort() {
+        let config = Config {
+            codex_reasoning_effort: "high".to_string(),
+            ..Config::default()
+        };
+        let service = AiService::from_config(&config);
+
+        assert_eq!(service.codex_reasoning_effort, "high");
+    }
+
+    #[test]
+    fn test_ai_service_from_config_default_reasoning_effort_is_low() {
+        let config = Config::default();
+        let service = AiService::from_config(&config);
+
+        assert_eq!(service.codex_reasoning_effort, "low");
+    }
+
     // ============================================================
     // AiService::default のテスト
     // ============================================================
@@ -1883,6 +1918,24 @@ mod tests {
             "Codex 呼び出しでは常に --disable codex_hooks が付くべき: {}",
             cmd
         );
+    }
+
+    #[test]
+    fn test_format_command_for_debug_codex_custom_reasoning_effort() {
+        let mut service = AiService::new();
+        service.codex_reasoning_effort = "high".to_string();
+        let cmd = service.format_command_for_debug(&AiProvider::Codex, "test", None);
+        assert!(cmd.contains("-c model_reasoning_effort='high'"));
+        assert!(!cmd.contains("model_reasoning_effort='low'"));
+    }
+
+    #[test]
+    fn test_format_command_for_debug_codex_empty_reasoning_effort_omits_flag() {
+        let mut service = AiService::new();
+        service.codex_reasoning_effort = String::new();
+        let cmd = service.format_command_for_debug(&AiProvider::Codex, "test", None);
+        assert!(cmd.contains("codex --disable codex_hooks exec"));
+        assert!(!cmd.contains("model_reasoning_effort"));
     }
 
     #[test]
@@ -3442,6 +3495,7 @@ mod tests {
                 gemini: "gemini-2.5-flash".to_string(),
                 ..Default::default()
             },
+            codex_reasoning_effort: "low".to_string(),
             cooldown_minutes: 60,
             timeout_seconds: 60,
             debug: false,
@@ -3462,6 +3516,7 @@ mod tests {
                 gemini: String::new(),
                 ..Default::default()
             },
+            codex_reasoning_effort: "low".to_string(),
             cooldown_minutes: 60,
             timeout_seconds: 60,
             debug: false,
@@ -3478,6 +3533,7 @@ mod tests {
             providers: vec![AiProvider::Codex],
             language: "Japanese".to_string(),
             models: ModelsConfig::default(),
+            codex_reasoning_effort: "low".to_string(),
             cooldown_minutes: 60,
             timeout_seconds: 60,
             debug: false,
@@ -3496,6 +3552,7 @@ mod tests {
                 claude: "haiku".to_string(),
                 ..Default::default()
             },
+            codex_reasoning_effort: "low".to_string(),
             cooldown_minutes: 60,
             timeout_seconds: 60,
             debug: false,

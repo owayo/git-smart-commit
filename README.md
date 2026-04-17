@@ -248,6 +248,10 @@ prefix_type = "conventional"
 # Auto-push after commit (optional)
 auto_push = true
 
+# Codex reasoning effort passed via `-c model_reasoning_effort=<value>`
+# Values: "low" (default), "medium", "high", or "" to omit and use codex default
+codex_reasoning_effort = "low"
+
 # Model configuration
 [models]
 gemini = "gemini-2.5-flash-lite"
@@ -270,6 +274,7 @@ provider_timeout_seconds = 60
 | `language` | Commit message language | `"Japanese"` |
 | `prefix_type` | Commit prefix format | Auto-detect |
 | `auto_push` | Auto-push after commit | `false` |
+| `codex_reasoning_effort` | Codex `-c model_reasoning_effort` value (`""` to omit) | `"low"` |
 | `models.*` | Model for each provider | See config |
 | `provider_cooldown_minutes` | Failed provider cooldown | `60` |
 | `provider_timeout_seconds` | Provider call timeout | `60` |
