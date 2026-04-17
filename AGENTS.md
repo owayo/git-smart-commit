@@ -119,6 +119,7 @@ Config merge note:
 - For rename diffs, ignore matching checks both the pre-rename and post-rename path so moves into ignored directories are excluded consistently.
 - Patterns apply to both text and binary files. Ignore filtering runs before binary-to-summary conversion so that binary files matching ignore patterns are fully excluded from the diff.
 - `decode_quoted_diff_path` validates that 3-digit octal escape values are within the u8 range (0-377). Values exceeding 255 (e.g., `\400`) are rejected as invalid input.
+- Paths containing spaces are supported. Git does not quote space-only filenames in `diff --git` headers, so path extraction uses a midpoint split for symmetric `a/PATH b/PATH` headers to avoid misparsing (e.g., `diff --git a/foo bar.txt b/foo bar.txt` → `foo bar.txt`, not `foo` and `bar.txt`). Mixed quoted/unquoted rename headers are also handled by consuming the unquoted side to the end of line.
 
 ## Testing
 

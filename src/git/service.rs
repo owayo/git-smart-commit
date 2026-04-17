@@ -275,30 +275,32 @@ impl GitService {
     /// Git は `diff --git` 行でファイル名にスペースが含まれる場合もクォート形式に
     /// しないため、素朴な空白分割では誤抽出になる（例: `diff --git a/foo bar.txt
     /// b/foo bar.txt` → `foo` と `bar.txt` に分割されてしまう）。
-    /// そのため、同一パスの対称ケースでは中央分割で正しく抽出する。
+    /// 非クォートの同一パス対称ケースでは中央分割で正しく抽出し、片側だけが
+    /// クォートされているケースではクォート側を優先的に解析する。
     fn extract_file_paths_from_diff_header(header: &str) -> Option<(String, String)> {
-        let rest = header.strip_prefix("diff --git ")?.trim_start();
+        let rest = header.strip_prefix("diff --git ")?.trim();
 
-        // 両側ともクォート形式（非ASCIIパス等）の場合
-        if rest.starts_with('"') {
-            let (before_path, rest_after) = Self::take_diff_header_path(rest)?;
-            let (after_path, _) = Self::take_diff_header_path(rest_after.trim_start())?;
-            return Some((
-                before_path.strip_prefix("a/")?.to_string(),
-                after_path.strip_prefix("b/")?.to_string(),
-            ));
-        }
-
-        // 非クォート同一パスの対称ケース: `a/PATH b/PATH` を中央で分割
-        // スペースを含むファイル名にも正しく対応するための経路
-        if let Some(paths) = Self::try_split_symmetric_unquoted_header(rest) {
+        // クォートを一切含まない場合は同一パス対称ケースを先に試す
+        // （スペース含みファイル名でも `a/PATH b/PATH` 形式を正しく抽出できる）
+        if !rest.contains('"')
+            && let Some(paths) = Self::try_split_symmetric_unquoted_header(rest)
+        {
             return Some(paths);
         }
 
-        // フォールバック: 空白分割（リネーム等の非対称ケース）
-        // この経路では、パスにスペースが含まれると正しく抽出できない
+        // 先頭がクォートの場合はクォート解析、そうでなければ空白分割
         let (before_path, rest_after) = Self::take_diff_header_path(rest)?;
-        let (after_path, _) = Self::take_diff_header_path(rest_after.trim_start())?;
+        let rest_after = rest_after.trim_start();
+
+        // 残り側がクォートなら再度クォート解析、そうでなければ末尾までを
+        // そのまま after_path として扱う（`"a/旧.txt" b/new name.txt` のような
+        // 片側クォート + スペース含み非クォートに対応）
+        let after_path = if rest_after.starts_with('"') {
+            Self::take_diff_header_path(rest_after)?.0
+        } else {
+            rest_after.to_string()
+        };
+
         Some((
             before_path.strip_prefix("a/")?.to_string(),
             after_path.strip_prefix("b/")?.to_string(),
@@ -1668,6 +1670,44 @@ index 1234567..abcdefg 100644
         assert!(result.is_empty());
     }
 
+    #[test]
+    fn test_filter_ignored_files_matches_unquoted_path_with_spaces() {
+        // 非クォートでスペースを含むパス（Git はスペースをクォートしない）を
+        // .git-sc-ignore で正しく除外できることを確認する
+        let mut builder = GitignoreBuilder::new(".");
+        builder.add_line(None, "logs/**").unwrap();
+        let ignore = builder.build().unwrap();
+
+        let diff = "diff --git a/logs/access log.txt b/logs/access log.txt\n\
+                    index 111..222 100644\n\
+                    --- a/logs/access log.txt\n\
+                    +++ b/logs/access log.txt\n\
+                    @@ -1 +1,2 @@\n\
+                    +new line\n";
+
+        let result = GitService::filter_ignored_files(diff, &ignore);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_filter_ignored_files_keeps_unquoted_path_with_spaces_when_not_ignored() {
+        // 非クォートでスペースを含むパスが ignore 対象でない場合は保持されること
+        let mut builder = GitignoreBuilder::new(".");
+        builder.add_line(None, "*.lock").unwrap();
+        let ignore = builder.build().unwrap();
+
+        let diff = "diff --git a/docs/read me.md b/docs/read me.md\n\
+                    index 111..222 100644\n\
+                    --- a/docs/read me.md\n\
+                    +++ b/docs/read me.md\n\
+                    @@ -1 +1,2 @@\n\
+                    +new line\n";
+
+        let result = GitService::filter_ignored_files(diff, &ignore);
+        assert!(result.contains("docs/read me.md"));
+        assert!(result.contains("new line"));
+    }
+
     // ============================================================
     // filter_binary_diff の追加エッジケーステスト
     // ============================================================
@@ -2818,11 +2858,80 @@ index 555..666 100644
 
     #[test]
     fn test_extract_file_path_with_spaces_unquoted() {
-        // スペースを含むが引用符なしのパス
+        // スペースを含む非クォートの対称パスを中央分割で正しく抽出できること
         let header = "diff --git a/path with spaces/file.rs b/path with spaces/file.rs";
         let result = GitService::extract_file_path_from_diff_header(header);
-        // b/ 以降を取得
-        assert!(result.is_some());
+        assert_eq!(result, Some("path with spaces/file.rs".to_string()));
+    }
+
+    #[test]
+    fn test_extract_file_paths_from_diff_header_spaces_unquoted_symmetric() {
+        // スペース含み非クォート対称パスで両側とも正しく抽出できること
+        let header = "diff --git a/foo bar.txt b/foo bar.txt";
+        let result = GitService::extract_file_paths_from_diff_header(header);
+        assert_eq!(
+            result,
+            Some(("foo bar.txt".to_string(), "foo bar.txt".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_file_paths_from_diff_header_quoted_before_unquoted_after_with_space() {
+        // 先頭がクォート、後半が非クォートでスペースを含むケース
+        // Git は非ASCIIパスはクォートするが、英字＋スペースはクォートしないため
+        // リネームで非対称になるこのパターンは実運用で発生しうる
+        let header = r#"diff --git "a/\346\227\247.txt" b/new name.txt"#;
+        let result = GitService::extract_file_paths_from_diff_header(header);
+        assert_eq!(
+            result,
+            Some(("旧.txt".to_string(), "new name.txt".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_file_paths_from_diff_header_symmetric_non_ascii_unquoted() {
+        // core.quotePath=false 相当で非ASCIIが非クォートで出力されるケース
+        let header = "diff --git a/あ space.txt b/あ space.txt";
+        let result = GitService::extract_file_paths_from_diff_header(header);
+        assert_eq!(
+            result,
+            Some(("あ space.txt".to_string(), "あ space.txt".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_file_paths_from_diff_header_symmetric_minimal() {
+        // `a/x b/x` 最短対称ケース
+        let header = "diff --git a/x b/x";
+        let result = GitService::extract_file_paths_from_diff_header(header);
+        assert_eq!(result, Some(("x".to_string(), "x".to_string())));
+    }
+
+    #[test]
+    fn test_extract_file_paths_from_diff_header_rename_no_space() {
+        // スペースなしのリネーム（両側非クォート非対称）は空白分割経路で処理できる
+        let header = "diff --git a/old.txt b/new.txt";
+        let result = GitService::extract_file_paths_from_diff_header(header);
+        assert_eq!(result, Some(("old.txt".to_string(), "new.txt".to_string())));
+    }
+
+    #[test]
+    fn test_try_split_symmetric_unquoted_header_rejects_asymmetric() {
+        // 非対称パスは対称分割では抽出しない（呼び出し側のフォールバックに委ねる）
+        // "a/old.txt b/new.txt" は奇数長だが a/ 側と b/ 側のパスが一致しない
+        assert!(GitService::try_split_symmetric_unquoted_header("a/old.txt b/new.txt").is_none());
+    }
+
+    #[test]
+    fn test_try_split_symmetric_unquoted_header_rejects_even_length() {
+        // 奇数長でない文字列は対称ケースではない
+        assert!(GitService::try_split_symmetric_unquoted_header("a/foo b/fo").is_none());
+    }
+
+    #[test]
+    fn test_try_split_symmetric_unquoted_header_rejects_without_middle_space() {
+        // 中央がスペースでない場合は対称ケースではない
+        assert!(GitService::try_split_symmetric_unquoted_header("a/foooob/foooo").is_none());
     }
 
     #[test]

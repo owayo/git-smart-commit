@@ -251,7 +251,7 @@ auto_push = true
 # Model configuration
 [models]
 gemini = "gemini-2.5-flash-lite"
-codex = "gpt-5.1-codex-mini"
+codex = "gpt-5.4-mini"
 claude = "haiku"
 opencode = ""
 
@@ -331,6 +331,7 @@ echo "conventional"
 
 Patterns are matched against the decoded Git path, so quoted diff headers such as Japanese filenames escaped by Git are excluded correctly as well.
 Rename diffs are checked against both the source path and destination path, so moving a file into an ignored directory is excluded consistently too.
+Filenames containing spaces are also supported: Git does not quote space-only filenames in `diff --git` headers, but `git-sc` still extracts the correct path so that ignore patterns apply consistently.
 
 ```gitignore
 package-lock.json

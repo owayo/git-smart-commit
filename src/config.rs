@@ -23,7 +23,7 @@ fn default_gemini_model() -> String {
 }
 
 fn default_codex_model() -> String {
-    "gpt-5.1-codex-mini".to_string()
+    "gpt-5.4-mini".to_string()
 }
 
 fn default_claude_model() -> String {
@@ -414,7 +414,7 @@ provider_timeout_seconds = 60
 # Model configuration for each provider
 [models]
 gemini = "gemini-2.5-flash-lite"
-codex = "gpt-5.1-codex-mini"
+codex = "gpt-5.4-mini"
 claude = "haiku"
 opencode = ""
 
@@ -538,7 +538,7 @@ mod tests {
         let models = ModelsConfig::default();
 
         assert_eq!(models.gemini, "gemini-2.5-flash-lite");
-        assert_eq!(models.codex, "gpt-5.1-codex-mini");
+        assert_eq!(models.codex, "gpt-5.4-mini");
         assert_eq!(models.claude, "haiku");
         assert_eq!(models.opencode, "");
     }
@@ -907,7 +907,7 @@ language = "Japanese"
         assert_eq!(global.models.gemini, "pro");
         assert_eq!(global.models.claude, "opus");
         // 変更されていないモデルはデフォルトのまま
-        assert_eq!(global.models.codex, "gpt-5.1-codex-mini");
+        assert_eq!(global.models.codex, "gpt-5.4-mini");
         assert_eq!(global.models.opencode, "");
     }
 
@@ -997,7 +997,7 @@ provider_cooldown_minutes = 60
 
 [models]
 gemini = "gemini-2.5-flash-lite"
-codex = "gpt-5.1-codex-mini"
+codex = "gpt-5.4-mini"
 claude = "haiku"
 "#;
 
@@ -1011,7 +1011,7 @@ provider_cooldown_minutes = 15
 
 [models]
 gemini = "pro"
-codex = "gpt-5.1-codex-mini"
+codex = "gpt-5.4-mini"
 claude = "haiku"
 "#;
 
@@ -1425,7 +1425,7 @@ unknown_field = "some_value"
         // gemini のみ上書きされる
         assert_eq!(global.models.gemini, "gemini-2.5-pro");
         // 他はデフォルトのまま
-        assert_eq!(global.models.codex, "gpt-5.1-codex-mini");
+        assert_eq!(global.models.codex, "gpt-5.4-mini");
         assert_eq!(global.models.claude, "haiku");
     }
 

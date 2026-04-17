@@ -251,7 +251,7 @@ auto_push = true
 # モデル設定
 [models]
 gemini = "gemini-2.5-flash-lite"
-codex = "gpt-5.1-codex-mini"
+codex = "gpt-5.4-mini"
 claude = "haiku"
 opencode = ""
 
@@ -331,6 +331,7 @@ echo "conventional"
 
 Git が日本語ファイル名などを quoted path としてエスケープしていても、復元後の実パスに対してパターン照合します。
 rename diff では変更前と変更後の両パスを対象に照合するため、無視対象ディレクトリへの移動も一貫して除外されます。
+ファイル名にスペースが含まれている場合も対応しています。Git はスペースだけを含むファイル名をクォートせずに `diff --git` ヘッダーへ出力しますが、`git-sc` は正しいパスを抽出するため、無視パターンが一貫して適用されます。
 
 ```gitignore
 package-lock.json
