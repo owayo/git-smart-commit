@@ -81,12 +81,71 @@ impl InitCommand {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
+    use std::fs;
+    use std::path::Path;
+    use std::sync::{Mutex, OnceLock};
+
     use super::*;
+
+    fn home_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct HomeEnvGuard {
+        original_home: Option<OsString>,
+    }
+
+    impl HomeEnvGuard {
+        fn set(temp_home: &Path) -> Self {
+            let original_home = std::env::var_os("HOME");
+            // `dirs::home_dir()` の参照先をテスト用ディレクトリへ固定する。
+            unsafe {
+                std::env::set_var("HOME", temp_home);
+            }
+
+            Self { original_home }
+        }
+    }
+
+    impl Drop for HomeEnvGuard {
+        fn drop(&mut self) {
+            match &self.original_home {
+                Some(path) => unsafe {
+                    std::env::set_var("HOME", path);
+                },
+                None => unsafe {
+                    std::env::remove_var("HOME");
+                },
+            }
+        }
+    }
 
     #[test]
     fn test_default_config_content_not_empty() {
         let content = Config::default_config_content();
         assert!(!content.is_empty());
+    }
+
+    #[test]
+    fn test_execute_force_creates_config_file_with_current_defaults() {
+        let _lock = home_env_lock().lock().unwrap();
+        let temp_home = tempfile::tempdir().unwrap();
+        let _home_guard = HomeEnvGuard::set(temp_home.path());
+
+        let path = InitCommand::execute(true).unwrap();
+        let expected_path = temp_home.path().join(".config/git-sc/config.toml");
+
+        assert_eq!(path, expected_path);
+        assert!(path.exists());
+
+        let content = fs::read_to_string(&path).unwrap();
+        let config: Config = toml::from_str(&content).unwrap();
+        let defaults = Config::default();
+
+        assert_eq!(config.models.codex, defaults.models.codex);
+        assert!(content.contains("codex = \"gpt-5.3-codex\""));
     }
 
     #[test]

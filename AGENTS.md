@@ -101,6 +101,9 @@ When a provider fails, it enters cooldown (default: 60 minutes) and the next pro
 
 When invoked from a coding agent, `App::run()` reads the `CLAW_HOOKS_AGENT_MESSAGE` environment variable and passes it to `AiService::build_prompt()` as `agent_context`. This context is injected into the AI prompt before the diff section, guiding the AI to reflect the developer's high-level intent in the commit message. The context is applied across standard generation and `--amend` / `--reword` / `--squash` / `--generate-for` workflows.
 
+Default Codex model note:
+- As of April 22, 2026, the default Codex model is `gpt-5.3-codex`. This was selected after a local `codex exec -c model_reasoning_effort='medium'` benchmark with a simple `Hello` prompt across ChatGPT-account-compatible models, where `gpt-5.3-codex` had the lowest stable total token usage among the successful models.
+
 ## Configuration Files
 
 | File | Scope |

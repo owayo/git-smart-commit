@@ -1,15 +1,16 @@
 fn main() {
-    // fm-rs uses Swift bridging to access Apple's FoundationModels framework.
-    // The resulting binary links against Swift runtime libraries (e.g. libswift_Concurrency.dylib),
-    // which are not on the default library search path.
-    // Without these rpaths, the binary crashes at launch with:
+    // fm-rs は Swift ブリッジ経由で Apple の FoundationModels フレームワークにアクセスする。
+    // 生成されるバイナリは Swift ランタイムライブラリ
+    // （例: libswift_Concurrency.dylib）へリンクするが、
+    // これらは既定のライブラリ探索パスに含まれない。
+    // rpath を追加しないと起動時に次のエラーでクラッシュする:
     //   dyld: Library not loaded: @rpath/libswift_Concurrency.dylib
     #[cfg(all(target_os = "macos", feature = "apple-ai"))]
     {
-        // System Swift runtime (always available on macOS)
+        // macOS に常に存在するシステム Swift ランタイム
         println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
 
-        // Xcode toolchain Swift runtime (needed when using Xcode's bundled Swift)
+        // Xcode 同梱の Swift を使う環境向けにツールチェーン側のランタイムも追加する
         if let Ok(output) = std::process::Command::new("xcrun")
             .args(["--toolchain", "default", "--find", "swift"])
             .output()
