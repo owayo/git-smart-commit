@@ -1357,12 +1357,12 @@ mod tests {
         assert!(prompt.contains("</agent-context>"));
         assert!(prompt.contains("Refactored the authentication module to use JWT tokens"));
         assert!(prompt.contains("IMPORTANT: Use the <agent-context> above as the primary source"));
-        // Agent context should appear before Changes section
+        // エージェントコンテキストは変更内容セクションより前に配置する。
         let ctx_pos = prompt.find("<agent-context>").unwrap();
         let changes_pos = prompt.find("<changes>").unwrap();
         assert!(
             ctx_pos < changes_pos,
-            "Agent context should appear before Changes section"
+            "エージェントコンテキストは変更内容セクションより前に配置されるべき"
         );
     }
 
@@ -1393,7 +1393,7 @@ mod tests {
             false,
             Some(""),
         );
-        // Empty agent context should not add the section
+        // 空のエージェントコンテキストではセクションを追加しない。
         assert!(!prompt.contains("<agent-context>"));
     }
 
@@ -1709,7 +1709,7 @@ mod tests {
         };
         assert_eq!(service.providers.len(), expected_len);
         assert_eq!(service.models.gemini, "gemini-2.5-flash-lite");
-        assert_eq!(service.models.codex, "gpt-5.3-codex");
+        assert_eq!(service.models.codex, "gpt-5.3-codex-spark");
         assert_eq!(service.models.claude, "haiku");
         assert_eq!(service.models.opencode, "");
         assert_eq!(service.timeout_seconds, 60);

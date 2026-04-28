@@ -145,7 +145,7 @@ mod tests {
         let defaults = Config::default();
 
         assert_eq!(config.models.codex, defaults.models.codex);
-        assert!(content.contains("codex = \"gpt-5.3-codex\""));
+        assert!(content.contains("codex = \"gpt-5.3-codex-spark\""));
     }
 
     #[test]
@@ -159,9 +159,9 @@ mod tests {
     #[test]
     fn test_default_config_content_has_comments() {
         let content = Config::default_config_content();
-        assert!(content.contains("# git-sc configuration file"));
-        assert!(content.contains("# AI providers"));
-        assert!(content.contains("# Prefix scripts"));
+        assert!(content.contains("# git-sc 設定ファイル"));
+        assert!(content.contains("# AI プロバイダーの優先順"));
+        assert!(content.contains("# プレフィックススクリプト"));
     }
 
     #[test]

@@ -23,7 +23,7 @@ fn default_gemini_model() -> String {
 }
 
 fn default_codex_model() -> String {
-    "gpt-5.3-codex".to_string()
+    "gpt-5.3-codex-spark".to_string()
 }
 
 fn default_claude_model() -> String {
@@ -396,59 +396,59 @@ impl Config {
         };
 
         let apple_ai_available = if cfg!(all(target_os = "macos", feature = "apple-ai")) {
-            r#"# Available: "opencode", "gemini", "codex", "claude", "apple-intelligence"
-# "apple-intelligence" requires macOS 26+ with Apple Silicon"#
+            r#"# 使用可能: "opencode", "gemini", "codex", "claude", "apple-intelligence"
+# "apple-intelligence" には macOS 26+ と Apple Silicon が必要"#
         } else {
-            r#"# Available: "opencode", "gemini", "codex", "claude""#
+            r#"# 使用可能: "opencode", "gemini", "codex", "claude""#
         };
 
         format!(
-            r#"# git-sc configuration file
-# AI-powered smart commit message generator
+            r#"# git-sc 設定ファイル
+# AI によるスマートコミットメッセージ生成
 
-# AI providers priority order
+# AI プロバイダーの優先順
 {apple_ai_available}
 {providers}
 
-# Commit message language
+# コミットメッセージの言語
 language = "Japanese"
 
-# Provider cooldown time (minutes) after failure
-# Set to 0 to disable cooldown
+# プロバイダー失敗後のクールダウン時間（分）
+# 0 を指定するとクールダウンを無効化
 provider_cooldown_minutes = 60
 
-# Provider timeout (seconds) per call
-# If a provider takes longer than this, it will be killed and the next provider tried
+# プロバイダー1回あたりのタイムアウト（秒）
+# この秒数を超えたプロバイダーは終了し、次のプロバイダーを試す
 provider_timeout_seconds = 60
 
-# Commit message prefix format
-# Available: "conventional", "bracket", "colon", "emoji", "plain", "none"
+# コミットメッセージのプレフィックス形式
+# 使用可能: "conventional", "bracket", "colon", "emoji", "plain", "none"
 # prefix_type = "conventional"
 
-# Auto push after commit
+# コミット後に自動 push
 # auto_push = false
 
-# Codex reasoning effort passed via `-c model_reasoning_effort=<value>`
-# Available: "low", "medium", "high" (or "" to omit and use codex default)
+# Codex に `-c model_reasoning_effort=<value>` として渡す推論深度
+# 使用可能: "low", "medium", "high"（空文字列なら省略して codex 既定を使用）
 codex_reasoning_effort = "low"
 
-# Model configuration for each provider
+# 各プロバイダーのモデル設定
 [models]
 gemini = "gemini-2.5-flash-lite"
-codex = "gpt-5.3-codex"
+codex = "gpt-5.3-codex-spark"
 claude = "haiku"
 opencode = ""
 
-# Prefix scripts (executed in order, first match wins)
-# Script receives: remote_url, branch_name as arguments
-# Exit 0 + output: use output as prefix
-# Exit 0 + empty: no prefix
-# Exit 1: use AI-generated message without prefix
+# プレフィックススクリプト（上から順に実行し、最初の一致を使用）
+# スクリプト引数: remote_url, branch_name
+# 終了コード 0 + 出力あり: 出力をプレフィックスとして使用
+# 終了コード 0 + 空出力: プレフィックスなし
+# 終了コード 1: AI 生成メッセージをプレフィックスなしで使用
 # [[prefix_scripts]]
 # url_pattern = "^https://github\\.com/myorg/"
 # script = "/path/to/prefix-script.sh"
 
-# Prefix rules (URL-based, first match wins)
+# プレフィックスルール（URL ベース、最初の一致を使用）
 # [[prefix_rules]]
 # url_pattern = "github\\.com[:/]myorg/"
 # prefix_type = "conventional"
@@ -583,7 +583,7 @@ codex_reasoning_effort = "high"
         let models = ModelsConfig::default();
 
         assert_eq!(models.gemini, "gemini-2.5-flash-lite");
-        assert_eq!(models.codex, "gpt-5.3-codex");
+        assert_eq!(models.codex, "gpt-5.3-codex-spark");
         assert_eq!(models.claude, "haiku");
         assert_eq!(models.opencode, "");
     }
@@ -952,7 +952,7 @@ language = "Japanese"
         assert_eq!(global.models.gemini, "pro");
         assert_eq!(global.models.claude, "opus");
         // 変更されていないモデルはデフォルトのまま
-        assert_eq!(global.models.codex, "gpt-5.3-codex");
+        assert_eq!(global.models.codex, "gpt-5.3-codex-spark");
         assert_eq!(global.models.opencode, "");
     }
 
@@ -1042,7 +1042,7 @@ provider_cooldown_minutes = 60
 
 [models]
 gemini = "gemini-2.5-flash-lite"
-codex = "gpt-5.3-codex"
+codex = "gpt-5.3-codex-spark"
 claude = "haiku"
 "#;
 
@@ -1056,7 +1056,7 @@ provider_cooldown_minutes = 15
 
 [models]
 gemini = "pro"
-codex = "gpt-5.3-codex"
+codex = "gpt-5.3-codex-spark"
 claude = "haiku"
 "#;
 
@@ -1470,7 +1470,7 @@ unknown_field = "some_value"
         // gemini のみ上書きされる
         assert_eq!(global.models.gemini, "gemini-2.5-pro");
         // 他はデフォルトのまま
-        assert_eq!(global.models.codex, "gpt-5.3-codex");
+        assert_eq!(global.models.codex, "gpt-5.3-codex-spark");
         assert_eq!(global.models.claude, "haiku");
     }
 
@@ -1885,6 +1885,29 @@ gemini = "gemini-2.5-pro"
             partial.providers.is_some_and(|p| !p.is_empty()),
             "providers は空であってはならない"
         );
+    }
+
+    #[test]
+    fn test_default_config_content_uses_current_default_models() {
+        // init で生成する設定テンプレートがコード上の既定モデルとずれないことを確認する。
+        let content = Config::default_config_content();
+        let config = Config::from_str(&content).unwrap();
+
+        assert_eq!(config.models.gemini, default_gemini_model());
+        assert_eq!(config.models.codex, default_codex_model());
+        assert_eq!(config.models.claude, default_claude_model());
+        assert_eq!(config.models.opencode, default_opencode_model());
+    }
+
+    #[test]
+    fn test_default_config_content_has_japanese_comments() {
+        // 生成される設定ファイルの説明コメントは日本語で維持する。
+        let content = Config::default_config_content();
+
+        assert!(content.contains("# AI プロバイダーの優先順"));
+        assert!(content.contains("# 各プロバイダーのモデル設定"));
+        assert!(!content.contains("# AI providers priority order"));
+        assert!(!content.contains("# Model configuration for each provider"));
     }
 
     // ============================================================
