@@ -36,19 +36,19 @@ pub struct Cli {
     pub stage_all: bool,
 
     /// 直前のコミットメッセージをAI生成で書き換え
-    #[arg(long = "amend")]
+    #[arg(long = "amend", conflicts_with_all = ["squash", "reword", "generate_for"])]
     pub amend: bool,
 
     /// ブランチ内の全コミットを1つにsquash（ベースブランチを指定）
-    #[arg(long = "squash", value_name = "BASE")]
+    #[arg(long = "squash", value_name = "BASE", conflicts_with_all = ["amend", "reword", "generate_for"])]
     pub squash: Option<String>,
 
     /// 指定コミットハッシュのメッセージを再生成（git rebase使用）
-    #[arg(long = "reword", value_name = "HASH")]
+    #[arg(long = "reword", value_name = "HASH", conflicts_with_all = ["amend", "squash", "generate_for"])]
     pub reword: Option<String>,
 
     /// 指定コミットハッシュのdiffからメッセージ生成（出力のみ、複数指定可）
-    #[arg(short = 'g', long = "generate-for", value_name = "HASH", num_args = 1..)]
+    #[arg(short = 'g', long = "generate-for", value_name = "HASH", num_args = 1.., conflicts_with_all = ["amend", "squash", "reword"])]
     pub generate_for: Option<Vec<String>>,
 
     /// 本文（body）付きのコミットメッセージを生成
@@ -375,6 +375,24 @@ mod tests {
             cli.generate_for,
             Some(vec!["1234567890abcdef1234567890abcdef12345678".to_string()])
         );
+    }
+
+    #[test]
+    fn test_cli_amend_conflicts_with_squash() {
+        let result = Cli::try_parse_from(["git-sc", "--amend", "--squash", "main"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_cli_amend_conflicts_with_reword() {
+        let result = Cli::try_parse_from(["git-sc", "--amend", "--reword", "HEAD"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_cli_generate_for_conflicts_with_squash() {
+        let result = Cli::try_parse_from(["git-sc", "--generate-for", "HEAD", "--squash", "main"]);
+        assert!(result.is_err());
     }
 
     // ============================================================

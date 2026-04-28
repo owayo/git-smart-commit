@@ -548,19 +548,16 @@ impl GitService {
 
     /// Gitリポジトリ内にいるか確認
     pub fn verify_repository(&self) -> Result<(), AppError> {
-        // .git ディレクトリが直接存在するかチェック
-        if self.repo_path.join(".git").exists() {
-            return Ok(());
-        }
-
-        // Gitリポジトリのサブディレクトリにいる場合もチェック
+        // `.git` という通常ファイルやディレクトリがあるだけではリポジトリとは限らないため、
+        // Git 自身に作業ツリー内かどうかを判定させる。
         let output = Command::new("git")
-            .args(["rev-parse", "--git-dir"])
+            .args(["rev-parse", "--is-inside-work-tree"])
             .current_dir(&self.repo_path)
             .output()
             .map_err(|e| AppError::GitError(e.to_string()))?;
 
-        if output.status.success() {
+        let is_work_tree = String::from_utf8_lossy(&output.stdout).trim() == "true";
+        if output.status.success() && is_work_tree {
             Ok(())
         } else {
             Err(AppError::NotGitRepository)
@@ -1229,6 +1226,21 @@ index 1234567..abcdefg 100644
         let service = GitService::new();
         let result = service.verify_repository();
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_verify_repository_rejects_plain_git_file() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(temp_dir.path().join(".git"), "not a gitdir").unwrap();
+        let service = GitService {
+            repo_path: temp_dir.path().to_path_buf(),
+        };
+
+        let result = service.verify_repository();
+
+        assert!(matches!(result, Err(AppError::NotGitRepository)));
     }
 
     #[test]

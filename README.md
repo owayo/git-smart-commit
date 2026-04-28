@@ -153,6 +153,8 @@ git-sc -n
 | `--reword` | | Regenerate message for specific commit |
 | `--generate-for` | `-g` | Generate from commit diff (output only) |
 
+Operation modes (`--amend`, `--squash`, `--reword`, `--generate-for`) are mutually exclusive. Combining them fails during argument parsing instead of silently choosing one mode.
+
 `--amend` note:
 - Also works when the current `HEAD` is the root commit.
 

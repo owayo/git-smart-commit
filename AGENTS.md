@@ -29,6 +29,7 @@ git-sc --debug      # Show AI prompt and command being executed
 git-sc -p claude    # Use specific AI provider (gemini, codex, claude, opencode, apple-intelligence)
 git-sc --amend      # Regenerate last commit message
 git-sc --squash main # Squash commits since main branch
+git-sc --reword HEAD # Regenerate a specific commit message
 ```
 
 ## Architecture
@@ -64,6 +65,12 @@ src/
 
 Recent-commit detection note:
 - `GitService::get_recent_commits()` checks whether `HEAD` exists before calling `git log`, so empty repositories work regardless of Git locale or localized stderr text.
+
+Repository detection note:
+- `GitService::verify_repository()` asks Git whether the current directory is inside a work tree instead of trusting a `.git` path. A plain `.git` file or directory is not treated as a valid repository by itself.
+
+Operation mode safety note:
+- `--amend`, `--squash`, `--reword`, and `--generate-for` are mutually exclusive at CLI argument parsing time, so invalid combinations fail instead of silently choosing one workflow.
 
 Prefix script behavior note:
 - If a prefix script returns empty output, `App` preserves the generated message and removes only a leading Conventional Commits type prefix (`feat:`, `fix(scope):`, `feat!:` etc.) when present.
@@ -102,7 +109,7 @@ When a provider fails, it enters cooldown (default: 60 minutes) and the next pro
 When invoked from a coding agent, `App::run()` reads the `CLAW_HOOKS_AGENT_MESSAGE` environment variable and passes it to `AiService::build_prompt()` as `agent_context`. This context is injected into the AI prompt before the diff section, guiding the AI to reflect the developer's high-level intent in the commit message. The context is applied across standard generation and `--amend` / `--reword` / `--squash` / `--generate-for` workflows.
 
 Default Codex model note:
-- As of April 28, 2026, the default Codex model is `gpt-5.3-codex-spark`. This was selected after a local `codex exec -c model_reasoning_effort='medium'` benchmark with a simple `Hello` prompt across ChatGPT-account-compatible models, where `gpt-5.3-codex-spark` had the lowest total token usage among the successful models.
+- As of April 28, 2026, the default Codex model is `gpt-5.3-codex-spark`. It was rechecked locally with `echo "Hello" | codex exec -c model_reasoning_effort='medium' -m <model>` across ChatGPT-account-compatible candidates. `gpt-5.3-codex-spark` used the fewest tokens among successful models (`12,643`; `gpt-5.2-codex` was unsupported).
 
 ## Configuration Files
 

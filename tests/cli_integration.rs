@@ -385,6 +385,30 @@ fn test_generate_for_with_squash_conflict() {
         .stderr(predicate::str::contains("--generate-for"));
 }
 
+#[test]
+fn test_amend_with_squash_conflict() {
+    let dir = setup_git_repo_with_commit();
+
+    git_sc!()
+        .args(["--amend", "--squash", "main"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--amend"));
+}
+
+#[test]
+fn test_amend_with_reword_conflict() {
+    let dir = setup_git_repo_with_commit();
+
+    git_sc!()
+        .args(["--amend", "--reword", "HEAD"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--amend"));
+}
+
 // ============================================================
 // --quiet のテスト
 // ============================================================
