@@ -464,6 +464,22 @@ fn test_quiet_reword_invalid_hash_suppresses_progress_output() {
 }
 
 #[test]
+fn test_reword_multibyte_hash_does_not_panic() {
+    // 表示用の短縮ハッシュ計算で文字境界違反によるパニックが起きないことを確認する。
+    // マルチバイト文字を含む長いハッシュ（合計バイト長 > 7）を渡しても、
+    // バリデーションエラーで終了する必要がある。
+    let dir = setup_git_repo_with_commit();
+    let multibyte_hash = "あいうえおかきく"; // 24 bytes (8 chars * 3 bytes)
+
+    git_sc!()
+        .args(["--reword", multibyte_hash])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("無効なコミットハッシュ"));
+}
+
+#[test]
 fn test_quiet_reword_hash_outside_head_history_fails() {
     let dir = setup_git_repo_with_commit();
     let path = setup_fake_opencode_path(&dir);

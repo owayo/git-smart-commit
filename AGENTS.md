@@ -86,6 +86,7 @@ Reword safety note:
 - Rewording the oldest commit in the current branch is supported by switching to `git rebase -i --root` when needed.
 - The temporary message file used during reword is created with a unique name and cleaned up automatically to avoid collisions between concurrent runs.
 - `GIT_EDITOR` passes the message file path via `GIT_SC_MSG_FILE` environment variable (not shell string interpolation) to prevent injection attacks from paths containing special characters.
+- The display-only short hash is computed via `chars().take(7)` so multibyte input (e.g. accidental non-ASCII argument) does not cause a UTF-8 boundary panic before validation runs.
 
 Amend safety note:
 - `GitService` reads the last-commit diff via `git show HEAD`, so `--amend` also works when the current `HEAD` is the root commit.
@@ -102,14 +103,20 @@ Temp file safety note:
 - `TempFile` and `TempRewordMessageFile` use RAII (Drop) for automatic cleanup.
 - On write/sync failure, the file is explicitly deleted before returning the error to prevent orphaned temp files.
 
+Subprocess timeout note:
+- `AiService::run_process_with_timeout()` always joins the stdout/stderr reader threads on every exit path (success, timeout, and `try_wait` error). After `child.kill()` and `child.wait()` close the pipes, the reader threads receive EOF and exit cleanly, so no detached threads leak when a provider call times out.
+
 When a provider fails, it enters cooldown (default: 60 minutes) and the next provider is tried.
+
+Provider state file note:
+- `State::save()` writes to `~/.config/git-sc/.providers-state.tmp` first and then `rename(2)`s it onto the final path so concurrent `git-sc` invocations never read a half-written TOML file. On rename failure the temporary file is deleted before the error is returned.
 
 ### Agent Context
 
 When invoked from a coding agent, `App::run()` reads the `CLAW_HOOKS_AGENT_MESSAGE` environment variable and passes it to `AiService::build_prompt()` as `agent_context`. This context is injected into the AI prompt before the diff section, guiding the AI to reflect the developer's high-level intent in the commit message. The context is applied across standard generation and `--amend` / `--reword` / `--squash` / `--generate-for` workflows.
 
 Default Codex model note:
-- As of April 28, 2026, the default Codex model is `gpt-5.3-codex-spark`. It was rechecked locally with `echo "Hello" | codex exec -c model_reasoning_effort='medium' -m <model>` across ChatGPT-account-compatible candidates. `gpt-5.3-codex-spark` used the fewest tokens among successful models (`12,643`; `gpt-5.2-codex` was unsupported).
+- As of April 29, 2026, the default Codex model is `gpt-5.3-codex-spark`. It was rechecked locally with `echo "Hello" | codex exec -c model_reasoning_effort='medium' -m <model>` across ChatGPT-account-compatible candidates. `gpt-5.3-codex-spark` used the fewest tokens among successful models (`12,753`); `gpt-5.3-codex` came in slightly higher (`12,934`) and `gpt-5.2`/`gpt-5.3-codex-mini`/`gpt-5-codex`/`gpt-5.1-codex` are not supported on ChatGPT accounts.
 
 ## Configuration Files
 

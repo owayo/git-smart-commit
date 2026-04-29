@@ -947,8 +947,9 @@ impl App {
             .ok_or(AppError::InvalidRewordTarget)?
             .clone();
 
-        // 短いハッシュを取得して表示用に使用
-        let short_hash = if hash.len() > 7 { &hash[..7] } else { &hash };
+        // 短いハッシュを取得して表示用に使用（文字境界に対応するため chars ベースで切り出す）
+        let short_hash_owned: String = hash.chars().take(7).collect();
+        let short_hash = short_hash_owned.as_str();
 
         if !cli.quiet {
             println!(

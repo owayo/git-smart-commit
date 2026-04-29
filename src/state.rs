@@ -48,7 +48,11 @@ impl State {
     /// 状態をファイルに保存
     pub fn save(&self) -> Result<(), AppError> {
         let path = Self::state_path()?;
+        self.save_to_path(&path)
+    }
 
+    /// 任意のパスへ状態を保存（テストおよび `save` の内部実装）
+    pub(crate) fn save_to_path(&self, path: &std::path::Path) -> Result<(), AppError> {
         // ディレクトリが存在しない場合は作成
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| {
@@ -59,8 +63,16 @@ impl State {
         let content = toml::to_string_pretty(self)
             .map_err(|e| AppError::ConfigError(format!("Failed to serialize state: {}", e)))?;
 
-        fs::write(&path, content)
+        // 並列実行時に部分書き込みされた状態ファイルを別プロセスが読み取らないように、
+        // 一時ファイルへ書き込んでから rename(2) でアトミックに置き換える
+        let tmp_path = path.with_extension("tmp");
+        fs::write(&tmp_path, &content)
             .map_err(|e| AppError::ConfigError(format!("Failed to write state: {}", e)))?;
+        fs::rename(&tmp_path, path).map_err(|e| {
+            // rename に失敗した場合は中途半端な一時ファイルを残さないように削除を試みる
+            let _ = fs::remove_file(&tmp_path);
+            AppError::ConfigError(format!("Failed to commit state file: {}", e))
+        })?;
 
         Ok(())
     }
@@ -592,5 +604,62 @@ mod tests {
         let reordered = state.reorder_providers(providers, 60);
         // 降格されても1つしかないのでそのまま
         assert_eq!(reordered, vec!["gemini".to_string()]);
+    }
+
+    #[test]
+    fn test_save_to_path_writes_state_atomically() {
+        // save_to_path は tempfile + rename によりアトミックに保存できる必要がある
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("state.toml");
+
+        let mut state = State::default();
+        state.record_failure("gemini");
+        state.save_to_path(&target).unwrap();
+
+        // 書き込み後は対象ファイルだけが残り、一時ファイルは残らない
+        assert!(target.exists(), "状態ファイルが作成されていない");
+        let tmp_path = target.with_extension("tmp");
+        assert!(
+            !tmp_path.exists(),
+            "一時ファイル {:?} が残存している",
+            tmp_path
+        );
+
+        // 内容が正しくデシリアライズできることを確認
+        let content = fs::read_to_string(&target).unwrap();
+        let parsed: State = toml::from_str(&content).unwrap();
+        assert!(parsed.provider_failures.contains_key("gemini"));
+    }
+
+    #[test]
+    fn test_save_to_path_creates_missing_parent_directory() {
+        // ディレクトリが存在しない場合でも自動で作成して保存できる
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("nested").join("more").join("state.toml");
+        assert!(!nested.parent().unwrap().exists());
+
+        let state = State::default();
+        state.save_to_path(&nested).unwrap();
+
+        assert!(nested.exists());
+    }
+
+    #[test]
+    fn test_save_to_path_overwrites_existing_file() {
+        // 既存ファイルがある場合でも rename で正しく置き換わる
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("state.toml");
+
+        // 旧データを先に書き込む
+        fs::write(&target, "provider_failures = { old = { failed_at = 0 } }\n").unwrap();
+
+        let mut state = State::default();
+        state.record_failure("codex");
+        state.save_to_path(&target).unwrap();
+
+        let content = fs::read_to_string(&target).unwrap();
+        let parsed: State = toml::from_str(&content).unwrap();
+        assert!(parsed.provider_failures.contains_key("codex"));
+        assert!(!parsed.provider_failures.contains_key("old"));
     }
 }

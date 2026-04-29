@@ -798,16 +798,18 @@ Instructions:
         });
 
         // タイムアウト付きでプロセス完了を待機
+        // ループからは Result を返してエラー経路でも必ずスレッドを join し、
+        // 取り残された読み取りスレッドが残らないようにする
         let timeout = std::time::Duration::from_secs(self.timeout_seconds);
         let start = std::time::Instant::now();
-        let exit_status = loop {
+        let wait_result: Result<ExitStatus, AppError> = loop {
             match child.try_wait() {
-                Ok(Some(status)) => break status,
+                Ok(Some(status)) => break Ok(status),
                 Ok(None) => {
                     if start.elapsed() > timeout {
                         let _ = child.kill();
                         let _ = child.wait();
-                        return Err(AppError::AiProviderError(format!(
+                        break Err(AppError::AiProviderError(format!(
                             "{} timed out after {} seconds",
                             provider.name(),
                             self.timeout_seconds
@@ -816,7 +818,9 @@ Instructions:
                     std::thread::sleep(std::time::Duration::from_millis(100));
                 }
                 Err(e) => {
-                    return Err(AppError::AiProviderError(format!(
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break Err(AppError::AiProviderError(format!(
                         "Failed to wait for process: {}",
                         e
                     )));
@@ -824,8 +828,12 @@ Instructions:
             }
         };
 
+        // ループから抜けた時点で子プロセスは終了済みなので、パイプ読み取りスレッドも
+        // EOF を受けて必ず終了する。タイムアウト/エラー経路でも join してから抜ける。
         let stdout_str = stdout_thread.join().unwrap_or_default();
         let stderr_str = stderr_thread.join().unwrap_or_default();
+
+        let exit_status = wait_result?;
 
         if is_debug {
             println!("{}", "─".repeat(50).dimmed());
