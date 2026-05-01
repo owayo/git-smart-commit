@@ -251,13 +251,13 @@ prefix_type = "conventional"
 auto_push = true
 
 # Codex reasoning effort passed via `-c model_reasoning_effort=<value>`
-# Values: "low" (default), "medium", "high", or "" to omit and use codex default
+# Values: "low" (default), "medium", "high", "xhigh", or "" to omit and use codex default
 codex_reasoning_effort = "low"
 
 # Model configuration
 [models]
 gemini = "gemini-2.5-flash-lite"
-codex = "gpt-5.3-codex-spark"
+codex = "gpt-5.2"
 claude = "haiku"
 opencode = ""
 
@@ -276,7 +276,7 @@ provider_timeout_seconds = 60
 | `language` | Commit message language | `"Japanese"` |
 | `prefix_type` | Commit prefix format | Auto-detect |
 | `auto_push` | Auto-push after commit | `false` |
-| `codex_reasoning_effort` | Codex `-c model_reasoning_effort` value (`""` to omit) | `"low"` |
+| `codex_reasoning_effort` | Codex `-c model_reasoning_effort` value (`low`, `medium`, `high`, `xhigh`, or `""` to omit) | `"low"` |
 | `models.*` | Model for each provider | See config |
 | `provider_cooldown_minutes` | Failed provider cooldown | `60` |
 | `provider_timeout_seconds` | Provider call timeout | `60` |
@@ -317,6 +317,8 @@ script = "/path/to/prefix-generate.py"
 If a prefix script returns a valid `prefix_type` name (e.g. `conventional`, `bracket`, `emoji`, etc.) instead of a literal prefix string, git-sc interprets it as a Rule mode. This allows scripts to dynamically select the commit format based on branch name or remote URL.
 
 If a prefix script returns empty output (exit `0` with no text), git-sc keeps the generated message as-is, except it removes a leading Conventional Commit type prefix (for example `feat:`, `fix(scope):`, `feat!:`) when present.
+
+If a prefix script exits with code `1`, git-sc keeps the AI-generated message without adding a prefix. Other non-zero exit codes are treated as script execution failures, so git-sc falls back to the next matching prefix script, prefix rule, configured `prefix_type`, or auto detection.
 
 For project-level `.git-sc`, relative `script` paths are resolved from the Git repository root, and the script runs with the Git root as its working directory.
 

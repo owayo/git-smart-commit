@@ -23,7 +23,7 @@ fn default_gemini_model() -> String {
 }
 
 fn default_codex_model() -> String {
-    "gpt-5.3-codex-spark".to_string()
+    "gpt-5.2".to_string()
 }
 
 fn default_claude_model() -> String {
@@ -429,13 +429,13 @@ provider_timeout_seconds = 60
 # auto_push = false
 
 # Codex に `-c model_reasoning_effort=<value>` として渡す推論深度
-# 使用可能: "low", "medium", "high"（空文字列なら省略して codex 既定を使用）
+# 使用可能: "low", "medium", "high", "xhigh"（空文字列なら省略して codex 既定を使用）
 codex_reasoning_effort = "low"
 
 # 各プロバイダーのモデル設定
 [models]
 gemini = "gemini-2.5-flash-lite"
-codex = "gpt-5.3-codex-spark"
+codex = "gpt-5.2"
 claude = "haiku"
 opencode = ""
 
@@ -583,7 +583,7 @@ codex_reasoning_effort = "high"
         let models = ModelsConfig::default();
 
         assert_eq!(models.gemini, "gemini-2.5-flash-lite");
-        assert_eq!(models.codex, "gpt-5.3-codex-spark");
+        assert_eq!(models.codex, "gpt-5.2");
         assert_eq!(models.claude, "haiku");
         assert_eq!(models.opencode, "");
     }
@@ -952,7 +952,7 @@ language = "Japanese"
         assert_eq!(global.models.gemini, "pro");
         assert_eq!(global.models.claude, "opus");
         // 変更されていないモデルはデフォルトのまま
-        assert_eq!(global.models.codex, "gpt-5.3-codex-spark");
+        assert_eq!(global.models.codex, "gpt-5.2");
         assert_eq!(global.models.opencode, "");
     }
 
@@ -1042,7 +1042,7 @@ provider_cooldown_minutes = 60
 
 [models]
 gemini = "gemini-2.5-flash-lite"
-codex = "gpt-5.3-codex-spark"
+codex = "gpt-5.2"
 claude = "haiku"
 "#;
 
@@ -1056,7 +1056,7 @@ provider_cooldown_minutes = 15
 
 [models]
 gemini = "pro"
-codex = "gpt-5.3-codex-spark"
+codex = "gpt-5.2"
 claude = "haiku"
 "#;
 
@@ -1470,7 +1470,7 @@ unknown_field = "some_value"
         // gemini のみ上書きされる
         assert_eq!(global.models.gemini, "gemini-2.5-pro");
         // 他はデフォルトのまま
-        assert_eq!(global.models.codex, "gpt-5.3-codex-spark");
+        assert_eq!(global.models.codex, "gpt-5.2");
         assert_eq!(global.models.claude, "haiku");
     }
 

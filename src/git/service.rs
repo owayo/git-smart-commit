@@ -721,9 +721,11 @@ impl GitService {
             } else {
                 Some(ScriptResult::Prefix(prefix))
             }
-        } else {
-            // 終了コード1: AI生成のメッセージをそのまま使用
+        } else if output.status.code() == Some(1) {
+            // 終了コード 1 は「AI 生成メッセージをそのまま使用」の明示シグナル。
             Some(ScriptResult::Failed)
+        } else {
+            None
         }
     }
 
@@ -2041,6 +2043,58 @@ index 555..666 100644
             Some(ScriptResult::Prefix(prefix)) => assert_eq!(prefix.trim(), "ROOT-CWD"),
             other => panic!("unexpected result: {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_run_prefix_script_exit_one_returns_failed() {
+        let temp_dir = setup_temp_git_repo();
+        let repo = temp_dir.path();
+
+        #[cfg(windows)]
+        let script_relative_path = "scripts\\exit-one.cmd";
+        #[cfg(not(windows))]
+        let script_relative_path = "scripts/exit-one.sh";
+
+        #[cfg(windows)]
+        let script_body = "@echo off\r\nexit /b 1\r\n";
+        #[cfg(not(windows))]
+        let script_body = "#!/bin/sh\nexit 1\n";
+
+        write_test_script(repo, script_relative_path, script_body);
+
+        let service = GitService {
+            repo_path: repo.to_path_buf(),
+        };
+
+        let result = service.run_prefix_script(script_relative_path, "origin", "main");
+
+        assert_eq!(result, Some(ScriptResult::Failed));
+    }
+
+    #[test]
+    fn test_run_prefix_script_non_one_exit_returns_none() {
+        let temp_dir = setup_temp_git_repo();
+        let repo = temp_dir.path();
+
+        #[cfg(windows)]
+        let script_relative_path = "scripts\\exit-two.cmd";
+        #[cfg(not(windows))]
+        let script_relative_path = "scripts/exit-two.sh";
+
+        #[cfg(windows)]
+        let script_body = "@echo off\r\nexit /b 2\r\n";
+        #[cfg(not(windows))]
+        let script_body = "#!/bin/sh\nexit 2\n";
+
+        write_test_script(repo, script_relative_path, script_body);
+
+        let service = GitService {
+            repo_path: repo.to_path_buf(),
+        };
+
+        let result = service.run_prefix_script(script_relative_path, "origin", "main");
+
+        assert_eq!(result, None);
     }
 
     /// 最古コミットを含む範囲でも reword できることを検証する

@@ -145,7 +145,7 @@ mod tests {
         let defaults = Config::default();
 
         assert_eq!(config.models.codex, defaults.models.codex);
-        assert!(content.contains("codex = \"gpt-5.3-codex-spark\""));
+        assert!(content.contains("codex = \"gpt-5.2\""));
     }
 
     #[test]

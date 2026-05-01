@@ -251,13 +251,13 @@ prefix_type = "conventional"
 auto_push = true
 
 # Codex 呼び出し時に `-c model_reasoning_effort=<値>` として渡す推論深度
-# 値: "low"（デフォルト）/ "medium" / "high" / "" (codex 既定動作を使う場合は空文字列)
+# 値: "low"（デフォルト）/ "medium" / "high" / "xhigh" / "" (codex 既定動作を使う場合は空文字列)
 codex_reasoning_effort = "low"
 
 # モデル設定
 [models]
 gemini = "gemini-2.5-flash-lite"
-codex = "gpt-5.3-codex-spark"
+codex = "gpt-5.2"
 claude = "haiku"
 opencode = ""
 
@@ -276,7 +276,7 @@ provider_timeout_seconds = 60
 | `language` | コミットメッセージの言語 | `"Japanese"` |
 | `prefix_type` | コミットプレフィックス形式 | 自動検出 |
 | `auto_push` | コミット後に自動プッシュ | `false` |
-| `codex_reasoning_effort` | Codex の `-c model_reasoning_effort` に渡す値（空文字列で省略） | `"low"` |
+| `codex_reasoning_effort` | Codex の `-c model_reasoning_effort` に渡す値（`low`, `medium`, `high`, `xhigh`, 空文字列で省略） | `"low"` |
 | `models.*` | 各プロバイダーのモデル | 設定参照 |
 | `provider_cooldown_minutes` | 失敗プロバイダーのクールダウン | `60` |
 | `provider_timeout_seconds` | プロバイダー呼び出しのタイムアウト | `60` |
@@ -317,6 +317,8 @@ script = "/path/to/prefix-generate.py"
 プレフィックススクリプトが有効な `prefix_type` 名（`conventional`, `bracket`, `emoji` 等）を返した場合、リテラルなプレフィックス文字列ではなくルールモードとして解釈されます。これにより、ブランチ名やリモートURLに応じてコミットフォーマットを動的に切り替えることができます。
 
 プレフィックススクリプトが空文字を返した場合（exit `0` かつ標準出力なし）、git-sc は生成メッセージをそのまま使います。ただし先頭が Conventional Commits の type プレフィックス（例: `feat:`, `fix(scope):`, `feat!:`）の場合のみ、そのプレフィックスを除去します。
+
+プレフィックススクリプトが終了コード `1` で終了した場合、git-sc はプレフィックスを追加せず AI 生成メッセージをそのまま使います。それ以外の非 0 終了コードはスクリプト実行失敗として扱い、次に一致するプレフィックススクリプト、プレフィックスルール、設定済みの `prefix_type`、または自動判定へフォールバックします。
 
 プロジェクトレベルの `.git-sc` では、相対 `script` パスは Git リポジトリのルートから解決され、スクリプトの作業ディレクトリも Git ルートになります。
 

@@ -74,6 +74,7 @@ Operation mode safety note:
 
 Prefix script behavior note:
 - If a prefix script returns empty output, `App` preserves the generated message and removes only a leading Conventional Commits type prefix (`feat:`, `fix(scope):`, `feat!:` etc.) when present.
+- Prefix script exit code `1` is the explicit "use AI-generated message without prefix" signal. Other non-zero exit codes are treated as execution failures, so prefix selection can fall through to later scripts, rules, config, or auto detection.
 - Relative `script` paths in project-level `.git-sc` are resolved from the Git repository root, and prefix scripts run with the Git root as their working directory.
 
 Commit hash validation note:
@@ -116,7 +117,7 @@ Provider state file note:
 When invoked from a coding agent, `App::run()` reads the `CLAW_HOOKS_AGENT_MESSAGE` environment variable and passes it to `AiService::build_prompt()` as `agent_context`. This context is injected into the AI prompt before the diff section, guiding the AI to reflect the developer's high-level intent in the commit message. The context is applied across standard generation and `--amend` / `--reword` / `--squash` / `--generate-for` workflows.
 
 Default Codex model note:
-- As of April 29, 2026, the default Codex model is `gpt-5.3-codex-spark`. It was rechecked locally with `echo "Hello" | codex exec -c model_reasoning_effort='medium' -m <model>` across ChatGPT-account-compatible candidates. `gpt-5.3-codex-spark` used the fewest tokens among successful models (`12,753`); `gpt-5.3-codex` came in slightly higher (`12,934`) and `gpt-5.2`/`gpt-5.3-codex-mini`/`gpt-5-codex`/`gpt-5.1-codex` are not supported on ChatGPT accounts.
+- As of May 2, 2026, the default Codex model is `gpt-5.2`. It was rechecked locally with `codex debug models` and `echo "Hello" | codex exec -c model_reasoning_effort='medium' -m <model>` across listed Codex models. `gpt-5.2` used the fewest tokens among successful models (`12,153`); other successful candidates were `gpt-5.4` (`12,783`), `gpt-5.3-codex-spark` (`13,155`), `gpt-5.3-codex` (`13,348`), `gpt-5.4-mini` (`14,507`), and `gpt-5.5` (`15,171`).
 
 ## Configuration Files
 
