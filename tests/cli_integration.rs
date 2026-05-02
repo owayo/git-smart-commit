@@ -671,6 +671,64 @@ fn test_quiet_squash_dry_run_with_ai_generation_suppresses_provider_output() {
 }
 
 #[test]
+fn test_squash_with_existing_staged_changes_fails_before_reset() {
+    let dir = setup_git_repo_with_commit();
+
+    let branch_output = std::process::Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let base_branch = String::from_utf8_lossy(&branch_output.stdout)
+        .trim()
+        .to_string();
+
+    std::process::Command::new("git")
+        .args(["checkout", "-b", "feature/staged-squash"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    commit_change(&dir, "# Test\nfeature\n", "feature commit");
+
+    std::fs::write(dir.path().join("staged.txt"), "staged\n").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "staged.txt"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    git_sc!()
+        .args(["--quiet", "--squash", &base_branch, "--yes"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "squash を実行する前に staged 変更",
+        ));
+
+    let staged_output = std::process::Command::new("git")
+        .args(["diff", "--cached", "--name-only"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&staged_output.stdout).trim(),
+        "staged.txt"
+    );
+
+    let message_output = std::process::Command::new("git")
+        .args(["log", "-1", "--format=%s"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&message_output.stdout).trim(),
+        "feature commit"
+    );
+}
+
+#[test]
 fn test_agent_context_is_included_in_amend_debug_prompt() {
     let dir = setup_git_repo_with_commit();
     let path = setup_fake_opencode_path(&dir);

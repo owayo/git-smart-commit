@@ -817,6 +817,13 @@ impl App {
             println!("{}", format!("Commits to squash: {}", commit_count).cyan());
         }
 
+        if !cli.dry_run && self.git.has_staged_changes() {
+            return Err(AppError::InvalidArgument(
+                "squash を実行する前に staged 変更を commit、unstage、または stash してください"
+                    .to_string(),
+            ));
+        }
+
         // ベースからの差分を取得
         let diff = self.git.get_diff_from_base(&merge_base)?;
         if diff.trim().is_empty() {

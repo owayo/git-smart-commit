@@ -157,12 +157,17 @@ Operation modes (`--amend`, `--squash`, `--reword`, `--generate-for`) are mutual
 
 `--amend` note:
 - Also works when the current `HEAD` is the root commit.
+- Preserves unrelated staged changes instead of folding them into the amended commit.
 
 `--reword` note:
 - Only accepts commits reachable from the current `HEAD` history.
 - Passing a hash from another branch (not in current history) fails with an error.
 - Passing a merge commit hash also fails, even when the merge commit itself is the reword target.
 - Rewording the oldest commit in current history is also supported (internally uses `git rebase -i --root` when required).
+- Rewording `HEAD` preserves unrelated staged changes instead of folding them into the rewritten commit.
+
+`--squash` note:
+- Fails before rewriting history when unrelated staged changes already exist. Commit, unstage, or stash them first.
 
 #### Settings
 
@@ -343,6 +348,7 @@ echo "conventional"
 Patterns are matched against the decoded Git path, so quoted diff headers such as Japanese filenames escaped by Git are excluded correctly as well.
 Rename diffs are checked against both the source path and destination path, so moving a file into an ignored directory is excluded consistently too.
 Filenames containing spaces are also supported: Git does not quote space-only filenames in `diff --git` headers, but `git-sc` still extracts the correct path so that ignore patterns apply consistently.
+This also covers rename headers where the source and destination paths differ and both paths contain spaces.
 
 ```gitignore
 package-lock.json

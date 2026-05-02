@@ -71,6 +71,7 @@ Repository detection note:
 
 Operation mode safety note:
 - `--amend`, `--squash`, `--reword`, and `--generate-for` are mutually exclusive at CLI argument parsing time, so invalid combinations fail instead of silently choosing one workflow.
+- `--squash` rejects pre-existing staged changes before `git reset --soft` so unrelated staged files are not folded into the squash commit.
 
 Prefix script behavior note:
 - If a prefix script returns empty output, `App` preserves the generated message and removes only a leading Conventional Commits type prefix (`feat:`, `fix(scope):`, `feat!:` etc.) when present.
@@ -85,12 +86,14 @@ Reword safety note:
 - If the hash exists but is outside the current history (e.g., another branch), reword fails with an error.
 - If the target hash itself is a merge commit, reword also fails instead of silently treating it as a normal commit.
 - Rewording the oldest commit in the current branch is supported by switching to `git rebase -i --root` when needed.
+- Rewording `HEAD` uses `git commit --amend --only` so unrelated staged changes remain staged instead of being included in the rewritten commit.
 - The temporary message file used during reword is created with a unique name and cleaned up automatically to avoid collisions between concurrent runs.
 - `GIT_EDITOR` passes the message file path via `GIT_SC_MSG_FILE` environment variable (not shell string interpolation) to prevent injection attacks from paths containing special characters.
 - The display-only short hash is computed via `chars().take(7)` so multibyte input (e.g. accidental non-ASCII argument) does not cause a UTF-8 boundary panic before validation runs.
 
 Amend safety note:
 - `GitService` reads the last-commit diff via `git show HEAD`, so `--amend` also works when the current `HEAD` is the root commit.
+- `GitService::amend_commit()` uses `git commit --amend --only` so unrelated staged changes remain staged instead of being included in the amended commit.
 
 ### AI Provider Implementation
 
@@ -137,7 +140,7 @@ Config merge note:
 - For rename diffs, ignore matching checks both the pre-rename and post-rename path so moves into ignored directories are excluded consistently.
 - Patterns apply to both text and binary files. Ignore filtering runs before binary-to-summary conversion so that binary files matching ignore patterns are fully excluded from the diff.
 - `decode_quoted_diff_path` validates that 3-digit octal escape values are within the u8 range (0-377). Values exceeding 255 (e.g., `\400`) are rejected as invalid input.
-- Paths containing spaces are supported. Git does not quote space-only filenames in `diff --git` headers, so path extraction uses a midpoint split for symmetric `a/PATH b/PATH` headers to avoid misparsing (e.g., `diff --git a/foo bar.txt b/foo bar.txt` → `foo bar.txt`, not `foo` and `bar.txt`). Mixed quoted/unquoted rename headers are also handled by consuming the unquoted side to the end of line.
+- Paths containing spaces are supported. Git does not quote space-only filenames in `diff --git` headers, so path extraction uses a midpoint split for symmetric `a/PATH b/PATH` headers to avoid misparsing (e.g., `diff --git a/foo bar.txt b/foo bar.txt` → `foo bar.txt`, not `foo` and `bar.txt`). Asymmetric unquoted rename headers split at the last ` b/`, so `diff --git a/old file.txt b/generated/new file.txt` checks both paths. Mixed quoted/unquoted rename headers are also handled by consuming the unquoted side to the end of line.
 
 ## Testing
 

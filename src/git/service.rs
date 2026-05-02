@@ -280,12 +280,15 @@ impl GitService {
     fn extract_file_paths_from_diff_header(header: &str) -> Option<(String, String)> {
         let rest = header.strip_prefix("diff --git ")?.trim();
 
-        // クォートを一切含まない場合は同一パス対称ケースを先に試す
-        // （スペース含みファイル名でも `a/PATH b/PATH` 形式を正しく抽出できる）
-        if !rest.contains('"')
-            && let Some(paths) = Self::try_split_symmetric_unquoted_header(rest)
-        {
-            return Some(paths);
+        if !rest.contains('"') {
+            // 同一パスのスペース含み変更を先に中央分割で処理する。
+            if let Some(paths) = Self::try_split_symmetric_unquoted_header(rest) {
+                return Some(paths);
+            }
+            // rename などで before/after が異なる場合は、最後の ` b/` を境界にする。
+            if let Some(paths) = Self::try_split_asymmetric_unquoted_header(rest) {
+                return Some(paths);
+            }
         }
 
         // 先頭がクォートの場合はクォート解析、そうでなければ空白分割
@@ -331,6 +334,22 @@ impl GitService {
         }
         // パス部にクォート文字が残る場合はこの経路では扱わない
         if before_path.contains('"') {
+            return None;
+        }
+        Some((before_path.to_string(), after_path.to_string()))
+    }
+
+    /// 非クォートの `a/OLD b/NEW` 形式を末尾側の ` b/` で分割する。
+    ///
+    /// Git はスペースを含む rename でも `diff --git a/old name b/new name`
+    /// のように出すため、同一パス前提の中央分割だけでは移動先を抽出できない。
+    fn try_split_asymmetric_unquoted_header(rest: &str) -> Option<(String, String)> {
+        let rest = rest.strip_prefix("a/")?;
+        let (before_path, after_path) = rest.rsplit_once(" b/")?;
+        if before_path.is_empty() || after_path.is_empty() {
+            return None;
+        }
+        if before_path.contains('"') || after_path.contains('"') {
             return None;
         }
         Some((before_path.to_string(), after_path.to_string()))
@@ -674,7 +693,7 @@ impl GitService {
 
     /// 直前のコミットを新しいメッセージで修正
     pub fn amend_commit(&self, message: &str) -> Result<(), AppError> {
-        self.run_git_ok(&["commit", "--amend", "-m", message])
+        self.run_git_ok(&["commit", "--amend", "--only", "-m", message])
     }
 
     /// リモートURLを取得（origin）
@@ -984,7 +1003,7 @@ impl GitService {
 
     /// コミットメッセージを変更（amend）
     fn amend_commit_message(&self, new_message: &str) -> Result<(), AppError> {
-        self.run_git_ok(&["commit", "--amend", "-m", new_message])
+        self.run_git_ok(&["commit", "--amend", "--only", "-m", new_message])
     }
 }
 
@@ -1685,6 +1704,21 @@ index 1234567..abcdefg 100644
     }
 
     #[test]
+    fn test_filter_ignored_files_matches_asymmetric_rename_with_spaces() {
+        let mut builder = GitignoreBuilder::new(".");
+        builder.add_line(None, "generated/**").unwrap();
+        let ignore = builder.build().unwrap();
+
+        let diff = "diff --git a/old file.txt b/generated/new file.txt\n\
+                    similarity index 100%\n\
+                    rename from old file.txt\n\
+                    rename to generated/new file.txt\n";
+
+        let result = GitService::filter_ignored_files(diff, &ignore);
+        assert!(result.is_empty());
+    }
+
+    #[test]
     fn test_filter_ignored_files_matches_unquoted_path_with_spaces() {
         // 非クォートでスペースを含むパス（Git はスペースをクォートしない）を
         // .git-sc-ignore で正しく除外できることを確認する
@@ -1944,6 +1978,22 @@ index 555..666 100644
         );
     }
 
+    /// テスト用の一時Gitリポジトリで git コマンドを実行し、stdout を返す
+    fn git_output_in(path: &std::path::Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
     /// テスト用の一時 Git リポジトリを作成する
     fn setup_temp_git_repo() -> tempfile::TempDir {
         let temp_dir = tempfile::TempDir::new().unwrap();
@@ -2132,6 +2182,56 @@ index 555..666 100644
         assert!(output.status.success());
         let messages = String::from_utf8_lossy(&output.stdout);
         assert_eq!(messages.lines().next(), Some("rewritten root"));
+    }
+
+    #[test]
+    fn test_amend_commit_preserves_existing_staged_changes() {
+        let temp_dir = setup_temp_git_repo();
+        let repo = temp_dir.path();
+
+        std::fs::write(repo.join("file.txt"), "first\n").unwrap();
+        run_git_in(repo, &["add", "file.txt"]);
+        run_git_in(repo, &["commit", "-m", "first"]);
+
+        std::fs::write(repo.join("staged.txt"), "staged\n").unwrap();
+        run_git_in(repo, &["add", "staged.txt"]);
+
+        let service = GitService {
+            repo_path: repo.to_path_buf(),
+        };
+
+        service.amend_commit("amended").unwrap();
+
+        let head_files = git_output_in(repo, &["show", "--name-only", "--format=", "HEAD"]);
+        assert!(!head_files.lines().any(|line| line == "staged.txt"));
+        let staged_files = git_output_in(repo, &["diff", "--cached", "--name-only"]);
+        assert_eq!(staged_files, "staged.txt");
+    }
+
+    #[test]
+    fn test_reword_head_preserves_existing_staged_changes() {
+        let temp_dir = setup_temp_git_repo();
+        let repo = temp_dir.path();
+
+        std::fs::write(repo.join("file.txt"), "first\n").unwrap();
+        run_git_in(repo, &["add", "file.txt"]);
+        run_git_in(repo, &["commit", "-m", "first"]);
+
+        std::fs::write(repo.join("staged.txt"), "staged\n").unwrap();
+        run_git_in(repo, &["add", "staged.txt"]);
+
+        let service = GitService {
+            repo_path: repo.to_path_buf(),
+        };
+
+        service.reword_commit(1, "reworded head").unwrap();
+
+        let message = git_output_in(repo, &["log", "-1", "--format=%s"]);
+        assert_eq!(message, "reworded head");
+        let head_files = git_output_in(repo, &["show", "--name-only", "--format=", "HEAD"]);
+        assert!(!head_files.lines().any(|line| line == "staged.txt"));
+        let staged_files = git_output_in(repo, &["diff", "--cached", "--name-only"]);
+        assert_eq!(staged_files, "staged.txt");
     }
 
     #[test]
@@ -2951,6 +3051,20 @@ index 555..666 100644
         assert_eq!(
             result,
             Some(("旧.txt".to_string(), "new name.txt".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_file_paths_from_diff_header_asymmetric_spaces() {
+        // rename で前後のパスが異なり、かつ両側にスペースを含むケース
+        let header = "diff --git a/old file.txt b/generated/new file.txt";
+        let result = GitService::extract_file_paths_from_diff_header(header);
+        assert_eq!(
+            result,
+            Some((
+                "old file.txt".to_string(),
+                "generated/new file.txt".to_string()
+            ))
         );
     }
 
