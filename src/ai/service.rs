@@ -1717,7 +1717,7 @@ mod tests {
         };
         assert_eq!(service.providers.len(), expected_len);
         assert_eq!(service.models.gemini, "gemini-2.5-flash-lite");
-        assert_eq!(service.models.codex, "gpt-5.2");
+        assert_eq!(service.models.codex, Config::default().models.codex);
         assert_eq!(service.models.claude, "haiku");
         assert_eq!(service.models.opencode, "");
         assert_eq!(service.timeout_seconds, 60);

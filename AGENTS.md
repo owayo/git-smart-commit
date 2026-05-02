@@ -117,7 +117,7 @@ Provider state file note:
 When invoked from a coding agent, `App::run()` reads the `CLAW_HOOKS_AGENT_MESSAGE` environment variable and passes it to `AiService::build_prompt()` as `agent_context`. This context is injected into the AI prompt before the diff section, guiding the AI to reflect the developer's high-level intent in the commit message. The context is applied across standard generation and `--amend` / `--reword` / `--squash` / `--generate-for` workflows.
 
 Default Codex model note:
-- As of May 2, 2026, the default Codex model is `gpt-5.2`. It was rechecked locally with `codex debug models` and `echo "Hello" | codex exec -c model_reasoning_effort='medium' -m <model>` across listed Codex models. `gpt-5.2` used the fewest tokens among successful models (`12,153`); other successful candidates were `gpt-5.4` (`12,783`), `gpt-5.3-codex-spark` (`13,155`), `gpt-5.3-codex` (`13,348`), `gpt-5.4-mini` (`14,507`), and `gpt-5.5` (`15,171`).
+- As of May 2, 2026, the default Codex model is `gpt-5.4`. It was rechecked locally with `codex debug models` and `echo "Hello" | codex exec -c model_reasoning_effort='medium' -m <model>` across listed Codex models. `gpt-5.4` and `codex-auto-review` tied for the fewest tokens among successful models (`13,813`). `gpt-5.4` is selected because git-sc uses Codex for general commit-message generation, while `codex-auto-review` is review-oriented. Other successful candidates were `gpt-5.3-codex-spark` (`14,304`), `gpt-5.3-codex` (`17,470`), `gpt-5.4-mini` (`18,627`), `gpt-5.5` (`19,295`), and `gpt-5.2` (`19,344`).
 
 ## Configuration Files
 

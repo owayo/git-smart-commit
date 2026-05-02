@@ -257,7 +257,7 @@ codex_reasoning_effort = "low"
 # モデル設定
 [models]
 gemini = "gemini-2.5-flash-lite"
-codex = "gpt-5.2"
+codex = "gpt-5.4"
 claude = "haiku"
 opencode = ""
 
@@ -282,6 +282,8 @@ provider_timeout_seconds = 60
 | `provider_timeout_seconds` | プロバイダー呼び出しのタイムアウト | `60` |
 | `prefix_rules` | URLベースのプレフィックス形式 | `[]` |
 | `prefix_scripts` | 外部プレフィックススクリプト | `[]` |
+
+既存のグローバル設定ファイルは自動では書き換えられません。現在の Codex 既定モデルを使うには、`~/.config/git-sc/config.toml` の `models.codex` を更新してください。
 
 ### prefix_type の値
 
