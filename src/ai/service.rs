@@ -581,7 +581,13 @@ Instructions:
         })?;
 
         // stdin にプロンプトを書き込み (codex, claude)
-        Self::write_stdin_prompt(&mut child, uses_stdin, prompt)?;
+        // 失敗時はゾンビプロセスとパイプ FD のリークを防ぐため、確実に kill+wait してから返す
+        // (std::process::Child::drop は何もしないため明示的なクリーンアップが必要)
+        if let Err(e) = Self::write_stdin_prompt(&mut child, uses_stdin, prompt) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(e);
+        }
 
         // stdout/stderr をスレッドで読み取り、タイムアウト付きで完了を待機
         let (exit_status, stdout_str, stderr_str) =

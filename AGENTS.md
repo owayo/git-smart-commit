@@ -109,6 +109,7 @@ Temp file safety note:
 
 Subprocess timeout note:
 - `AiService::run_process_with_timeout()` always joins the stdout/stderr reader threads on every exit path (success, timeout, and `try_wait` error). After `child.kill()` and `child.wait()` close the pipes, the reader threads receive EOF and exit cleanly, so no detached threads leak when a provider call times out.
+- `AiService::call_provider()` explicitly calls `child.kill()` and `child.wait()` when stdin write fails (e.g., the AI CLI exits immediately on launch and the pipe receives EPIPE). `std::process::Child::drop()` is a no-op, so without this cleanup the child would linger as a zombie with leaked pipe FDs across the provider fallback chain.
 
 When a provider fails, it enters cooldown (default: 60 minutes) and the next provider is tried.
 
@@ -120,7 +121,7 @@ Provider state file note:
 When invoked from a coding agent, `App::run()` reads the `CLAW_HOOKS_AGENT_MESSAGE` environment variable and passes it to `AiService::build_prompt()` as `agent_context`. This context is injected into the AI prompt before the diff section, guiding the AI to reflect the developer's high-level intent in the commit message. The context is applied across standard generation and `--amend` / `--reword` / `--squash` / `--generate-for` workflows.
 
 Default Codex model note:
-- As of May 2, 2026, the default Codex model is `gpt-5.4`. It was rechecked locally with `codex debug models` and `echo "Hello" | codex exec -c model_reasoning_effort='medium' -m <model>` across listed Codex models. `gpt-5.4` and `codex-auto-review` tied for the fewest tokens among successful models (`13,813`). `gpt-5.4` is selected because git-sc uses Codex for general commit-message generation, while `codex-auto-review` is review-oriented. Other successful candidates were `gpt-5.3-codex-spark` (`14,304`), `gpt-5.3-codex` (`17,470`), `gpt-5.4-mini` (`18,627`), `gpt-5.5` (`19,295`), and `gpt-5.2` (`19,344`).
+- As of May 6, 2026, the default Codex model is `gpt-5.3-codex-spark`. It was rechecked locally with `codex debug models` and `echo "Hello" | codex exec -c model_reasoning_effort='medium' -m <model>` across listed Codex models. `gpt-5.3-codex-spark` consumed the fewest tokens (`14,518`), followed by `gpt-5.2` (`16,455`), `gpt-5.3-codex` (`17,650`), `gpt-5.4` (`18,105`), `codex-auto-review` (`18,107`), `gpt-5.4-mini` (`18,784`), and `gpt-5.5` (`19,473`). `gpt-5.3-codex-spark` is described as an "Ultra-fast coding model" by Codex CLI, fitting git-sc's commit-message generation use case better than the review-oriented `codex-auto-review`.
 
 ## Configuration Files
 
@@ -141,6 +142,10 @@ Config merge note:
 - Patterns apply to both text and binary files. Ignore filtering runs before binary-to-summary conversion so that binary files matching ignore patterns are fully excluded from the diff.
 - `decode_quoted_diff_path` validates that 3-digit octal escape values are within the u8 range (0-377). Values exceeding 255 (e.g., `\400`) are rejected as invalid input.
 - Paths containing spaces are supported. Git does not quote space-only filenames in `diff --git` headers, so path extraction uses a midpoint split for symmetric `a/PATH b/PATH` headers to avoid misparsing (e.g., `diff --git a/foo bar.txt b/foo bar.txt` → `foo bar.txt`, not `foo` and `bar.txt`). Asymmetric unquoted rename headers split at the last ` b/`, so `diff --git a/old file.txt b/generated/new file.txt` checks both paths. Mixed quoted/unquoted rename headers are also handled by consuming the unquoted side to the end of line.
+
+Diff truncation note:
+- `truncate_diff()` first compares `diff.len()` (byte length) against `MAX_DIFF_CHARS`. Since UTF-8 always uses at least one byte per character, byte length within the limit guarantees character count is also within the limit, so the common ASCII path returns immediately without scanning the entire diff.
+- When byte length exceeds the limit, `char_indices().nth(MAX_DIFF_CHARS)` finds the cutoff after scanning at most `MAX_DIFF_CHARS+1` characters, avoiding the previous full-diff `chars().count()` walk on multi-MB inputs.
 
 ## Testing
 

@@ -448,26 +448,30 @@ impl GitService {
 
     /// diffを最大文字数に切り詰める
     pub fn truncate_diff(diff: &str) -> String {
-        if diff.chars().count() <= MAX_DIFF_CHARS {
+        // バイト長 <= MAX_DIFF_CHARS なら必ず文字数も収まる (UTF-8 は 1 文字 >= 1 バイト)
+        // 大半の diff はこの早期 return で全文走査を回避する
+        if diff.len() <= MAX_DIFF_CHARS {
             return diff.to_string();
         }
 
-        // 文字数でカット
-        let truncated: String = diff.chars().take(MAX_DIFF_CHARS).collect();
+        // バイト長は超過しているが文字数では収まる可能性がある (マルチバイト混在時)
+        // MAX_DIFF_CHARS+1 文字目までだけ走査して切り出し位置を求める
+        let cutoff = match diff.char_indices().nth(MAX_DIFF_CHARS) {
+            Some((idx, _)) => idx,
+            None => return diff.to_string(),
+        };
+
+        let truncated = &diff[..cutoff];
 
         // 最後の完全な行まで切り詰める（中途半端な行を避ける）
-        if let Some(last_newline) = truncated.rfind('\n') {
-            format!(
-                "{}\n\n... (diff truncated: exceeded {} characters)",
-                &truncated[..last_newline],
-                MAX_DIFF_CHARS
-            )
-        } else {
-            format!(
-                "{}\n\n... (diff truncated: exceeded {} characters)",
-                truncated, MAX_DIFF_CHARS
-            )
-        }
+        let body = truncated
+            .rfind('\n')
+            .map(|p| &truncated[..p])
+            .unwrap_or(truncated);
+        format!(
+            "{}\n\n... (diff truncated: exceeded {} characters)",
+            body, MAX_DIFF_CHARS
+        )
     }
 
     /// diffに対して全てのフィルタリングを適用
@@ -3472,6 +3476,36 @@ Binary files /dev/null and b/script.bin differ"#;
         assert!(result.contains("truncated"));
         // 文字単位でカットされ、バイト列の破損はない
         assert!(result.is_char_boundary(0));
+    }
+
+    #[test]
+    fn test_truncate_diff_multibyte_byte_over_but_char_within_limit() {
+        // バイト長は MAX_DIFF_CHARS を超えるが文字数では収まる場合は切り詰めない
+        // "あ" は3バイト/1文字なので、3334個で 10002バイト > MAX_DIFF_CHARS、文字数は3334 ≦ MAX_DIFF_CHARS
+        let diff: String = "あ".repeat(3334);
+        assert!(diff.len() > MAX_DIFF_CHARS);
+        assert!(diff.chars().count() <= MAX_DIFF_CHARS);
+
+        let result = GitService::truncate_diff(&diff);
+        assert_eq!(result, diff);
+        assert!(!result.contains("truncated"));
+    }
+
+    #[test]
+    fn test_truncate_diff_multibyte_byte_over_and_char_over_limit() {
+        // バイト長・文字数とも MAX_DIFF_CHARS を超える場合は切り詰める
+        // "あ" 10001 個 = 30003バイト・10001文字
+        let diff: String = "あ".repeat(MAX_DIFF_CHARS + 1);
+        assert!(diff.len() > MAX_DIFF_CHARS);
+        assert!(diff.chars().count() > MAX_DIFF_CHARS);
+
+        let result = GitService::truncate_diff(&diff);
+        assert!(result.contains("truncated"));
+        // 文字境界を破損していない
+        assert!(result.is_char_boundary(0));
+        for (idx, _) in result.char_indices() {
+            assert!(result.is_char_boundary(idx));
+        }
     }
 
     // ============================================================
