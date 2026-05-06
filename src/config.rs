@@ -23,7 +23,7 @@ fn default_gemini_model() -> String {
 }
 
 fn default_codex_model() -> String {
-    "gpt-5.4".to_string()
+    "gpt-5.3-codex-spark".to_string()
 }
 
 fn default_claude_model() -> String {
