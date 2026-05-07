@@ -4055,4 +4055,52 @@ Binary files /dev/null and b/script.bin differ"#;
             Some("a\"b".to_string())
         );
     }
+
+    // ============================================================
+    // extract_file_paths_from_diff_header: 追加エッジケース
+    // ============================================================
+
+    #[test]
+    fn test_extract_file_paths_from_diff_header_asymmetric_multiple_b_separators() {
+        // パスに ` b/` が含まれる asymmetric rename は最後の ` b/` で分割される。
+        // 例: 旧パスが "foo b/bar"、新パスが "baz" の rename 表示。
+        let header = "diff --git a/foo b/bar b/baz";
+        let result = GitService::extract_file_paths_from_diff_header(header);
+        assert_eq!(result, Some(("foo b/bar".to_string(), "baz".to_string())));
+    }
+
+    #[test]
+    fn test_extract_file_paths_from_diff_header_asymmetric_empty_after_falls_back() {
+        // asymmetric では `a/PATH b/` の空 after を弾くが、その後の通常パスとして
+        // 受理されるため、結果として after_path が空文字列となる現状の挙動を保証する。
+        let header = "diff --git a/old.txt b/";
+        let result = GitService::extract_file_paths_from_diff_header(header);
+        assert_eq!(result, Some(("old.txt".to_string(), String::new())));
+    }
+
+    #[test]
+    fn test_extract_file_paths_from_diff_header_quoted_after_with_spaces() {
+        // 前側がクォートされており後側がスペースを含む非クォートの rename ヘッダー。
+        let header = "diff --git \"a/old name.txt\" b/new dir/name.txt";
+        let result = GitService::extract_file_paths_from_diff_header(header);
+        assert_eq!(
+            result,
+            Some(("old name.txt".to_string(), "new dir/name.txt".to_string()))
+        );
+    }
+
+    // ============================================================
+    // truncate_diff: 早期 return 経路 (バイト長 == MAX_DIFF_CHARS) のテスト
+    // ============================================================
+
+    #[test]
+    fn test_truncate_diff_byte_len_equals_limit_returns_original() {
+        // バイト長がちょうど MAX_DIFF_CHARS の場合は早期 return 経路で全文を返す。
+        let diff: String = "a".repeat(MAX_DIFF_CHARS);
+        assert_eq!(diff.len(), MAX_DIFF_CHARS);
+
+        let result = GitService::truncate_diff(&diff);
+        assert_eq!(result, diff);
+        assert!(!result.contains("truncated"));
+    }
 }

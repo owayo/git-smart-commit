@@ -3730,4 +3730,45 @@ mod tests {
         let result = AiService::extract_error(stderr, &AiProvider::AppleIntelligence);
         assert_eq!(result, "just some info output");
     }
+
+    // ============================================================
+    // clean_message: クォート組み合わせの挙動を文書化するテスト
+    // ============================================================
+
+    #[test]
+    fn test_clean_message_outer_single_inner_double_quotes() {
+        // 外側 single 内側 double のクォートは外側だけが除去される。
+        // trim_matches('"') で `'` の両端は変化せず、続く trim_matches('\'') で
+        // 外側 `'` が除去された結果、内側の `"text"` がそのまま残ることを保証する。
+        let message = "'\"feat: add feature\"'";
+        assert_eq!(AiService::clean_message(message), "\"feat: add feature\"");
+    }
+
+    #[test]
+    fn test_clean_message_double_outer_quotes_removed_once() {
+        // 連続する複数の同種クォートは trim_matches によって一括で除去される。
+        let message = "\"\"feat: scope\"\"";
+        assert_eq!(AiService::clean_message(message), "feat: scope");
+    }
+
+    // ============================================================
+    // extract_error: 追加エッジケース
+    // ============================================================
+
+    #[test]
+    fn test_extract_error_opencode_failed_in_unrelated_text() {
+        // Opencode は "failed" を含む最初の行をエラーとみなすため、
+        // 通常情報のテキストでも "failed" を含むと拾われる挙動を文書化する。
+        let stderr = "info: previous run failed retry succeeded";
+        let result = AiService::extract_error(stderr, &AiProvider::Opencode);
+        assert_eq!(result, "info: previous run failed retry succeeded");
+    }
+
+    #[test]
+    fn test_extract_error_codex_uppercase_priority_over_lowercase() {
+        // ERROR: で始まる行が先に抽出され、後続の "error" を含む行は無視される。
+        let stderr = "informational line\nERROR: top priority error\nlowercase error info";
+        let result = AiService::extract_error(stderr, &AiProvider::Codex);
+        assert_eq!(result, "ERROR: top priority error");
+    }
 }
