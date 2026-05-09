@@ -115,13 +115,14 @@ When a provider fails, it enters cooldown (default: 60 minutes) and the next pro
 
 Provider state file note:
 - `State::save()` writes to `~/.config/git-sc/.providers-state.tmp` first and then `rename(2)`s it onto the final path so concurrent `git-sc` invocations never read a half-written TOML file. On rename failure the temporary file is deleted before the error is returned.
+- `provider_cooldown_minutes` is converted to seconds with saturating arithmetic, so extremely large user-provided values do not panic in debug builds or wrap in release builds; they are treated as effectively indefinite cooldowns.
 
 ### Agent Context
 
 When invoked from a coding agent, `App::run()` reads the `CLAW_HOOKS_AGENT_MESSAGE` environment variable and passes it to `AiService::build_prompt()` as `agent_context`. This context is injected into the AI prompt before the diff section, guiding the AI to reflect the developer's high-level intent in the commit message. The context is applied across standard generation and `--amend` / `--reword` / `--squash` / `--generate-for` workflows.
 
 Default Codex model note:
-- As of May 7, 2026, the default Codex model remains `gpt-5.3-codex-spark` after re-running `codex debug models` and `echo "Hello" | codex exec -c model_reasoning_effort='medium' -m <model>` for each listed Codex model. Per-model token consumption (multiple runs where measured): `gpt-5.3-codex-spark` (`14,680` / `14,687` / `14,680`, avg `14,682`, the most stable result), `gpt-5.3-codex` (`13,750` / `16,822` / `13,750`, avg `14,774`, large variance), `codex-auto-review` (`14,209` / `18,297`, avg `16,253`), `gpt-5.2` (`16,651`), `gpt-5.4` (`18,303`), `gpt-5.4-mini` (`19,024`), and `gpt-5.5` (`19,671`). `gpt-5.3-codex-spark` was retained because the averaged consumption is the lowest and the run-to-run spread is the smallest, while the model description "Ultra-fast coding model" remains the best fit for git-sc's commit-message generation use case.
+- As of May 9, 2026, the default Codex model remains `gpt-5.3-codex-spark` after re-running `codex debug models` and `echo "Hello" | codex exec -c model_reasoning_effort='medium' -m <model>` for each listed Codex model. Current single-run token consumption: `gpt-5.3-codex-spark` (`14,893`), `gpt-5.3-codex` (`18,002`), `codex-auto-review` (`18,455`), `gpt-5.4` (`18,434`), `gpt-5.4-mini` (`19,145`), `gpt-5.2` (`19,741`), and `gpt-5.5` (`19,826`). `gpt-5.3-codex-spark` was retained because it had the lowest measured consumption and the model description "Ultra-fast coding model" remains the best fit for git-sc's commit-message generation use case.
 
 ## Configuration Files
 

@@ -283,7 +283,7 @@ provider_timeout_seconds = 60
 | `auto_push` | Auto-push after commit | `false` |
 | `codex_reasoning_effort` | Codex `-c model_reasoning_effort` value (`low`, `medium`, `high`, `xhigh`, or `""` to omit) | `"low"` |
 | `models.*` | Model for each provider | See config |
-| `provider_cooldown_minutes` | Failed provider cooldown | `60` |
+| `provider_cooldown_minutes` | Failed provider cooldown; extremely large values are treated as effectively indefinite | `60` |
 | `provider_timeout_seconds` | Provider call timeout | `60` |
 | `prefix_rules` | URL-based prefix format | `[]` |
 | `prefix_scripts` | External prefix scripts | `[]` |

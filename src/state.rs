@@ -85,6 +85,14 @@ impl State {
             .as_secs()
     }
 
+    /// クールダウン分数を秒数へ変換する。
+    ///
+    /// 設定値は `u64` として読み込まれるため、極端に大きい値でもパニックや
+    /// 桁あふれを起こさず「実質無期限」として扱う。
+    fn cooldown_secs(cooldown_minutes: u64) -> u64 {
+        cooldown_minutes.saturating_mul(60)
+    }
+
     /// プロバイダーの失敗を記録
     pub fn record_failure(&mut self, provider: &str) {
         self.provider_failures.insert(
@@ -98,7 +106,7 @@ impl State {
     /// クールダウン中のプロバイダーのリストを取得
     pub fn get_demoted_providers(&self, cooldown_minutes: u64) -> Vec<String> {
         let now = Self::now();
-        let cooldown_secs = cooldown_minutes * 60;
+        let cooldown_secs = Self::cooldown_secs(cooldown_minutes);
 
         self.provider_failures
             .iter()
@@ -113,7 +121,7 @@ impl State {
     /// 期限切れの失敗記録をクリーンアップ
     pub fn cleanup_expired(&mut self, cooldown_minutes: u64) {
         let now = Self::now();
-        let cooldown_secs = cooldown_minutes * 60;
+        let cooldown_secs = Self::cooldown_secs(cooldown_minutes);
 
         self.provider_failures.retain(|_, failure| {
             let elapsed = now.saturating_sub(failure.failed_at);
@@ -567,6 +575,21 @@ mod tests {
 
         // 1週間のクールダウン
         state.cleanup_expired(7 * 24 * 60);
+        assert!(state.provider_failures.contains_key("gemini"));
+    }
+
+    #[test]
+    fn test_max_cooldown_does_not_overflow() {
+        // 設定値が u64::MAX でも秒変換でパニックや桁あふれを起こさない
+        let mut state = State::default();
+        state
+            .provider_failures
+            .insert("gemini".to_string(), ProviderFailure { failed_at: 0 });
+
+        let demoted = state.get_demoted_providers(u64::MAX);
+        assert_eq!(demoted, vec!["gemini".to_string()]);
+
+        state.cleanup_expired(u64::MAX);
         assert!(state.provider_failures.contains_key("gemini"));
     }
 

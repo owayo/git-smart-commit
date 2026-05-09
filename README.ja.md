@@ -283,7 +283,7 @@ provider_timeout_seconds = 60
 | `auto_push` | コミット後に自動プッシュ | `false` |
 | `codex_reasoning_effort` | Codex の `-c model_reasoning_effort` に渡す値（`low`, `medium`, `high`, `xhigh`, 空文字列で省略） | `"low"` |
 | `models.*` | 各プロバイダーのモデル | 設定参照 |
-| `provider_cooldown_minutes` | 失敗プロバイダーのクールダウン | `60` |
+| `provider_cooldown_minutes` | 失敗プロバイダーのクールダウン。極端に大きい値は実質無期限として扱う | `60` |
 | `provider_timeout_seconds` | プロバイダー呼び出しのタイムアウト | `60` |
 | `prefix_rules` | URLベースのプレフィックス形式 | `[]` |
 | `prefix_scripts` | 外部プレフィックススクリプト | `[]` |
