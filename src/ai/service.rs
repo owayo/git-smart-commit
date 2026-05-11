@@ -37,7 +37,16 @@ impl TempFile {
                 attempt
             ));
 
-            match OpenOptions::new().write(true).create_new(true).open(&path) {
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                // プロンプトには差分内容が含まれるため、他ユーザーに読めない権限で作成する。
+                options.mode(0o600);
+            }
+
+            match options.open(&path) {
                 Ok(mut file) => {
                     // 書き込み/sync失敗時はファイルを削除してからエラーを返す
                     if let Err(e) = file.write_all(content).and_then(|_| file.sync_all()) {
@@ -3698,6 +3707,17 @@ mod tests {
         let tmp = TempFile::create_with_content(b"").unwrap();
         let read_back = std::fs::read(tmp.path()).unwrap();
         assert!(read_back.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_temp_file_is_not_readable_by_group_or_others() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempFile::create_with_content(b"secret diff").unwrap();
+        let mode = std::fs::metadata(tmp.path()).unwrap().permissions().mode();
+
+        assert_eq!(mode & 0o077, 0);
     }
 
     // ============================================================

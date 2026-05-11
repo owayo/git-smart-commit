@@ -46,7 +46,16 @@ impl TempRewordMessageFile {
                 attempt
             ));
 
-            match OpenOptions::new().write(true).create_new(true).open(&path) {
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                // reword 用メッセージを他ユーザーに読めない権限で作成する。
+                options.mode(0o600);
+            }
+
+            match options.open(&path) {
                 Ok(mut file) => {
                     // 書き込み/sync失敗時はファイルを削除してからエラーを返す
                     if let Err(e) = file
@@ -2260,6 +2269,17 @@ index 555..666 100644
         assert!(!path.exists());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn test_temp_reword_message_file_is_not_readable_by_group_or_others() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempRewordMessageFile::create("secret message").unwrap();
+        let mode = std::fs::metadata(tmp.path()).unwrap().permissions().mode();
+
+        assert_eq!(mode & 0o077, 0);
+    }
+
     // ============================================================
     // get_commit_message_by_hash のテスト
     // ============================================================
@@ -3790,10 +3810,11 @@ Binary files /dev/null and b/script.bin differ"#;
         run_git_in(repo, &["config", "user.name", "Test User"]);
         run_git_in(repo, &["config", "user.email", "test@example.com"]);
 
-        // mainブランチにコミット
+        // 初期ブランチにコミット
         std::fs::write(repo.join("file.txt"), "v1\n").unwrap();
         run_git_in(repo, &["add", "file.txt"]);
         run_git_in(repo, &["commit", "-m", "first"]);
+        let primary_branch = git_output_in(repo, &["branch", "--show-current"]);
 
         // 別ブランチを作成してコミット
         run_git_in(repo, &["checkout", "-b", "other"]);
@@ -3810,21 +3831,21 @@ Binary files /dev/null and b/script.bin differ"#;
             .trim()
             .to_string();
 
-        // mainブランチに戻る
-        run_git_in(repo, &["checkout", "master"]);
+        // 初期ブランチに戻る
+        run_git_in(repo, &["checkout", &primary_branch]);
 
-        // masterに2つ目のコミットを追加（otherとは別の履歴）
+        // 初期ブランチに2つ目のコミットを追加（otherとは別の履歴）
         std::fs::write(repo.join("file2.txt"), "v2\n").unwrap();
         run_git_in(repo, &["add", "file2.txt"]);
-        run_git_in(repo, &["commit", "-m", "second on master"]);
+        run_git_in(repo, &["commit", "-m", "second on primary"]);
 
         let service = GitService {
             repo_path: repo.to_path_buf(),
         };
 
-        // otherブランチのコミットはmasterのHEAD履歴外
+        // otherブランチのコミットは初期ブランチのHEAD履歴外
         // ただしfirst commitが共通祖先であり、otherのコミットはfirstの子
-        // master側にも子があるのでotherは祖先ではない
+        // 初期ブランチ側にも子があるのでotherは祖先ではない
         let result = service.validate_reword_target_hash(&other_hash);
         assert!(result.is_err());
     }
