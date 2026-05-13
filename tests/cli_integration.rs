@@ -826,3 +826,60 @@ fn test_generate_for_with_reword_conflict() {
         .failure()
         .stderr(predicate::str::contains("--generate-for"));
 }
+
+/// `rebase.abbreviateCommands=true` でも reword が成功することを確認する。
+///
+/// 以前の実装は GIT_SEQUENCE_EDITOR で `^pick` のみを置換していたため、
+/// Git が todo を `p <hash>` 形式（短縮形）で出力する設定下では置換が当たらず、
+/// rebase は成功扱いになる一方でメッセージは元のまま、という静かな不具合があった。
+/// 修正後は rebase 起動時に `-c rebase.abbreviateCommands=false` を明示するため、
+/// この設定があっても reword が機能する必要がある。
+#[test]
+fn test_reword_succeeds_with_rebase_abbreviate_commands_true() {
+    let dir = setup_git_repo_with_commit();
+    let path = setup_fake_opencode_path(&dir);
+
+    // リポジトリ単位で rebase.abbreviateCommands=true を設定
+    std::process::Command::new("git")
+        .args(["config", "rebase.abbreviateCommands", "true"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // reword 対象となる最も古いコミットのハッシュ（initial commit）を控える
+    let old_hash = head_hash(&dir);
+
+    // reword 対象より新しいコミットを 1 件追加（reword は HEAD 以外を対象にする必要がある）
+    commit_change(&dir, "# Test\nsecond\n", "second commit");
+
+    git_sc!()
+        .args(["--reword", &old_hash, "--yes"])
+        .env("PATH", path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // 最も古いコミットのメッセージが書き換わっていることを確認
+    // ※ rebase によりハッシュは変わるため、件名でアサートする
+    let log = std::process::Command::new("git")
+        .args(["log", "--format=%s"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let messages = String::from_utf8_lossy(&log.stdout);
+
+    // fake opencode は "feat: quiet integration test" を返す → AI 生成側のメッセージで上書き
+    assert!(
+        messages.contains("feat: quiet integration test"),
+        "reword 後のログに新メッセージが含まれていない: {}",
+        messages
+    );
+    // 元のメッセージは消える
+    assert!(
+        !messages.contains("initial commit"),
+        "reword 後のログに元メッセージが残存: {}",
+        messages
+    );
+}

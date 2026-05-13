@@ -958,15 +958,18 @@ impl GitService {
         // 一意な一時ファイルにメッセージを保存
         let msg_file = TempRewordMessageFile::create(new_message)?;
 
-        // GIT_SEQUENCE_EDITOR: 先頭の pick を reword に置換
-        // シェル経由で実行するため、sh -c でラップする
+        // GIT_SEQUENCE_EDITOR: 先頭の pick を reword に置換する。
+        // `rebase.abbreviateCommands=false` を後段の rebase 起動側で強制するため、
+        // todo は必ず `pick <hash>` 形式で出力される（短縮形 `p` は出ない）。
+        // また、対象は先頭の 1 行のみで、範囲内の他コミットには触れない。
         let sequence_editor = if cfg!(windows) {
-            // Windows環境では PowerShell を使用
-            "powershell -Command \"(Get-Content $args[0]) -replace '^pick', 'reword' | Set-Content $args[0]\"".to_string()
+            // Windows: PowerShell で配列読み込み、最初の行だけを reword に変更する。
+            // `(Get-Content) -replace` を全行に適用すると、複数の pick が同時に書き換えられる。
+            "powershell -Command \"$lines = @(Get-Content $args[0]); if ($lines.Count -gt 0) { $lines[0] = $lines[0] -replace '^pick ', 'reword ' }; Set-Content -Path $args[0] -Value $lines\"".to_string()
         } else {
-            // Unix系環境では sed を使用（macOS/Linux対応）
-            // sh -c でラップし、-- の後に $1 を渡す
-            "sh -c 'sed -i.bak '\"'\"'1s/^pick/reword/'\"'\"' \"$1\" && rm -f \"$1.bak\"' --"
+            // Unix系: sed の `1s/...` で先頭行のみ対象にし、`pick ` の直後のスペースを
+            // 含めて誤マッチを避ける。
+            "sh -c 'sed -i.bak '\"'\"'1s/^pick /reword /'\"'\"' \"$1\" && rm -f \"$1.bak\"' --"
                 .to_string()
         };
 
@@ -978,8 +981,11 @@ impl GitService {
             "sh -c 'cp \"$GIT_SC_MSG_FILE\" \"$1\"' --".to_string()
         };
 
-        // git rebase -i を実行（最古コミット対象時は --root を使う）
+        // git rebase -i を実行（最古コミット対象時は --root を使う）。
+        // `rebase.abbreviateCommands=false` で todo を必ず `pick` で出力させ、
+        // 短縮形 `p` を前提にした置換漏れを防ぐ。
         let mut rebase_cmd = Command::new("git");
+        rebase_cmd.arg("-c").arg("rebase.abbreviateCommands=false");
         rebase_cmd.arg("rebase").arg("-i");
         if n == total_commits {
             rebase_cmd.arg("--root");

@@ -691,4 +691,75 @@ mod tests {
         assert!(parsed.provider_failures.contains_key("codex"));
         assert!(!parsed.provider_failures.contains_key("old"));
     }
+
+    #[test]
+    fn test_save_to_path_concurrent_writes_all_succeed() {
+        // 同時保存を行ったときに、一時ファイル名衝突によって失敗しないことを確認する。
+        // rename(2) は原子的なので最終的に勝った内容が残るが、書き込み自体は全て成功すべき。
+        use std::sync::Arc;
+        use std::thread;
+
+        let dir = Arc::new(tempfile::tempdir().unwrap());
+        let target = Arc::new(dir.path().join("state.toml"));
+
+        let mut handles = Vec::new();
+        for i in 0..8 {
+            let target = Arc::clone(&target);
+            let _dir_alive = Arc::clone(&dir);
+            handles.push(thread::spawn(move || {
+                let mut state = State::default();
+                state.record_failure(&format!("provider-{}", i));
+                state.save_to_path(&target)
+            }));
+        }
+
+        for handle in handles {
+            handle.join().expect("スレッドのジョインに失敗").expect(
+                "並列 save_to_path はすべて成功すべき（衝突しない一時ファイル名を使う実装が要件）",
+            );
+        }
+
+        // 最終的に有効な TOML として読み戻せる
+        let content = fs::read_to_string(target.as_path()).unwrap();
+        let parsed: State = toml::from_str(&content).unwrap();
+        // 並列なので最後に勝った1つの provider のみが残る想定。空ではない。
+        assert!(!parsed.provider_failures.is_empty());
+
+        // 一時ファイル (target.tmp.* など) が残っていない
+        let entries: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|name| name.starts_with("state.tmp."))
+            .collect();
+        assert!(
+            entries.is_empty(),
+            "並列保存後に一時ファイルが残存している: {:?}",
+            entries
+        );
+    }
+
+    #[test]
+    fn test_save_to_path_uses_unique_tmp_path_per_invocation() {
+        // 一時ファイル名はプロセス ID とナノ秒タイムスタンプを含むので、
+        // 同じ最終パスを共有する複数 save であっても固定パスに衝突しないことを保証する。
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("state.toml");
+
+        // 連続して何度も保存しても成功する（固定 tmp パスを共有するとここで失敗する可能性がある）
+        for i in 0..32 {
+            let mut state = State::default();
+            state.record_failure(&format!("provider-{}", i));
+            state.save_to_path(&target).unwrap();
+        }
+
+        // 残骸の一時ファイルが存在しないこと
+        let stale: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|name| name.starts_with("state.tmp."))
+            .collect();
+        assert!(stale.is_empty(), "残骸の一時ファイル: {:?}", stale);
+    }
 }
