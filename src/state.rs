@@ -64,8 +64,14 @@ impl State {
             .map_err(|e| AppError::ConfigError(format!("Failed to serialize state: {}", e)))?;
 
         // 並列実行時に部分書き込みされた状態ファイルを別プロセスが読み取らないように、
-        // 一時ファイルへ書き込んでから rename(2) でアトミックに置き換える
-        let tmp_path = path.with_extension("tmp");
+        // 一時ファイルへ書き込んでから rename(2) でアトミックに置き換える。
+        // 一時ファイル名は PID とナノ秒タイムスタンプを含めてプロセス間で衝突しないようにする。
+        let pid = std::process::id();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let tmp_path = path.with_extension(format!("tmp.{}.{}", pid, nanos));
         fs::write(&tmp_path, &content)
             .map_err(|e| AppError::ConfigError(format!("Failed to write state: {}", e)))?;
         fs::rename(&tmp_path, path).map_err(|e| {
