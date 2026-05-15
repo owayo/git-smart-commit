@@ -41,7 +41,7 @@
 - **Quiet Mode**: Suppresses progress output for hook/scripting use (`-q`)
 - **Body Support**: Generate detailed commit messages with bullet points (`-b`)
 - **Amend/Squash/Reword**: Regenerate messages for existing commits
-- **Private Temp Files**: AI prompts and reword message files are created without group/other read permissions on Unix/macOS
+- **Private Temp Files**: AI prompts, Codex final-output files, and reword message files are created without group/other read permissions on Unix/macOS
 - **Agent Context**: Integrates with [claw-hooks](https://github.com/owayo/claw-hooks) to generate context-aware messages reflecting the agent's intent
 
 ## Requirements
@@ -263,7 +263,7 @@ codex_reasoning_effort = "low"
 # Model configuration
 [models]
 gemini = "gemini-2.5-flash-lite"
-codex = "gpt-5.3-codex-spark"
+codex = "codex-auto-review"
 claude = "haiku"
 opencode = ""
 
@@ -346,7 +346,7 @@ echo "conventional"
 
 ### Security Notes
 
-- AI prompts may contain staged diff content. When git-sc needs a temporary prompt file for providers such as opencode, it creates the file with no group/other permissions on Unix/macOS and removes it automatically after use.
+- AI prompts may contain staged diff content. When git-sc needs a temporary prompt file for providers such as opencode, or a final-output file for Codex, it creates the file with no group/other permissions on Unix/macOS and removes it automatically after use.
 - Reword message temporary files use the same private-file behavior.
 
 ### .git-sc-ignore

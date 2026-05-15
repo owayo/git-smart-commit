@@ -78,6 +78,44 @@ fn setup_fake_opencode_path(dir: &TempDir) -> String {
     format!("{}{}{}", bin_dir.display(), separator, current_path)
 }
 
+/// テスト用ヘルパー: フェイク Codex CLI を配置した PATH を作成
+#[cfg(unix)]
+fn setup_fake_codex_path(dir: &TempDir) -> String {
+    let bin_dir = dir.path().join("fake-bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+
+    let script_path = bin_dir.join("codex");
+    let script_body = r#"#!/bin/sh
+out=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ] || [ "$1" = "--output-last-message" ]; then
+    shift
+    out="$1"
+  fi
+  shift || break
+done
+
+if [ -z "$out" ]; then
+  echo "missing codex output file" >&2
+  exit 2
+fi
+
+cat >/dev/null
+echo "codex"
+echo "bad transcript line"
+printf '%s\n' "fix: use codex output file" > "$out"
+"#;
+
+    std::fs::write(&script_path, script_body).unwrap();
+
+    let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&script_path, perms).unwrap();
+
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    format!("{}:{}", bin_dir.display(), current_path)
+}
+
 fn resolve_real_git_path() -> String {
     #[cfg(windows)]
     let output = std::process::Command::new("where")
@@ -551,6 +589,26 @@ fn test_quiet_dry_run_with_ai_generation_suppresses_provider_output() {
         .assert()
         .success()
         .stdout(predicate::str::contains("feat:"))
+        .stderr(predicate::str::is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_codex_provider_uses_output_file_not_transcript_stdout() {
+    let dir = setup_git_repo_with_commit();
+    let path = setup_fake_codex_path(&dir);
+    stage_change(&dir, "# Test\ncodex\n");
+
+    git_sc!()
+        .args(["--quiet", "--dry-run", "--provider", "codex"])
+        .env("PATH", path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("fix: use codex output file"))
+        .stdout(predicate::str::contains("bad transcript line").not())
         .stderr(predicate::str::is_empty());
 }
 

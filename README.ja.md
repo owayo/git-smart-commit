@@ -41,7 +41,7 @@
 - **Quietモード**: フック/スクリプト向けに進捗出力を抑制（`-q`）
 - **本文サポート**: 箇条書き本文付きの詳細なコミットメッセージを生成（`-b`）
 - **Amend/Squash/Reword**: 既存コミットのメッセージを再生成
-- **安全な一時ファイル**: Unix/macOS では AI プロンプトや reword メッセージの一時ファイルを group/other から読めない権限で作成
+- **安全な一時ファイル**: Unix/macOS では AI プロンプト、Codex 最終応答、reword メッセージの一時ファイルを group/other から読めない権限で作成
 - **エージェントコンテキスト**: [claw-hooks](https://github.com/owayo/claw-hooks) と連携し、エージェントの意図を反映したコンテキストを考慮したメッセージを生成
 
 ## 動作要件
@@ -263,7 +263,7 @@ codex_reasoning_effort = "low"
 # モデル設定
 [models]
 gemini = "gemini-2.5-flash-lite"
-codex = "gpt-5.3-codex-spark"
+codex = "codex-auto-review"
 claude = "haiku"
 opencode = ""
 
@@ -346,7 +346,7 @@ echo "conventional"
 
 ### セキュリティメモ
 
-- AI プロンプトには staged diff の内容が含まれる場合があります。opencode などのプロバイダー向けに一時プロンプトファイルが必要な場合、Unix/macOS では group/other 権限を付けずに作成し、使用後に自動削除します。
+- AI プロンプトには staged diff の内容が含まれる場合があります。opencode などのプロバイダー向けに一時プロンプトファイルが必要な場合や Codex の最終応答ファイルを使う場合、Unix/macOS では group/other 権限を付けずに作成し、使用後に自動削除します。
 - reword 用コミットメッセージの一時ファイルも同じ権限で作成します。
 
 ### .git-sc-ignore

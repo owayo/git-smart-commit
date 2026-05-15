@@ -269,9 +269,13 @@ impl AiService {
                         self.codex_reasoning_effort
                     )
                 };
+                let output_arg = temp_file_path
+                    .and_then(|p| p.to_str())
+                    .map(|s| s.replace('\\', "/"))
+                    .unwrap_or_else(|| "<output_file>".to_string());
                 format!(
-                    "echo '{}' | codex --disable codex_hooks{} exec{}",
-                    escaped_prompt, effort_arg, model_arg
+                    "echo '{}' | codex --disable hooks{} exec{} -o '{}'",
+                    escaped_prompt, effort_arg, model_arg, output_arg
                 )
             }
             AiProvider::Claude => {
@@ -571,13 +575,30 @@ Instructions:
             None
         };
 
+        // Codex CLI の標準出力は実行トランスクリプトを含むため、
+        // 最終応答だけを専用ファイルに書き出してコミットメッセージとして読む。
+        let codex_output_file = if matches!(provider, AiProvider::Codex) {
+            Some(TempFile::create_with_content(b"")?)
+        } else {
+            None
+        };
+
         // プロバイダー固有のコマンドを構築
-        let (mut cmd, uses_stdin) =
-            self.build_provider_command(provider, prompt, temp_file.as_ref())?;
+        let (mut cmd, uses_stdin) = self.build_provider_command(
+            provider,
+            prompt,
+            temp_file.as_ref(),
+            codex_output_file.as_ref(),
+        )?;
 
         // デバッグモード: 実行するコマンドを表示
         if self.debug {
-            self.print_debug_command(provider, prompt, temp_file.as_ref());
+            let debug_file = if matches!(provider, AiProvider::Codex) {
+                codex_output_file.as_ref()
+            } else {
+                temp_file.as_ref()
+            };
+            self.print_debug_command(provider, prompt, debug_file);
         }
 
         // プロセスを起動
@@ -602,6 +623,14 @@ Instructions:
         let (exit_status, stdout_str, stderr_str) =
             self.run_process_with_timeout(&mut child, provider)?;
 
+        let stdout_str = if let Some(output_file) = &codex_output_file {
+            fs::read_to_string(output_file.path()).map_err(|e| {
+                AppError::AiProviderError(format!("Failed to read Codex output file: {}", e))
+            })?
+        } else {
+            stdout_str
+        };
+
         // 出力を検証してメッセージを返す
         Self::process_provider_output(provider, exit_status, &stdout_str, &stderr_str)
     }
@@ -613,6 +642,7 @@ Instructions:
         provider: &AiProvider,
         prompt: &str,
         temp_file: Option<&TempFile>,
+        codex_output_file: Option<&TempFile>,
     ) -> Result<(Command, bool), AppError> {
         // Windows: cmd /C 経由で実行する（npm等でインストールされた .cmd ラッパーに対応するため）
         // Rust の Command::new() は .cmd/.bat ファイルを直接実行できないため、cmd /C が必要
@@ -643,7 +673,7 @@ Instructions:
                 // git-sc は Codex をメッセージ生成器として使用しており、
                 // stop hook が発火すると git-sc が再帰的に呼ばれて
                 // 先にコミットされてしまう問題を防ぐ。
-                cmd.args(["--disable", "codex_hooks"]);
+                cmd.args(["--disable", "hooks"]);
                 if !self.codex_reasoning_effort.is_empty() {
                     cmd.args([
                         "-c",
@@ -653,6 +683,9 @@ Instructions:
                 cmd.arg("exec");
                 if !self.models.codex.is_empty() {
                     cmd.args(["--model", &self.models.codex]);
+                }
+                if let Some(output_file) = codex_output_file {
+                    cmd.arg("-o").arg(output_file.path());
                 }
                 true
             }
@@ -1853,7 +1886,8 @@ mod tests {
     fn test_format_command_for_debug_codex() {
         let service = AiService::new();
         let cmd = service.format_command_for_debug(&AiProvider::Codex, "test prompt", None);
-        assert!(cmd.contains("codex --disable codex_hooks -c model_reasoning_effort='low' exec"));
+        assert!(cmd.contains("codex --disable hooks -c model_reasoning_effort='low' exec"));
+        assert!(cmd.contains("-o '<output_file>'"));
         assert!(cmd.contains("echo 'test prompt'"));
     }
 
@@ -1928,7 +1962,7 @@ mod tests {
         let mut service = AiService::new();
         service.models.codex = String::new();
         let cmd = service.format_command_for_debug(&AiProvider::Codex, "test", None);
-        assert!(cmd.contains("codex --disable codex_hooks -c model_reasoning_effort='low' exec"));
+        assert!(cmd.contains("codex --disable hooks -c model_reasoning_effort='low' exec"));
         assert!(!cmd.contains("--model"));
     }
 
@@ -1937,8 +1971,8 @@ mod tests {
         let service = AiService::new();
         let cmd = service.format_command_for_debug(&AiProvider::Codex, "test", None);
         assert!(
-            cmd.contains("--disable codex_hooks"),
-            "Codex 呼び出しでは常に --disable codex_hooks が付くべき: {}",
+            cmd.contains("--disable hooks"),
+            "Codex 呼び出しでは常に --disable hooks が付くべき: {}",
             cmd
         );
     }
@@ -1957,8 +1991,23 @@ mod tests {
         let mut service = AiService::new();
         service.codex_reasoning_effort = String::new();
         let cmd = service.format_command_for_debug(&AiProvider::Codex, "test", None);
-        assert!(cmd.contains("codex --disable codex_hooks exec"));
+        assert!(cmd.contains("codex --disable hooks exec"));
         assert!(!cmd.contains("model_reasoning_effort"));
+    }
+
+    #[test]
+    fn test_build_provider_command_codex_uses_output_file() {
+        let service = AiService::new();
+        let output_file = TempFile::create_with_content(b"").unwrap();
+
+        let (cmd, uses_stdin) = service
+            .build_provider_command(&AiProvider::Codex, "test", None, Some(&output_file))
+            .unwrap();
+        let debug = format!("{:?}", cmd);
+
+        assert!(uses_stdin);
+        assert!(debug.contains("\"-o\""));
+        assert!(debug.contains(&output_file.path().to_string_lossy().to_string()));
     }
 
     #[test]
@@ -3551,7 +3600,7 @@ mod tests {
 
     #[test]
     fn test_format_command_codex_always_disables_hooks() {
-        // stop_hook_active = false でも常に --disable codex_hooks が付く
+        // stop_hook_active = false でも常に --disable hooks が付く
         let service = AiService {
             providers: vec![AiProvider::Codex],
             language: "Japanese".to_string(),
@@ -3563,7 +3612,7 @@ mod tests {
             provider_override: false,
         };
         let cmd = service.format_command_for_debug(&AiProvider::Codex, "prompt", None);
-        assert!(cmd.contains("--disable codex_hooks"));
+        assert!(cmd.contains("--disable hooks"));
     }
 
     #[test]

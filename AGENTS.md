@@ -100,12 +100,12 @@ Amend safety note:
 Each provider is called via CLI subprocess:
 - **opencode**: Uses temp file with `-f` flag to avoid command line length limits
 - **gemini**: Uses `-p` flag for prompt input
-- **codex/claude**: Uses stdin for prompt input
+- **codex/claude**: Uses stdin for prompt input; Codex also uses `-o`/`--output-last-message` to read only the final agent message instead of the execution transcript
 - **apple-intelligence**: fm-rs (Rust FFI) via Foundation Models on-device (macOS 26+, Apple Intelligence enabled)
 
 Temp file safety note:
 - `TempFile` and `TempRewordMessageFile` use RAII (Drop) for automatic cleanup.
-- On Unix/macOS, temp files are created with mode `0600` so AI prompts and reword messages are not readable by group or other users while they exist.
+- On Unix/macOS, temp files are created with mode `0600` so AI prompts, Codex final-output files, and reword messages are not readable by group or other users while they exist.
 - On write/sync failure, the file is explicitly deleted before returning the error to prevent orphaned temp files.
 
 Subprocess timeout note:
@@ -123,7 +123,7 @@ Provider state file note:
 When invoked from a coding agent, `App::run()` reads the `CLAW_HOOKS_AGENT_MESSAGE` environment variable and passes it to `AiService::build_prompt()` as `agent_context`. This context is injected into the AI prompt before the diff section, guiding the AI to reflect the developer's high-level intent in the commit message. The context is applied across standard generation and `--amend` / `--reword` / `--squash` / `--generate-for` workflows.
 
 Default Codex model note:
-- As of May 13, 2026, the default Codex model remains `gpt-5.3-codex-spark` after re-running `codex debug models` and `echo "Hello" | codex exec -c model_reasoning_effort='medium' -m <model>` for each listed Codex model. Cache-busted single-run token consumption (worst-case values across multiple trials with unique nonces): `gpt-5.3-codex-spark` (`15,152`), `gpt-5.3-codex` (`18,098`), `codex-auto-review` (`18,551`), `gpt-5.4` (`18,582`), `gpt-5.4-mini` (`19,247`), `gpt-5.2` (`19,831`), and `gpt-5.5` (`20,945`). `gpt-5.3-codex-spark` was retained because it had the lowest measured consumption and the model description "Ultra-fast coding model" remains the best fit for git-sc's commit-message generation use case.
+- As of May 15, 2026, the default Codex model is `codex-auto-review` after re-running `codex debug models` and `echo "Hello" | codex exec -c model_reasoning_effort='medium' -m <model>` for each listed Codex model. Single-run token consumption: `codex-auto-review` (`119`), `gpt-5.3-codex-spark` (`14,931`), `gpt-5.2` (`16,769`), `gpt-5.3-codex` (`18,098`), `gpt-5.4` (`18,530`), `gpt-5.4-mini` (`19,242`), and `gpt-5.5` (`19,923`). `codex-auto-review` was selected because it had the lowest measured consumption among the currently available Codex models.
 
 ## Configuration Files
 
@@ -171,7 +171,7 @@ cargo test -- --nocapture     # Show println! output
 - **regex**: Commit format detection
 - **ignore**: Gitignore-style pattern matching
 - **dirs**: Platform-specific directory paths
-- **fm-rs** (optional, macOS, pinned to `0.1.4`): Apple Intelligence Foundation Models FFI. Keep pinned unless a newer release passes `cargo clippy --features apple-ai -- -D warnings`; `0.1.5` was rechecked on May 13, 2026 and still fails against the macOS 26.4 SDK because its Swift token usage API does not compile.
+- **fm-rs** (optional, macOS, pinned to `0.1.4`): Apple Intelligence Foundation Models FFI. Keep pinned unless a newer release passes `cargo clippy --features apple-ai -- -D warnings`; `0.1.5` was rechecked on May 15, 2026 and still fails against the macOS 26.5 SDK because its Swift token usage API does not compile.
 
 ### Dev
 - **rstest**: Parameterized test framework
