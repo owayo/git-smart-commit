@@ -263,7 +263,7 @@ codex_reasoning_effort = "low"
 # Model configuration
 [models]
 gemini = "gemini-2.5-flash-lite"
-codex = "codex-auto-review"
+codex = "gpt-5.4"
 claude = "haiku"
 opencode = ""
 

@@ -27,7 +27,7 @@ fm-rs = { version = "=0.1.4", optional = true }
 rstest = "0.26.1"
 pretty_assertions = "1.4.1"
 tempfile = "3.27.0"
-assert_cmd = "2.2.1"
+assert_cmd = "2.2.2"
 predicates = "3.1.4"
 
 [profile.release]

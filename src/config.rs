@@ -23,7 +23,7 @@ fn default_gemini_model() -> String {
 }
 
 fn default_codex_model() -> String {
-    "codex-auto-review".to_string()
+    "gpt-5.4".to_string()
 }
 
 fn default_claude_model() -> String {
@@ -587,6 +587,13 @@ codex_reasoning_effort = "high"
         assert_eq!(models.codex, default_codex_model());
         assert_eq!(models.claude, "haiku");
         assert_eq!(models.opencode, "");
+    }
+
+    #[test]
+    fn test_default_codex_model_uses_latest_lowest_token_model() {
+        // codex debug models の単発計測結果に基づく現在の既定モデルを固定する。
+        assert_eq!(default_codex_model(), "gpt-5.4");
+        assert_eq!(Config::default().models.codex, "gpt-5.4");
     }
 
     #[test]
@@ -1896,6 +1903,7 @@ gemini = "gemini-2.5-pro"
 
         assert_eq!(config.models.gemini, default_gemini_model());
         assert_eq!(config.models.codex, default_codex_model());
+        assert!(content.contains(r#"codex = "gpt-5.4""#));
         assert_eq!(config.models.claude, default_claude_model());
         assert_eq!(config.models.opencode, default_opencode_model());
     }
