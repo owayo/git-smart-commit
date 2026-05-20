@@ -225,45 +225,59 @@ impl App {
                             .cyan()
                     );
                 }
-                if let Some(branch_name) = &branch {
-                    let result =
-                        self.git
-                            .run_prefix_script(&script_config.script, &remote_url, branch_name);
-
-                    // スクリプト実行結果を出力
-                    if !silent {
-                        match &result {
-                            Some(ScriptResult::Prefix(prefix)) => {
-                                println!("{}", format!("  → prefix: {:?}", prefix.trim()).green());
-                            }
-                            Some(ScriptResult::Empty) => {
-                                println!(
-                                    "{}",
-                                    "  → prefix: (empty, no prefix will be added)".yellow()
-                                );
-                            }
-                            Some(ScriptResult::Failed) => {
-                                println!(
-                                    "{}",
-                                    "  → script exited with non-zero status (exit 1), using AI-generated message".yellow()
-                                );
-                            }
-                            None => {
-                                println!("{}", "  → script execution failed".red());
-                            }
-                        }
-                    }
-
-                    if let Some(r) = result {
-                        let mode = resolve_script_result(r);
-                        if !silent && let PrefixMode::Rule(ref pt) = mode {
+                let branch_name = match &branch {
+                    Some(b) => b.as_str(),
+                    None => {
+                        // detached HEAD などでブランチ名を取得できない場合は、
+                        // 「実行する」と表示しただけで黙って次に進むのを避け、
+                        // スキップ理由を明示する。
+                        if !silent {
                             println!(
                                 "{}",
-                                format!("  → interpreted as prefix_type: {}", pt).cyan()
+                                "  → branch name unavailable (detached HEAD?), skipping script"
+                                    .yellow()
                             );
                         }
-                        return mode;
+                        continue;
                     }
+                };
+                let result =
+                    self.git
+                        .run_prefix_script(&script_config.script, &remote_url, branch_name);
+
+                // スクリプト実行結果を出力
+                if !silent {
+                    match &result {
+                        Some(ScriptResult::Prefix(prefix)) => {
+                            println!("{}", format!("  → prefix: {:?}", prefix.trim()).green());
+                        }
+                        Some(ScriptResult::Empty) => {
+                            println!(
+                                "{}",
+                                "  → prefix: (empty, no prefix will be added)".yellow()
+                            );
+                        }
+                        Some(ScriptResult::Failed) => {
+                            println!(
+                                "{}",
+                                "  → script exited with non-zero status (exit 1), using AI-generated message".yellow()
+                            );
+                        }
+                        None => {
+                            println!("{}", "  → script execution failed".red());
+                        }
+                    }
+                }
+
+                if let Some(r) = result {
+                    let mode = resolve_script_result(r);
+                    if !silent && let PrefixMode::Rule(ref pt) = mode {
+                        println!(
+                            "{}",
+                            format!("  → interpreted as prefix_type: {}", pt).cyan()
+                        );
+                    }
+                    return mode;
                 }
             }
         }

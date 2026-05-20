@@ -77,6 +77,7 @@ Prefix script behavior note:
 - If a prefix script returns empty output, `App` preserves the generated message and removes only a leading Conventional Commits type prefix (`feat:`, `fix(scope):`, `feat!:` etc.) when present.
 - Prefix script exit code `1` is the explicit "use AI-generated message without prefix" signal. Other non-zero exit codes are treated as execution failures, so prefix selection can fall through to later scripts, rules, config, or auto detection.
 - Relative `script` paths in project-level `.git-sc` are resolved from the Git repository root, and prefix scripts run with the Git root as their working directory.
+- If the current `HEAD` is detached (`get_current_branch()` returns `None`), prefix scripts that already matched their `url_pattern` are skipped with an explicit `branch name unavailable (detached HEAD?), skipping script` notice instead of silently falling through. This avoids the confusing UX of printing "Running prefix script for..." and then doing nothing visible.
 
 Commit hash validation note:
 - `verify_commit_hash()` uses `^{commit}` suffix to constrain to commit objects only. Tree, blob, and other non-commit objects are rejected with `InvalidCommitHash` error.
@@ -90,6 +91,7 @@ Reword safety note:
 - The temporary message file used during reword is created with a unique name and cleaned up automatically to avoid collisions between concurrent runs.
 - `GIT_EDITOR` passes the message file path via `GIT_SC_MSG_FILE` environment variable (not shell string interpolation) to prevent injection attacks from paths containing special characters.
 - The display-only short hash is computed via `chars().take(7)` so multibyte input (e.g. accidental non-ASCII argument) does not cause a UTF-8 boundary panic before validation runs.
+- When the underlying `git rebase -i` fails for any reason (CONFLICT, rejection by `commit-msg`/`pre-commit` hooks, editor errors, etc.), `GitService::reword_commit()` unconditionally runs `git rebase --abort` before returning the error. This prevents the repository from being left in an "interrupted rebase" state that would block all subsequent git operations.
 
 Amend safety note:
 - `GitService` reads the last-commit diff via `git show HEAD`, so `--amend` also works when the current `HEAD` is the root commit.
@@ -116,6 +118,7 @@ When a provider fails, it enters cooldown (default: 60 minutes) and the next pro
 
 Provider state file note:
 - `State::save()` writes to `~/.config/git-sc/.providers-state.tmp` first and then `rename(2)`s it onto the final path so concurrent `git-sc` invocations never read a half-written TOML file. On rename failure the temporary file is deleted before the error is returned.
+- The temporary file suffix combines PID, monotonic nanosecond timestamp, and a process-local `AtomicU64` counter, so multiple threads (or rapid consecutive saves) that happen to observe the same wall-clock nanosecond never share a tmp path. Without the counter, two concurrent threads could write to the same `*.tmp.PID.NANOS` file and the slower thread's `rename(2)` would fail with `ENOENT` after the faster thread already moved it.
 - `provider_cooldown_minutes` is converted to seconds with saturating arithmetic, so extremely large user-provided values do not panic in debug builds or wrap in release builds; they are treated as effectively indefinite cooldowns.
 
 ### Agent Context
@@ -123,7 +126,7 @@ Provider state file note:
 When invoked from a coding agent, `App::run()` reads the `CLAW_HOOKS_AGENT_MESSAGE` environment variable and passes it to `AiService::build_prompt()` as `agent_context`. This context is injected into the AI prompt before the diff section, guiding the AI to reflect the developer's high-level intent in the commit message. The context is applied across standard generation and `--amend` / `--reword` / `--squash` / `--generate-for` workflows.
 
 Default Codex model note:
-- As of May 19, 2026, the default Codex model is `gpt-5.4` after re-running `codex debug models` and `echo "Hello" | codex exec -c model_reasoning_effort='medium' -m <model>` for each listed Codex model. Single-run token consumption: `gpt-5.4` (`89`), `gpt-5.3-codex-spark` (`8,324`), `gpt-5.2` (`16,748`), `gpt-5.3-codex` (`18,082`), `codex-auto-review` (`18,514`), `gpt-5.4-mini` (`19,222`), and `gpt-5.5` (`19,928`). `gpt-5.4` was selected because it had the lowest measured consumption among the currently available Codex models.
+- As of May 20, 2026, the default Codex model is `gpt-5.3-codex-spark` after re-running `codex debug models` and `echo "Hello" | codex exec -c model_reasoning_effort='medium' -m <model>` for each listed Codex model. Single-run token consumption: `gpt-5.3-codex-spark` (`14,703`), `gpt-5.3-codex` (`17,846`), `gpt-5.4` (`18,301`), `codex-auto-review` (`18,302`), `gpt-5.4-mini` (`18,988`), `gpt-5.2` (`19,578`), and `gpt-5.5` (`19,670`). `gpt-5.3-codex-spark` was selected because it had the lowest measured consumption among the currently available Codex models.
 
 ## Configuration Files
 

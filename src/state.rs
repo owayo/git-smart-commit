@@ -1,11 +1,16 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
+
+/// プロセス内で一意な一時ファイル接尾辞を生成するためのカウンタ。
+/// 並列スレッドが同じナノ秒タイムスタンプを取得した場合でも tmp パスが衝突しないことを保証する。
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// プロバイダーの失敗情報
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,13 +70,16 @@ impl State {
 
         // 並列実行時に部分書き込みされた状態ファイルを別プロセスが読み取らないように、
         // 一時ファイルへ書き込んでから rename(2) でアトミックに置き換える。
-        // 一時ファイル名は PID とナノ秒タイムスタンプを含めてプロセス間で衝突しないようにする。
+        // 一時ファイル名は PID とナノ秒タイムスタンプに加え、プロセス内単調増加カウンタも
+        // 含めることで、同一スレッドの連続呼び出しや複数スレッドで同じタイムスタンプを
+        // 取得した場合でも衝突しないようにする。
         let pid = std::process::id();
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let tmp_path = path.with_extension(format!("tmp.{}.{}", pid, nanos));
+        let counter = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp_path = path.with_extension(format!("tmp.{}.{}.{}", pid, nanos, counter));
         fs::write(&tmp_path, &content)
             .map_err(|e| AppError::ConfigError(format!("Failed to write state: {}", e)))?;
         fs::rename(&tmp_path, path).map_err(|e| {

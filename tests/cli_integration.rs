@@ -892,6 +892,88 @@ fn test_generate_for_with_reword_conflict() {
 /// rebase は成功扱いになる一方でメッセージは元のまま、という静かな不具合があった。
 /// 修正後は rebase 起動時に `-c rebase.abbreviateCommands=false` を明示するため、
 /// この設定があっても reword が機能する必要がある。
+/// detached HEAD 状態で prefix_scripts の URL パターンが一致するとき、
+/// `Running prefix script for...` を表示した直後に黙ってフォールスルーしないこと
+/// （スキップ理由を明示することで silent fall-through を防ぐ）を検証する。
+#[cfg(unix)]
+#[test]
+fn test_prefix_script_skips_with_notice_on_detached_head() {
+    let dir = setup_git_repo_with_commit();
+    let path = setup_fake_opencode_path(&dir);
+
+    // 2 つ目のコミットを追加して detached HEAD で戻れるようにする
+    commit_change(&dir, "# Test\nsecond\n", "second commit");
+    let detach_hash = head_hash(&dir);
+
+    // リモート URL を設定（prefix_scripts は url_pattern で照合するため必要）
+    std::process::Command::new("git")
+        .args([
+            "remote",
+            "add",
+            "origin",
+            "https://example.com/test/repo.git",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // ダミーの prefix script を配置（本テストでは実行されないことを確認するため、
+    // 実行されてしまうと検出できるよう exit 2 で失敗させる）。
+    let script_path = dir.path().join("prefix.sh");
+    std::fs::write(
+        &script_path,
+        "#!/bin/sh\necho 'SHOULD NOT RUN' >&2\nexit 2\n",
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&script_path, perms).unwrap();
+
+    // プロジェクト設定 .git-sc に prefix_scripts を1つ登録
+    let project_config = format!(
+        r#"providers = ["opencode"]
+
+[[prefix_scripts]]
+url_pattern = "example\\.com"
+script = "{}"
+"#,
+        script_path.display()
+    );
+    std::fs::write(dir.path().join(".git-sc"), project_config).unwrap();
+
+    // detached HEAD 状態にする
+    std::process::Command::new("git")
+        .args(["checkout", "--detach", &detach_hash])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // ステージ変更を作る（dry-run で生成のみ）
+    std::fs::write(dir.path().join("changed.txt"), "changed\n").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "changed.txt"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    git_sc!()
+        .args(["--dry-run", "--provider", "opencode"])
+        .env("PATH", path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        // URL マッチを試みたメッセージが表示される
+        .stdout(predicate::str::contains("Running prefix script"))
+        // スキップ理由が明示される（silent fall-through ではない）
+        .stdout(predicate::str::contains("branch name unavailable"))
+        // フェイク opencode の生成メッセージが表示される（フォールスルー成功）
+        .stdout(predicate::str::contains("feat: quiet integration test"))
+        // スクリプトは実行されない（実行されていれば stderr に "SHOULD NOT RUN" が出る）
+        .stderr(predicate::str::contains("SHOULD NOT RUN").not());
+}
+
 #[test]
 fn test_reword_succeeds_with_rebase_abbreviate_commands_true() {
     let dir = setup_git_repo_with_commit();

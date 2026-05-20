@@ -1005,12 +1005,14 @@ impl GitService {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
 
-            // コンフリクトの場合はrebaseを中止
+            // CONFLICTでも commit-msg hook 失敗等でも、rebaseが途中の状態を残さないよう
+            // 失敗時は常に --abort を試みる（rebase未開始の場合は no-op で安全）。
+            let _ = Command::new("git")
+                .args(["rebase", "--abort"])
+                .current_dir(&self.repo_path)
+                .output();
+
             if stderr.contains("CONFLICT") || stderr.contains("could not apply") {
-                let _ = Command::new("git")
-                    .args(["rebase", "--abort"])
-                    .current_dir(&self.repo_path)
-                    .output();
                 return Err(AppError::RebaseConflict);
             }
 
@@ -2261,6 +2263,77 @@ index 555..666 100644
         assert_ne!(first.path(), second.path());
         assert_eq!(std::fs::read_to_string(first.path()).unwrap(), "first");
         assert_eq!(std::fs::read_to_string(second.path()).unwrap(), "second");
+    }
+
+    /// reword 中に commit-msg hook が失敗しても、rebase が中途状態で残らないことを検証する。
+    /// 失敗時に `git rebase --abort` が呼ばれないと、以降の git 操作が
+    /// 「rebase in progress」で全て失敗する状態になる。
+    #[cfg(unix)]
+    #[test]
+    fn test_reword_aborts_rebase_when_commit_msg_hook_rejects() {
+        use std::os::unix::fs::PermissionsExt;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let repo = temp_dir.path();
+
+        run_git_in(repo, &["init"]);
+        run_git_in(repo, &["config", "user.name", "Test User"]);
+        run_git_in(repo, &["config", "user.email", "test@example.com"]);
+        // hooks がデフォルト有効か明示するために core.hooksPath を未設定のままにする
+        // （新しい git のデフォルト .git/hooks を利用）
+
+        std::fs::write(repo.join("file.txt"), "first\n").unwrap();
+        run_git_in(repo, &["add", "file.txt"]);
+        run_git_in(repo, &["commit", "-m", "first"]);
+
+        std::fs::write(repo.join("file.txt"), "second\n").unwrap();
+        run_git_in(repo, &["add", "file.txt"]);
+        run_git_in(repo, &["commit", "-m", "second"]);
+
+        // 全てのコミットメッセージを拒否する commit-msg hook を仕込む
+        let hook_path = repo.join(".git").join("hooks").join("commit-msg");
+        std::fs::write(&hook_path, "#!/bin/sh\nexit 1\n").unwrap();
+        let mut perms = std::fs::metadata(&hook_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&hook_path, perms).unwrap();
+
+        let service = GitService {
+            repo_path: repo.to_path_buf(),
+        };
+
+        // n=2 で rebase ルートに入る。commit-msg hook が拒否するので必ず失敗する。
+        let result = service.reword_commit(2, "rewritten root");
+        assert!(
+            result.is_err(),
+            "commit-msg hook 拒否時は reword が失敗するはず"
+        );
+
+        // 中途半端な rebase 状態が残っていないことを確認する
+        let rebase_merge = repo.join(".git").join("rebase-merge");
+        let rebase_apply = repo.join(".git").join("rebase-apply");
+        assert!(
+            !rebase_merge.exists(),
+            ".git/rebase-merge/ が残存している（rebase --abort が呼ばれていない）"
+        );
+        assert!(
+            !rebase_apply.exists(),
+            ".git/rebase-apply/ が残存している（rebase --abort が呼ばれていない）"
+        );
+
+        // 後続の通常 git 操作（commit など）が実行できる状態であることを確認する
+        let status = Command::new("git")
+            .args(["status", "--porcelain=v2", "--branch"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert!(status.status.success());
+        let stdout = String::from_utf8_lossy(&status.stdout);
+        // rebase 中なら "# branch.head (detached)" のようになるが、ここでは branch 行があるはず
+        assert!(
+            !stdout.contains("rebase in progress"),
+            "git status が rebase 進行中を報告している"
+        );
     }
 
     #[test]
