@@ -507,7 +507,7 @@ fn test_reword_multibyte_hash_does_not_panic() {
     // マルチバイト文字を含む長いハッシュ（合計バイト長 > 7）を渡しても、
     // バリデーションエラーで終了する必要がある。
     let dir = setup_git_repo_with_commit();
-    let multibyte_hash = "あいうえおかきく"; // 24 bytes (8 chars * 3 bytes)
+    let multibyte_hash = "あいうえおかきく"; // 24バイト（8文字 * 3バイト）
 
     git_sc!()
         .args(["--reword", multibyte_hash])
@@ -894,7 +894,7 @@ fn test_generate_for_with_reword_conflict() {
 /// この設定があっても reword が機能する必要がある。
 /// detached HEAD 状態で prefix_scripts の URL パターンが一致するとき、
 /// `Running prefix script for...` を表示した直後に黙ってフォールスルーしないこと
-/// （スキップ理由を明示することで silent fall-through を防ぐ）を検証する。
+/// （スキップ理由を明示することで黙ったフォールスルーを防ぐ）を検証する。
 #[cfg(unix)]
 #[test]
 fn test_prefix_script_skips_with_notice_on_detached_head() {
@@ -966,7 +966,7 @@ script = "{}"
         .success()
         // URL マッチを試みたメッセージが表示される
         .stdout(predicate::str::contains("Running prefix script"))
-        // スキップ理由が明示される（silent fall-through ではない）
+        // スキップ理由が明示される（黙ったフォールスルーではない）
         .stdout(predicate::str::contains("branch name unavailable"))
         // フェイク opencode の生成メッセージが表示される（フォールスルー成功）
         .stdout(predicate::str::contains("feat: quiet integration test"))

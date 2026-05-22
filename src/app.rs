@@ -39,7 +39,7 @@ fn extract_conventional_body(message: &str) -> Option<&str> {
     let colon_pos = first_line.find(':')?;
     let mut header = &first_line[..colon_pos];
 
-    // Breaking change マーカー `!` を許可
+    // 破壊的変更マーカー `!` を許可
     header = header.strip_suffix('!').unwrap_or(header);
 
     let commit_type = if let Some((ty, scope)) = header.split_once('(') {
@@ -663,7 +663,7 @@ impl App {
 
         // 確認してコミット
         if cli.auto_confirm || self.confirm_commit()? {
-            // コミット直前にステージ済み変更を再確認（race condition 防止）
+            // コミット直前にステージ済み変更を再確認（競合状態防止）
             if !self.git.has_staged_changes() {
                 if !cli.quiet {
                     println!(
