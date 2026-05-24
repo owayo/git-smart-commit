@@ -748,6 +748,9 @@ impl GitService {
 
         if output.status.success() {
             let prefix = String::from_utf8_lossy(&output.stdout).to_string();
+            // `echo` など一般的なスクリプト出力の行末だけを除去し、
+            // プレフィックスとして意図された末尾スペースは保持する。
+            let prefix = prefix.trim_end_matches(['\r', '\n']).to_string();
             if prefix.trim().is_empty() {
                 Some(ScriptResult::Empty)
             } else {
@@ -2114,6 +2117,35 @@ index 555..666 100644
             Some(ScriptResult::Prefix(prefix)) => assert_eq!(prefix.trim(), "ROOT-CWD"),
             other => panic!("unexpected result: {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_run_prefix_script_strips_line_ending_only() {
+        let temp_dir = setup_temp_git_repo();
+        let repo = temp_dir.path();
+
+        #[cfg(windows)]
+        let script_relative_path = "scripts\\prefix-newline.cmd";
+        #[cfg(not(windows))]
+        let script_relative_path = "scripts/prefix-newline.sh";
+
+        #[cfg(windows)]
+        let script_body = "@echo off\r\npowershell -NoProfile -Command \"[Console]::Out.Write('TICKET-123 '); [Console]::Out.WriteLine()\"\r\n";
+        #[cfg(not(windows))]
+        let script_body = "#!/bin/sh\nprintf 'TICKET-123 \\n'\n";
+
+        write_test_script(repo, script_relative_path, script_body);
+
+        let service = GitService {
+            repo_path: repo.to_path_buf(),
+        };
+
+        let result = service.run_prefix_script(script_relative_path, "origin", "main");
+
+        assert_eq!(
+            result,
+            Some(ScriptResult::Prefix("TICKET-123 ".to_string()))
+        );
     }
 
     #[test]
