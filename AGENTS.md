@@ -175,7 +175,7 @@ cargo test -- --nocapture     # Show println! output
 - **regex**: Commit format detection
 - **ignore**: Gitignore-style pattern matching
 - **dirs**: Platform-specific directory paths
-- **fm-rs** (optional, macOS, pinned to `0.1.4`): Apple Intelligence Foundation Models FFI. Keep pinned unless a newer release passes `cargo clippy --features apple-ai -- -D warnings`; `0.1.5` was rechecked on May 25, 2026 (JST) and still fails against the macOS 26.5 SDK because its Swift token usage API does not compile.
+- **fm-rs** (optional, macOS, pinned to `0.1.4`): Apple Intelligence Foundation Models FFI. Keep pinned unless a newer release passes `cargo clippy --features apple-ai -- -D warnings`; `0.1.5` was rechecked on May 28, 2026 (JST) and still fails against the macOS 26.5 SDK because its Swift token usage API does not compile.
 
 ### Dev
 - **rstest**: Parameterized test framework
