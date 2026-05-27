@@ -263,7 +263,7 @@ codex_reasoning_effort = "low"
 # モデル設定
 [models]
 gemini = "gemini-2.5-flash-lite"
-codex = "gpt-5.2"
+codex = "gpt-5.3-codex-spark"
 claude = "haiku"
 opencode = ""
 

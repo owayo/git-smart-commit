@@ -86,7 +86,7 @@ Commit hash validation note:
 Reword safety note:
 - `GitService` validates that a `--reword` target hash is in the current `HEAD` history before merge-range checks and position calculation.
 - If the hash exists but is outside the current history (e.g., another branch), reword fails with an error.
-- If the target hash itself is a merge commit, reword also fails instead of silently treating it as a normal commit.
+- If the target hash itself is a merge commit, reword also fails instead of silently treating it as a normal commit. This check is enforced inside `reword_commit()` itself (including the `n == 1` amend-path), not only in the calling layer, so the guarantee holds even when `reword_commit_by_hash()` is invoked directly without the `app.rs` pre-check.
 - Rewording the oldest commit in the current branch is supported by switching to `git rebase -i --root` when needed.
 - Rewording `HEAD` uses `git commit --amend --only` so unrelated staged changes remain staged instead of being included in the rewritten commit.
 - The temporary message file used during reword is created with a unique name and cleaned up automatically to avoid collisions between concurrent runs.
@@ -97,6 +97,9 @@ Reword safety note:
 Amend safety note:
 - `GitService` reads the last-commit diff via `git show HEAD`, so `--amend` also works when the current `HEAD` is the root commit.
 - `GitService::amend_commit()` uses `git commit --amend --only` so unrelated staged changes remain staged instead of being included in the amended commit.
+
+Notification safety note:
+- On macOS the notification path calls `CFStringCreateWithCString` for both the notification name and body. Each return value is null-checked before use, and any already-allocated CFString is `CFRelease`d before bailing out. `CFRelease(NULL)` is undefined behaviour, so this guard avoids a crash if CoreFoundation fails to allocate (e.g., under memory pressure).
 
 ### AI Provider Implementation
 
@@ -127,7 +130,7 @@ Provider state file note:
 When invoked from a coding agent, `App::run()` reads the `CLAW_HOOKS_AGENT_MESSAGE` environment variable and passes it to `AiService::build_prompt()` as `agent_context`. This context is injected into the AI prompt before the diff section, guiding the AI to reflect the developer's high-level intent in the commit message. The context is applied across standard generation and `--amend` / `--reword` / `--squash` / `--generate-for` workflows.
 
 Default Codex model note:
-- As of May 25, 2026 (JST), the default Codex model is `gpt-5.2` after re-running `codex debug models` and `echo "Hello" | codex exec -c model_reasoning_effort='medium' -m <model>` for each listed Codex model. Single-run token consumption: `gpt-5.2` (`11,380`), `gpt-5.5` (`11,471`), `gpt-5.4` (`11,616`), `gpt-5.3-codex` (`11,696`), `gpt-5.3-codex-spark` (`11,719`), `gpt-5.4-mini` (`11,808`), and `codex-auto-review` (`15,228`). `gpt-5.2` was selected because it had the lowest measured consumption among the currently available Codex models.
+- As of May 28, 2026 (JST), the default Codex model is `gpt-5.3-codex-spark` after re-running `codex debug models` and `echo "Hello" | codex exec -c model_reasoning_effort='medium' -m <model>` for each listed Codex model. Single-run token consumption (cold start): `gpt-5.3-codex-spark` (`8,429`), `gpt-5.2` (`11,381`), `gpt-5.5` (`11,477`), `gpt-5.4` (`11,620`), `codex-auto-review` (`11,627`), `gpt-5.3-codex` (`11,700`), and `gpt-5.4-mini` (`11,852`). `gpt-5.3-codex-spark` was selected because it had the lowest measured consumption among the currently available Codex models.
 
 ## Configuration Files
 

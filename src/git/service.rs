@@ -943,8 +943,13 @@ impl GitService {
             return Err(AppError::InvalidRewordTarget);
         }
 
-        // n=1 の場合は amend で処理
+        // n=1 の場合は amend で処理。ただし HEAD がマージコミットの場合は
+        // 通常の reword と同様に拒否する（CLAUDE.md の API 保証を維持するため、
+        // 内部経路で呼ばれても安全に動作するようにする）。
         if n == 1 {
+            if self.has_merge_commits_in_range(1)? {
+                return Err(AppError::HasMergeCommits);
+            }
             return self.amend_commit_message(new_message);
         }
 
@@ -2295,6 +2300,55 @@ index 555..666 100644
         assert_ne!(first.path(), second.path());
         assert_eq!(std::fs::read_to_string(first.path()).unwrap(), "first");
         assert_eq!(std::fs::read_to_string(second.path()).unwrap(), "second");
+    }
+
+    /// HEAD がマージコミットの場合は `reword_commit(1, ...)` を直接呼んでも
+    /// `HasMergeCommits` で拒否されることを確認する。
+    /// app.rs 側で事前チェックされる経路だけでなく、ライブラリ層単独でも
+    /// CLAUDE.md の保証を維持する境界値テスト。
+    #[test]
+    fn test_reword_commit_n1_rejects_merge_head() {
+        let temp_dir = setup_temp_git_repo();
+        let repo = temp_dir.path();
+
+        // 初期コミット
+        std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+        run_git_in(repo, &["add", "a.txt"]);
+        run_git_in(repo, &["commit", "-m", "first"]);
+        let base = git_output_in(repo, &["branch", "--show-current"]);
+
+        // feature ブランチで分岐
+        run_git_in(repo, &["checkout", "-b", "feature/merge-head"]);
+        std::fs::write(repo.join("feature.txt"), "f\n").unwrap();
+        run_git_in(repo, &["add", "feature.txt"]);
+        run_git_in(repo, &["commit", "-m", "feature commit"]);
+
+        // base ブランチ側にも変更を加える
+        run_git_in(repo, &["checkout", &base]);
+        std::fs::write(repo.join("b.txt"), "b\n").unwrap();
+        run_git_in(repo, &["add", "b.txt"]);
+        run_git_in(repo, &["commit", "-m", "base commit"]);
+
+        // --no-ff でマージコミットを作成（HEAD がマージコミットになる）
+        let merge = Command::new("git")
+            .args(["merge", "--no-ff", "feature/merge-head", "-m", "merge"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert!(merge.status.success(), "merge failed");
+
+        let service = GitService {
+            repo_path: repo.to_path_buf(),
+        };
+
+        // n=1 の amend 経路でもマージコミットなら拒否される
+        let result = service.reword_commit(1, "renamed merge");
+        assert!(matches!(result, Err(AppError::HasMergeCommits)));
+
+        // reword_commit_by_hash 経由でも同様
+        let head_hash = git_output_in(repo, &["rev-parse", "HEAD"]);
+        let result = service.reword_commit_by_hash(&head_hash, "renamed merge");
+        assert!(matches!(result, Err(AppError::HasMergeCommits)));
     }
 
     /// reword 中に commit-msg hook が失敗しても、rebase が中途状態で残らないことを検証する。

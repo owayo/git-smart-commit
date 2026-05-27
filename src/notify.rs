@@ -38,8 +38,17 @@ mod macos {
             let center = CFNotificationCenterGetDistributedCenter();
             let cf_name =
                 CFStringCreateWithCString(ptr::null(), name_c.as_ptr(), K_CF_STRING_ENCODING_UTF8);
+            // CFStringCreateWithCString はメモリ不足等で NULL を返す可能性があり、
+            // CFRelease(NULL) は未定義動作なので必ず非nullを確認してから解放する。
+            if cf_name.is_null() {
+                return;
+            }
             let cf_text =
                 CFStringCreateWithCString(ptr::null(), text_c.as_ptr(), K_CF_STRING_ENCODING_UTF8);
+            if cf_text.is_null() {
+                CFRelease(cf_name);
+                return;
+            }
 
             CFNotificationCenterPostNotification(center, cf_name, cf_text, ptr::null(), true);
 
@@ -108,5 +117,22 @@ mod tests {
         let msg = "feat: add feature\n\n- detail 1\n- detail 2";
         let first_line = msg.lines().next().unwrap_or(msg);
         assert_eq!(first_line, "feat: add feature");
+    }
+
+    #[test]
+    fn test_notify_with_embedded_null_byte_does_not_panic() {
+        // メッセージ本文に NUL バイトが混入していても CString 生成が失敗するだけで
+        // panic せず静かに return することを確認する。
+        notify_commit_message("feat: foo\0bar");
+    }
+
+    #[test]
+    fn test_first_line_with_crlf_strips_carriage_return() {
+        // `str::lines()` は CRLF の `\r` も末尾から除去するため、Windows 環境で
+        // 生成されたコミットメッセージでも通知に余計な `\r` が混入しないことを確認する。
+        let msg = "feat: windows line\r\nbody";
+        let first_line = msg.lines().next().unwrap_or(msg);
+        assert_eq!(first_line, "feat: windows line");
+        notify_commit_message(msg);
     }
 }
