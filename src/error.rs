@@ -15,7 +15,7 @@ pub enum AppError {
     NoStagedChanges,
 
     #[error(
-        "AI CLIがインストールされていません。gemini、codex、またはclaudeのいずれかをインストールしてください。"
+        "AI CLIがインストールされていません。agy (Antigravity CLI)、codex、claude、opencode のいずれかをインストールしてください。"
     )]
     NoAiProviderInstalled,
 
@@ -103,7 +103,7 @@ mod tests {
         let err = AppError::NoAiProviderInstalled;
         assert_eq!(
             err.to_string(),
-            "AI CLIがインストールされていません。gemini、codex、またはclaudeのいずれかをインストールしてください。"
+            "AI CLIがインストールされていません。agy (Antigravity CLI)、codex、claude、opencode のいずれかをインストールしてください。"
         );
     }
 

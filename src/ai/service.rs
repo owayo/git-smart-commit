@@ -104,7 +104,8 @@ Use Conventional Commits format. Choose the prefix that best matches the change:
 /// AIプロバイダーの種類
 #[derive(Debug, Clone, Copy)]
 pub enum AiProvider {
-    Gemini,
+    /// Antigravity CLI (`agy`). 旧 `gemini` CLI の後継 (2026-05-13 公開、旧 CLI は 2026-06-18 終了)。
+    Antigravity,
     Codex,
     Claude,
     Opencode,
@@ -114,7 +115,7 @@ pub enum AiProvider {
 impl AiProvider {
     pub fn name(&self) -> &'static str {
         match self {
-            AiProvider::Gemini => "Gemini CLI",
+            AiProvider::Antigravity => "Antigravity CLI",
             AiProvider::Codex => "Codex CLI",
             AiProvider::Claude => "Claude Code",
             AiProvider::Opencode => "opencode",
@@ -124,7 +125,7 @@ impl AiProvider {
 
     fn command(&self) -> &'static str {
         match self {
-            AiProvider::Gemini => "gemini",
+            AiProvider::Antigravity => "agy",
             AiProvider::Codex => "codex",
             AiProvider::Claude => "claude",
             AiProvider::Opencode => "opencode",
@@ -134,19 +135,33 @@ impl AiProvider {
 
     /// 設定ファイルで使用するキー名（状態管理にも使用）
     pub fn config_key(&self) -> &'static str {
-        self.command()
+        match self {
+            AiProvider::Antigravity => "antigravity",
+            AiProvider::Codex => "codex",
+            AiProvider::Claude => "claude",
+            AiProvider::Opencode => "opencode",
+            AiProvider::AppleIntelligence => "apple-ai",
+        }
     }
 
     /// 文字列からプロバイダーを解析
+    ///
+    /// `"gemini"` は旧 CLI 名の後方互換エイリアスとして `Antigravity` にマップする。
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
-            "gemini" => Some(AiProvider::Gemini),
+            // "gemini" は 2026-06-18 に廃止される旧 CLI 名。後方互換のため Antigravity にマップする。
+            "antigravity" | "agy" | "gemini" => Some(AiProvider::Antigravity),
             "codex" => Some(AiProvider::Codex),
             "claude" => Some(AiProvider::Claude),
             "opencode" => Some(AiProvider::Opencode),
             "apple-intelligence" | "apple_intelligence" => Some(AiProvider::AppleIntelligence),
             _ => None,
         }
+    }
+
+    /// 入力文字列が旧 `gemini` エイリアスかどうかを返す。debug 警告などに利用する。
+    pub fn is_legacy_gemini_alias(s: &str) -> bool {
+        s.eq_ignore_ascii_case("gemini")
     }
 }
 
@@ -160,6 +175,9 @@ pub struct AiService {
     timeout_seconds: u64,
     debug: bool,
     provider_override: bool,
+    /// 設定ファイル中に旧 `gemini` エイリアス、または `[models] gemini` の指定が
+    /// 残っていた場合に立つフラグ。debug 出力時に注意を促す。
+    legacy_gemini_alias_detected: bool,
 }
 
 impl AiService {
@@ -167,7 +185,7 @@ impl AiService {
     fn default_providers() -> Vec<AiProvider> {
         let mut providers = vec![
             AiProvider::Opencode,
-            AiProvider::Gemini,
+            AiProvider::Antigravity,
             AiProvider::Codex,
             AiProvider::Claude,
         ];
@@ -180,6 +198,13 @@ impl AiService {
     /// 設定からAiServiceを作成
     pub fn from_config(config: &Config) -> Self {
         let provider_strings: Vec<String> = config.providers.clone();
+
+        // 旧 "gemini" エイリアス、または [models] gemini に値が残っているかをチェック。
+        // どちらも互換のため受理するが、debug 出力時に「無視されている / agy 用には効かない」旨を伝える。
+        let legacy_gemini_alias_detected = provider_strings
+            .iter()
+            .any(|s| AiProvider::is_legacy_gemini_alias(s))
+            || !config.models.gemini.is_empty();
 
         // 状態を読み込んで、クールダウン中のプロバイダーを降格
         let reordered_strings = if let Ok(state) = State::load() {
@@ -209,6 +234,7 @@ impl AiService {
             timeout_seconds: config.provider_timeout_seconds,
             debug: false,
             provider_override: false,
+            legacy_gemini_alias_detected,
         }
     }
 
@@ -223,12 +249,26 @@ impl AiService {
             timeout_seconds: 60,  // デフォルト60秒（Config::defaultと同値）
             debug: false,
             provider_override: false,
+            legacy_gemini_alias_detected: false,
         }
     }
 
-    /// デバッグモードを設定
+    /// デバッグモードを設定。
+    ///
+    /// 旧 `gemini` エイリアスや `[models] gemini` が残っている設定を検出していた場合は、
+    /// この呼び出しのタイミングで一度だけ注意メッセージを表示する。
     pub fn set_debug(&mut self, debug: bool) {
         self.debug = debug;
+        if debug && self.legacy_gemini_alias_detected {
+            eprintln!(
+                "{}",
+                "[git-sc] notice: 'gemini' is an alias for the new Antigravity CLI ('agy'). \
+                 The legacy [models] gemini field has no effect because agy does not accept a model flag."
+                    .yellow()
+            );
+            // 通知は一度だけで十分
+            self.legacy_gemini_alias_detected = false;
+        }
     }
 
     /// プロバイダーを手動指定で上書き（フォールバックなし、失敗記録スキップ）
@@ -246,14 +286,10 @@ impl AiService {
     ) -> String {
         let escaped_prompt = prompt.replace('\'', "'\\''");
         match provider {
-            AiProvider::Gemini => {
-                let model_arg = if self.models.gemini.is_empty() {
-                    String::new()
-                } else {
-                    format!(" -m '{}'", self.models.gemini)
-                };
-                let debug_arg = if self.debug { " --debug" } else { "" };
-                format!("gemini{}{} -p '{}'", model_arg, debug_arg, escaped_prompt)
+            AiProvider::Antigravity => {
+                // Antigravity CLI (`agy`) はモデル選択フラグも `--debug` フラグも持たない。
+                // プロンプトは `-p` で 1 引数として渡す。
+                format!("agy -p '{}'", escaped_prompt)
             }
             AiProvider::Codex => {
                 let model_arg = if self.models.codex.is_empty() {
@@ -658,13 +694,11 @@ Instructions:
         // プロバイダー固有の引数を追加
         // 各プロバイダーの models が空文字列の場合、モデルパラメータを省略する
         let uses_stdin = match provider {
-            AiProvider::Gemini => {
-                if !self.models.gemini.is_empty() {
-                    cmd.args(["-m", &self.models.gemini]);
-                }
-                if self.debug {
-                    cmd.arg("--debug");
-                }
+            AiProvider::Antigravity => {
+                // Antigravity CLI (`agy`) はモデル選択フラグを持たず、`--debug` フラグもない。
+                // プロンプトは `-p` 引数で渡す。長大な diff で OS の ARG_MAX を超えないよう
+                // 事前にプロンプト長をチェックし、超過時は明確なエラーで失敗させる。
+                Self::check_arg_size_limit(prompt)?;
                 cmd.args(["-p", prompt]);
                 false
             }
@@ -1022,25 +1056,47 @@ Instructions:
         Ok(message)
     }
 
+    /// プロンプト長が OS の引数長制限を超えていないか事前チェックする。
+    ///
+    /// macOS は約 1 MB (ARG_MAX = 1,048,576)、Linux は約 2 MB (ARG_MAX = 2,097,152) が一般的だが、
+    /// 環境変数や他の引数も同じ領域を共有するため、安全側に倒して 512 KiB を上限とする。
+    /// 通常運用では `MAX_DIFF_CHARS` で diff が打ち切られるため、ここに到達するのは異常ケース。
+    fn check_arg_size_limit(prompt: &str) -> Result<(), AppError> {
+        const MAX_ARG_BYTES: usize = 512 * 1024;
+        if prompt.len() > MAX_ARG_BYTES {
+            return Err(AppError::AiProviderError(format!(
+                "Prompt is too large for Antigravity CLI argument: {} bytes > {} byte limit. \
+                 Reduce the diff size or use a different provider.",
+                prompt.len(),
+                MAX_ARG_BYTES
+            )));
+        }
+        Ok(())
+    }
+
     /// stderrからエラーメッセージを抽出
     fn extract_error(stderr: &str, provider: &AiProvider) -> String {
         match provider {
-            AiProvider::Gemini => {
-                // [API Error: ...] パターンを優先的に探す
+            AiProvider::Antigravity => {
+                // 旧 Gemini CLI 由来の `[API Error: ...]` パターンが Antigravity でも残っている可能性に備えて優先的に拾う。
                 for line in stderr.lines() {
                     if line.starts_with("[API Error:") {
                         return line.to_string();
                     }
                 }
-                // "critical error occurred" パターンを探す
-                // 例: "An unexpected critical error occurred:Error: ..."
+                // "critical error" / "Error:" を含む行
                 for line in stderr.lines() {
                     let trimmed = line.trim();
                     if trimmed.contains("critical error") || trimmed.contains("Error:") {
                         return trimmed.to_string();
                     }
                 }
-                "Gemini API request failed".to_string()
+                // 最後の手段として最初の非空行
+                stderr
+                    .lines()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("Antigravity CLI request failed")
+                    .to_string()
             }
             AiProvider::Codex => {
                 // Codex CLI: "ERROR:" で始まる行を優先的に探す
@@ -1175,7 +1231,7 @@ mod tests {
 
     #[test]
     fn test_ai_provider_name() {
-        assert_eq!(AiProvider::Gemini.name(), "Gemini CLI");
+        assert_eq!(AiProvider::Antigravity.name(), "Antigravity CLI");
         assert_eq!(AiProvider::Codex.name(), "Codex CLI");
         assert_eq!(AiProvider::Claude.name(), "Claude Code");
         assert_eq!(AiProvider::Opencode.name(), "opencode");
@@ -1184,17 +1240,35 @@ mod tests {
 
     #[test]
     fn test_ai_provider_command() {
-        assert_eq!(AiProvider::Gemini.command(), "gemini");
+        assert_eq!(AiProvider::Antigravity.command(), "agy");
         assert_eq!(AiProvider::Codex.command(), "codex");
         assert_eq!(AiProvider::Claude.command(), "claude");
         assert_eq!(AiProvider::Opencode.command(), "opencode");
         assert_eq!(AiProvider::AppleIntelligence.command(), "apple-ai");
     }
 
+    #[test]
+    fn test_ai_provider_config_key() {
+        // state ファイルや設定ファイル上のキーは command と独立に定義する。
+        // 旧 "gemini" キーは load 時にメモリ上で "antigravity" に合流させるため、
+        // 公開キーは "antigravity" のみとする。
+        assert_eq!(AiProvider::Antigravity.config_key(), "antigravity");
+        assert_eq!(AiProvider::Codex.config_key(), "codex");
+        assert_eq!(AiProvider::Claude.config_key(), "claude");
+        assert_eq!(AiProvider::Opencode.config_key(), "opencode");
+        assert_eq!(AiProvider::AppleIntelligence.config_key(), "apple-ai");
+    }
+
     #[rstest]
-    #[case("gemini", Some(AiProvider::Gemini))]
-    #[case("GEMINI", Some(AiProvider::Gemini))]
-    #[case("Gemini", Some(AiProvider::Gemini))]
+    #[case("antigravity", Some(AiProvider::Antigravity))]
+    #[case("ANTIGRAVITY", Some(AiProvider::Antigravity))]
+    #[case("Antigravity", Some(AiProvider::Antigravity))]
+    #[case("agy", Some(AiProvider::Antigravity))]
+    #[case("AGY", Some(AiProvider::Antigravity))]
+    // 後方互換: 旧 Gemini CLI 名は Antigravity にマップする
+    #[case("gemini", Some(AiProvider::Antigravity))]
+    #[case("GEMINI", Some(AiProvider::Antigravity))]
+    #[case("Gemini", Some(AiProvider::Antigravity))]
     #[case("codex", Some(AiProvider::Codex))]
     #[case("claude", Some(AiProvider::Claude))]
     #[case("opencode", Some(AiProvider::Opencode))]
@@ -1211,6 +1285,39 @@ mod tests {
             (None, None) => {}
             _ => panic!("Mismatch for input: {}", input),
         }
+    }
+
+    #[rstest]
+    #[case("gemini", true)]
+    #[case("GEMINI", true)]
+    #[case("Gemini", true)]
+    #[case("antigravity", false)]
+    #[case("agy", false)]
+    #[case("", false)]
+    #[case("codex", false)]
+    fn test_is_legacy_gemini_alias(#[case] input: &str, #[case] expected: bool) {
+        assert_eq!(AiProvider::is_legacy_gemini_alias(input), expected);
+    }
+
+    #[test]
+    fn test_check_arg_size_limit_accepts_normal_prompt() {
+        // 通常運用範囲のプロンプトサイズは受理される
+        let prompt = "x".repeat(10_000);
+        assert!(AiService::check_arg_size_limit(&prompt).is_ok());
+    }
+
+    #[test]
+    fn test_check_arg_size_limit_rejects_oversized_prompt() {
+        // 512 KiB を超えるプロンプトは明確なエラーで拒否される
+        let prompt = "x".repeat(512 * 1024 + 1);
+        let result = AiService::check_arg_size_limit(&prompt);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("Antigravity CLI") && msg.contains("byte limit"),
+            "error message should mention Antigravity CLI and byte limit: {}",
+            msg
+        );
     }
 
     #[test]
@@ -1246,9 +1353,9 @@ mod tests {
         let mut service = AiService::new();
         let original_len = service.providers.len();
         assert!(original_len > 1);
-        service.set_provider_override(AiProvider::Gemini);
+        service.set_provider_override(AiProvider::Antigravity);
         assert_eq!(service.providers.len(), 1);
-        assert!(matches!(service.providers[0], AiProvider::Gemini));
+        assert!(matches!(service.providers[0], AiProvider::Antigravity));
     }
 
     #[rstest]
@@ -1611,15 +1718,25 @@ mod tests {
     #[test]
     fn test_extract_error_gemini_api_error() {
         let stderr = "Some warning\n[API Error: Rate limit exceeded]\nMore text";
-        let error = AiService::extract_error(stderr, &AiProvider::Gemini);
+        let error = AiService::extract_error(stderr, &AiProvider::Antigravity);
         assert_eq!(error, "[API Error: Rate limit exceeded]");
     }
 
     #[test]
-    fn test_extract_error_gemini_generic() {
+    fn test_extract_error_antigravity_generic() {
+        // `[API Error:` でも `critical error` でも `Error:` でもないシンプルなメッセージは
+        // 最初の非空行をそのまま返す (旧 Gemini 実装の固定ラベルから方針変更し、具体情報を優先する)。
         let stderr = "Some generic error";
-        let error = AiService::extract_error(stderr, &AiProvider::Gemini);
-        assert_eq!(error, "Gemini API request failed");
+        let error = AiService::extract_error(stderr, &AiProvider::Antigravity);
+        assert_eq!(error, "Some generic error");
+    }
+
+    #[test]
+    fn test_extract_error_antigravity_empty_falls_back() {
+        // stderr が完全に空の場合のみ固定の "Antigravity CLI request failed" にフォールバック
+        let stderr = "";
+        let error = AiService::extract_error(stderr, &AiProvider::Antigravity);
+        assert_eq!(error, "Antigravity CLI request failed");
     }
 
     #[test]
@@ -1646,21 +1763,21 @@ mod tests {
     #[test]
     fn test_extract_error_gemini_license_error() {
         let stderr = "Warning: something\nAn unexpected critical error occurred:Error: license check failed\nMore info";
-        let error = AiService::extract_error(stderr, &AiProvider::Gemini);
+        let error = AiService::extract_error(stderr, &AiProvider::Antigravity);
         assert!(error.contains("critical error") || error.contains("Error:"));
     }
 
     #[test]
     fn test_extract_error_gemini_critical_error() {
         let stderr = "An unexpected critical error occurred:Error: something bad";
-        let error = AiService::extract_error(stderr, &AiProvider::Gemini);
+        let error = AiService::extract_error(stderr, &AiProvider::Antigravity);
         assert!(error.contains("critical error"));
     }
 
     #[test]
     fn test_extract_error_gemini_multiple_api_errors() {
         let stderr = "[API Error: first]\n[API Error: second]";
-        let error = AiService::extract_error(stderr, &AiProvider::Gemini);
+        let error = AiService::extract_error(stderr, &AiProvider::Antigravity);
         // 最初の API Error を返す
         assert_eq!(error, "[API Error: first]");
     }
@@ -1764,7 +1881,8 @@ mod tests {
             4
         };
         assert_eq!(service.providers.len(), expected_len);
-        assert_eq!(service.models.gemini, "gemini-2.5-flash-lite");
+        // Antigravity CLI ではモデル指定が不要なので gemini フィールドの既定は空文字列
+        assert_eq!(service.models.gemini, "");
         assert_eq!(service.models.codex, Config::default().models.codex);
         assert_eq!(service.models.claude, "haiku");
         assert_eq!(service.models.opencode, "");
@@ -1773,6 +1891,7 @@ mod tests {
 
     #[test]
     fn test_ai_service_from_config_custom_providers() {
+        // 設定ファイルに旧 "gemini" 文字列を書いた場合、from_str で Antigravity にマップされる。
         let config = Config {
             providers: vec!["claude".to_string(), "gemini".to_string()],
             ..Default::default()
@@ -1783,7 +1902,41 @@ mod tests {
         assert_eq!(service.providers.len(), 2);
         let names: Vec<&str> = service.providers.iter().map(|p| p.name()).collect();
         assert!(names.contains(&"Claude Code"));
-        assert!(names.contains(&"Gemini CLI"));
+        assert!(names.contains(&"Antigravity CLI"));
+    }
+
+    #[test]
+    fn test_ai_service_from_config_detects_legacy_gemini_alias_in_providers() {
+        // providers に "gemini" を含む場合、legacy エイリアス検出フラグが立つ。
+        let config = Config {
+            providers: vec!["gemini".to_string(), "claude".to_string()],
+            ..Default::default()
+        };
+        let service = AiService::from_config(&config);
+        assert!(
+            service.legacy_gemini_alias_detected,
+            "providers に 'gemini' があれば legacy alias 検出フラグが立つべき"
+        );
+    }
+
+    #[test]
+    fn test_ai_service_from_config_detects_legacy_gemini_alias_in_models() {
+        // [models] gemini に値が入っている場合も legacy エイリアス検出フラグが立つ。
+        let mut config = Config::default();
+        config.models.gemini = "gemini-2.5-flash-lite".to_string();
+        let service = AiService::from_config(&config);
+        assert!(
+            service.legacy_gemini_alias_detected,
+            "[models] gemini に値があれば legacy alias 検出フラグが立つべき"
+        );
+    }
+
+    #[test]
+    fn test_ai_service_from_config_no_legacy_alias_for_clean_config() {
+        // デフォルト設定 (antigravity provider, gemini モデル空) では legacy 検出されない。
+        let config = Config::default();
+        let service = AiService::from_config(&config);
+        assert!(!service.legacy_gemini_alias_detected);
     }
 
     #[test]
@@ -1862,7 +2015,7 @@ mod tests {
         };
         assert_eq!(service.providers.len(), expected_len);
         assert_eq!(service.providers[0].name(), "opencode");
-        assert_eq!(service.providers[1].name(), "Gemini CLI");
+        assert_eq!(service.providers[1].name(), "Antigravity CLI");
         assert_eq!(service.providers[2].name(), "Codex CLI");
         assert_eq!(service.providers[3].name(), "Claude Code");
         if cfg!(all(target_os = "macos", feature = "apple-ai")) {
@@ -1875,11 +2028,18 @@ mod tests {
     // ============================================================
 
     #[test]
-    fn test_format_command_for_debug_gemini() {
+    fn test_format_command_for_debug_antigravity() {
+        // Antigravity CLI (`agy`) はモデルや debug フラグを持たないので、`agy -p 'PROMPT'` のみ表示される。
         let service = AiService::new();
-        let cmd = service.format_command_for_debug(&AiProvider::Gemini, "test prompt", None);
-        assert!(cmd.contains("gemini -m"));
+        let cmd = service.format_command_for_debug(&AiProvider::Antigravity, "test prompt", None);
+        assert!(
+            cmd.starts_with("agy "),
+            "expected `agy` invocation, got: {}",
+            cmd
+        );
         assert!(cmd.contains("-p 'test prompt'"));
+        assert!(!cmd.contains("-m"));
+        assert!(!cmd.contains("--debug"));
     }
 
     #[test]
@@ -1944,16 +2104,17 @@ mod tests {
     #[test]
     fn test_format_command_for_debug_prompt_with_single_quotes() {
         let service = AiService::new();
-        let cmd = service.format_command_for_debug(&AiProvider::Gemini, "it's a test", None);
+        let cmd = service.format_command_for_debug(&AiProvider::Antigravity, "it's a test", None);
         assert!(cmd.contains("it'\\''s a test"));
     }
 
     #[test]
-    fn test_format_command_for_debug_gemini_empty_model() {
+    fn test_format_command_for_debug_antigravity_ignores_models_gemini() {
+        // 旧 [models] gemini に値が入っていても、Antigravity CLI 用コマンドには反映されない。
         let mut service = AiService::new();
-        service.models.gemini = String::new();
-        let cmd = service.format_command_for_debug(&AiProvider::Gemini, "test", None);
-        assert!(cmd.contains("gemini -p 'test'"));
+        service.models.gemini = "gemini-2.5-flash-lite".to_string();
+        let cmd = service.format_command_for_debug(&AiProvider::Antigravity, "test", None);
+        assert!(cmd.contains("agy -p 'test'"));
         assert!(!cmd.contains("-m"));
     }
 
@@ -2032,19 +2193,10 @@ mod tests {
     }
 
     // ============================================================
-    // AiProvider config_key のテスト
+    // (AiProvider config_key のテストは Antigravity への移行に伴い
+    //  ファイル冒頭の test_ai_provider_config_key で再定義済み)
     // ============================================================
 
-    #[test]
-    fn test_ai_provider_config_key() {
-        assert_eq!(AiProvider::Gemini.config_key(), "gemini");
-        assert_eq!(AiProvider::Codex.config_key(), "codex");
-        assert_eq!(AiProvider::Claude.config_key(), "claude");
-        assert_eq!(AiProvider::Opencode.config_key(), "opencode");
-        assert_eq!(AiProvider::AppleIntelligence.config_key(), "apple-ai");
-    }
-
-    // ============================================================
     // AiService set_debug のテスト
     // ============================================================
 
@@ -2625,14 +2777,14 @@ mod tests {
     fn test_process_provider_output_success_with_message() {
         let status = exit_status(true);
         let result =
-            AiService::process_provider_output(&AiProvider::Gemini, status, "feat: add X", "");
+            AiService::process_provider_output(&AiProvider::Antigravity, status, "feat: add X", "");
         assert_eq!(result.unwrap(), "feat: add X");
     }
 
     #[test]
     fn test_process_provider_output_success_empty_stdout() {
         let status = exit_status(true);
-        let result = AiService::process_provider_output(&AiProvider::Gemini, status, "", "");
+        let result = AiService::process_provider_output(&AiProvider::Antigravity, status, "", "");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("empty response"));
@@ -2642,7 +2794,7 @@ mod tests {
     fn test_process_provider_output_success_empty_stdout_with_stderr() {
         let status = exit_status(true);
         let result =
-            AiService::process_provider_output(&AiProvider::Gemini, status, "", "some hint");
+            AiService::process_provider_output(&AiProvider::Antigravity, status, "", "some hint");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("stderr"));
@@ -2652,7 +2804,7 @@ mod tests {
     fn test_process_provider_output_failure() {
         let status = exit_status(false);
         let result = AiService::process_provider_output(
-            &AiProvider::Gemini,
+            &AiProvider::Antigravity,
             status,
             "",
             "something went wrong",
@@ -2665,7 +2817,7 @@ mod tests {
         // Gemini は stderr に "error:" があればエラー扱い
         let status = exit_status(true);
         let result = AiService::process_provider_output(
-            &AiProvider::Gemini,
+            &AiProvider::Antigravity,
             status,
             "feat: ok",
             "error: rate limit",
@@ -2704,7 +2856,7 @@ mod tests {
         // Gemini で stderr に "file not found" があればエラー
         let status = exit_status(true);
         let result = AiService::process_provider_output(
-            &AiProvider::Gemini,
+            &AiProvider::Antigravity,
             status,
             "feat: ok",
             "File not found: /path/to/bin",
@@ -2767,7 +2919,7 @@ mod tests {
         // 出力メッセージがクリーンアップされることを確認
         let status = exit_status(true);
         let result = AiService::process_provider_output(
-            &AiProvider::Gemini,
+            &AiProvider::Antigravity,
             status,
             "```\nfeat: clean this\n```",
             "",
@@ -3027,7 +3179,7 @@ mod tests {
         // 改行を含むプロンプトがエスケープされる
         let service = AiService::new();
         let prompt = "line 1\nline 2\nline 3";
-        let result = service.format_command_for_debug(&AiProvider::Gemini, prompt, None);
+        let result = service.format_command_for_debug(&AiProvider::Antigravity, prompt, None);
         assert!(result.contains("line 1\nline 2"));
     }
 
@@ -3137,7 +3289,7 @@ mod tests {
         use std::os::unix::process::ExitStatusExt;
         let status = ExitStatus::from_raw(0);
         let result = AiService::process_provider_output(
-            &AiProvider::Gemini,
+            &AiProvider::Antigravity,
             status,
             "feat: add feature\n",
             "   \n  ",
@@ -3152,7 +3304,7 @@ mod tests {
         use std::os::unix::process::ExitStatusExt;
         let status = ExitStatus::from_raw(0);
         let result = AiService::process_provider_output(
-            &AiProvider::Gemini,
+            &AiProvider::Antigravity,
             status,
             "feat: add feature\n",
             "error: something went wrong",
@@ -3180,7 +3332,7 @@ mod tests {
         use std::os::unix::process::ExitStatusExt;
         let status = ExitStatus::from_raw(0);
         let result =
-            AiService::process_provider_output(&AiProvider::Gemini, status, "  \"\"  \n", "");
+            AiService::process_provider_output(&AiProvider::Antigravity, status, "  \"\"  \n", "");
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("empty response"));
     }
@@ -3193,7 +3345,7 @@ mod tests {
     fn test_extract_error_gemini_first_of_multiple_api_errors() {
         // 複数のAPIエラーがある場合、最初のものが返される
         let stderr = "[API Error: rate limit]\n[API Error: quota exceeded]";
-        let result = AiService::extract_error(stderr, &AiProvider::Gemini);
+        let result = AiService::extract_error(stderr, &AiProvider::Antigravity);
         assert_eq!(result, "[API Error: rate limit]");
     }
 
@@ -3384,7 +3536,7 @@ mod tests {
     fn test_extract_error_gemini_api_error_lowercase() {
         let stderr = "Some info\n[API Error: rate limit exceeded]\nMore info";
         assert_eq!(
-            AiService::extract_error(stderr, &AiProvider::Gemini),
+            AiService::extract_error(stderr, &AiProvider::Antigravity),
             "[API Error: rate limit exceeded]"
         );
     }
@@ -3392,16 +3544,17 @@ mod tests {
     #[test]
     fn test_extract_error_gemini_critical_error_broke() {
         let stderr = "An unexpected critical error occurred:Error: something broke";
-        let result = AiService::extract_error(stderr, &AiProvider::Gemini);
+        let result = AiService::extract_error(stderr, &AiProvider::Antigravity);
         assert!(result.contains("critical error"));
     }
 
     #[test]
-    fn test_extract_error_gemini_no_match() {
+    fn test_extract_error_antigravity_no_match_returns_first_line() {
+        // 既知パターンに合致しない場合は最初の非空行を返す
         let stderr = "some random output";
         assert_eq!(
-            AiService::extract_error(stderr, &AiProvider::Gemini),
-            "Gemini API request failed"
+            AiService::extract_error(stderr, &AiProvider::Antigravity),
+            "some random output"
         );
     }
 
@@ -3486,7 +3639,7 @@ mod tests {
         // 正常終了のExitStatusを取得
         let status = Command::new("true").status().unwrap();
         let result =
-            AiService::process_provider_output(&AiProvider::Gemini, status, "feat: add\n", "");
+            AiService::process_provider_output(&AiProvider::Antigravity, status, "feat: add\n", "");
         assert_eq!(result.unwrap(), "feat: add");
     }
 
@@ -3494,7 +3647,7 @@ mod tests {
     fn test_process_provider_output_empty_stdout() {
         use std::process::Command;
         let status = Command::new("true").status().unwrap();
-        let result = AiService::process_provider_output(&AiProvider::Gemini, status, "", "");
+        let result = AiService::process_provider_output(&AiProvider::Antigravity, status, "", "");
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("empty response"));
     }
@@ -3504,7 +3657,7 @@ mod tests {
         use std::process::Command;
         let status = Command::new("false").status().unwrap();
         let result = AiService::process_provider_output(
-            &AiProvider::Gemini,
+            &AiProvider::Antigravity,
             status,
             "",
             "some error output",
@@ -3518,7 +3671,7 @@ mod tests {
         let status = Command::new("true").status().unwrap();
         // Gemini はstderrに "error:" があるとエラー扱い
         let result = AiService::process_provider_output(
-            &AiProvider::Gemini,
+            &AiProvider::Antigravity,
             status,
             "feat: add",
             "error: something",
@@ -3559,11 +3712,14 @@ mod tests {
     // ============================================================
 
     #[test]
-    fn test_format_command_gemini() {
+    fn test_format_command_antigravity_basic() {
+        // Antigravity CLI (`agy`) はモデル選択フラグも `--debug` フラグも持たないため、
+        // どのモデル設定であってもデバッグ表示には `-p PROMPT` だけが現れる。
         let service = AiService {
-            providers: vec![AiProvider::Gemini],
+            providers: vec![AiProvider::Antigravity],
             language: "Japanese".to_string(),
             models: ModelsConfig {
+                // 旧 gemini モデル設定が残っていても無視される
                 gemini: "gemini-2.5-flash".to_string(),
                 ..Default::default()
             },
@@ -3572,17 +3728,26 @@ mod tests {
             timeout_seconds: 60,
             debug: false,
             provider_override: false,
+            legacy_gemini_alias_detected: false,
         };
-        let cmd = service.format_command_for_debug(&AiProvider::Gemini, "test prompt", None);
-        assert!(cmd.contains("gemini"));
-        assert!(cmd.contains("-m 'gemini-2.5-flash'"));
+        let cmd = service.format_command_for_debug(&AiProvider::Antigravity, "test prompt", None);
+        assert!(
+            cmd.starts_with("agy "),
+            "expected `agy` invocation, got: {}",
+            cmd
+        );
         assert!(cmd.contains("-p 'test prompt'"));
+        // gemini モデル設定はコマンドラインに反映されない
+        assert!(!cmd.contains("-m"));
+        // agy には --debug フラグがない
+        assert!(!cmd.contains("--debug"));
     }
 
     #[test]
-    fn test_format_command_gemini_empty_model() {
+    fn test_format_command_antigravity_ignores_legacy_gemini_model() {
+        // 旧 [models] gemini に値が入っていても、デバッグ表示には現れない
         let service = AiService {
-            providers: vec![AiProvider::Gemini],
+            providers: vec![AiProvider::Antigravity],
             language: "Japanese".to_string(),
             models: ModelsConfig {
                 gemini: String::new(),
@@ -3591,11 +3756,13 @@ mod tests {
             codex_reasoning_effort: "low".to_string(),
             cooldown_minutes: 60,
             timeout_seconds: 60,
-            debug: false,
+            debug: true,
             provider_override: false,
+            legacy_gemini_alias_detected: false,
         };
-        let cmd = service.format_command_for_debug(&AiProvider::Gemini, "prompt", None);
+        let cmd = service.format_command_for_debug(&AiProvider::Antigravity, "prompt", None);
         assert!(!cmd.contains("-m"));
+        assert!(!cmd.contains("--debug"));
     }
 
     #[test]
@@ -3610,6 +3777,7 @@ mod tests {
             timeout_seconds: 60,
             debug: false,
             provider_override: false,
+            legacy_gemini_alias_detected: false,
         };
         let cmd = service.format_command_for_debug(&AiProvider::Codex, "prompt", None);
         assert!(cmd.contains("--disable hooks"));
@@ -3629,6 +3797,7 @@ mod tests {
             timeout_seconds: 60,
             debug: false,
             provider_override: false,
+            legacy_gemini_alias_detected: false,
         };
         let cmd = service.format_command_for_debug(&AiProvider::Claude, "prompt", None);
         assert!(cmd.contains("claude"));
@@ -3640,7 +3809,7 @@ mod tests {
     fn test_format_command_prompt_with_single_quotes() {
         // シングルクォートを含むプロンプトのエスケープ
         let service = AiService::new();
-        let cmd = service.format_command_for_debug(&AiProvider::Gemini, "it's a test", None);
+        let cmd = service.format_command_for_debug(&AiProvider::Antigravity, "it's a test", None);
         assert!(cmd.contains("it'\\''s a test"));
     }
 

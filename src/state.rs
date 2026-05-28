@@ -36,6 +36,10 @@ impl State {
     }
 
     /// ファイルから状態を読み込み、存在しない場合はデフォルトを返す
+    ///
+    /// 旧 `gemini` キーは読み込み時にメモリ上で `antigravity` キーへ合流させる
+    /// (ファイル自体は書き換えない)。両方が共存する場合は新しい方の failed_at を採用し、
+    /// 短い実装で「移行直後の cooldown 状態」を保ったまま同一プロバイダーとして扱う。
     pub fn load() -> Result<Self, AppError> {
         let path = Self::state_path()?;
 
@@ -46,8 +50,28 @@ impl State {
         let content = fs::read_to_string(&path)
             .map_err(|e| AppError::ConfigError(format!("Failed to read state: {}", e)))?;
 
-        toml::from_str(&content)
-            .map_err(|e| AppError::ConfigError(format!("Failed to parse state: {}", e)))
+        let mut state: State = toml::from_str(&content)
+            .map_err(|e| AppError::ConfigError(format!("Failed to parse state: {}", e)))?;
+        state.migrate_legacy_gemini_key();
+        Ok(state)
+    }
+
+    /// 旧 `gemini` キーを `antigravity` キーへメモリ上で合流させる。
+    ///
+    /// 2026-05 の Gemini CLI → Antigravity CLI 移行で、旧 git-sc が記録した `gemini`
+    /// cooldown が残っていると、`agy` を試したい場面でクールダウン降格されてしまう問題があった。
+    /// `from_str("gemini")` は `Antigravity` を返すので、状態側も同様に合流させる。
+    pub(crate) fn migrate_legacy_gemini_key(&mut self) {
+        if let Some(legacy) = self.provider_failures.remove("gemini") {
+            self.provider_failures
+                .entry("antigravity".to_string())
+                .and_modify(|existing| {
+                    if legacy.failed_at > existing.failed_at {
+                        existing.failed_at = legacy.failed_at;
+                    }
+                })
+                .or_insert(legacy);
+        }
     }
 
     /// 状態をファイルに保存
@@ -744,6 +768,93 @@ mod tests {
             entries.is_empty(),
             "並列保存後に一時ファイルが残存している: {:?}",
             entries
+        );
+    }
+
+    // ============================================================
+    // migrate_legacy_gemini_key のテスト
+    // 旧 "gemini" キーを "antigravity" キーへメモリ上で合流させる
+    // ============================================================
+
+    #[test]
+    fn test_migrate_legacy_gemini_key_renames_when_only_legacy() {
+        // 旧 gemini キーのみが存在する場合、antigravity キーへリネームされる
+        let mut state = State::default();
+        state.record_failure("gemini");
+        let original_ts = state.provider_failures["gemini"].failed_at;
+
+        state.migrate_legacy_gemini_key();
+
+        assert!(!state.provider_failures.contains_key("gemini"));
+        assert!(state.provider_failures.contains_key("antigravity"));
+        assert_eq!(
+            state.provider_failures["antigravity"].failed_at,
+            original_ts
+        );
+    }
+
+    #[test]
+    fn test_migrate_legacy_gemini_key_keeps_newer_timestamp_when_both_exist() {
+        // 両方共存する場合、より新しい failed_at を保持し、gemini キーは消える
+        let mut state = State::default();
+        let now = State::now();
+        state.provider_failures.insert(
+            "gemini".to_string(),
+            ProviderFailure {
+                failed_at: now - 10,
+            },
+        );
+        state.provider_failures.insert(
+            "antigravity".to_string(),
+            ProviderFailure {
+                failed_at: now - 100,
+            },
+        );
+
+        state.migrate_legacy_gemini_key();
+
+        assert!(!state.provider_failures.contains_key("gemini"));
+        // gemini の方が新しいので採用される
+        assert_eq!(state.provider_failures["antigravity"].failed_at, now - 10);
+    }
+
+    #[test]
+    fn test_migrate_legacy_gemini_key_preserves_newer_antigravity() {
+        // antigravity の方が新しい場合、antigravity のタイムスタンプを維持
+        let mut state = State::default();
+        let now = State::now();
+        state.provider_failures.insert(
+            "gemini".to_string(),
+            ProviderFailure {
+                failed_at: now - 100,
+            },
+        );
+        state.provider_failures.insert(
+            "antigravity".to_string(),
+            ProviderFailure {
+                failed_at: now - 10,
+            },
+        );
+
+        state.migrate_legacy_gemini_key();
+
+        assert!(!state.provider_failures.contains_key("gemini"));
+        assert_eq!(state.provider_failures["antigravity"].failed_at, now - 10);
+    }
+
+    #[test]
+    fn test_migrate_legacy_gemini_key_noop_when_no_legacy() {
+        // gemini キーがなければ何もしない
+        let mut state = State::default();
+        state.record_failure("antigravity");
+        let original_ts = state.provider_failures["antigravity"].failed_at;
+
+        state.migrate_legacy_gemini_key();
+
+        assert_eq!(state.provider_failures.len(), 1);
+        assert_eq!(
+            state.provider_failures["antigravity"].failed_at,
+            original_ts
         );
     }
 

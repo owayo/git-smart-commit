@@ -204,7 +204,9 @@ mod tests {
     fn test_default_config_content_has_all_provider_options() {
         let content = Config::default_config_content();
         assert!(content.contains("opencode"));
-        assert!(content.contains("gemini"));
+        // 旧 "gemini" 表記は default に含まれない。後継の "antigravity" を採用。
+        // ただしコメント文に "gemini" の互換説明を含めるため文字列としては残る。
+        assert!(content.contains("antigravity"));
         assert!(content.contains("codex"));
         assert!(content.contains("claude"));
     }

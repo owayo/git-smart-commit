@@ -113,7 +113,7 @@ impl App {
         if let Some(ref provider_name) = cli.provider {
             let provider = AiProvider::from_str(provider_name).ok_or_else(|| {
                 AppError::InvalidArgument(format!(
-                    "Unknown provider '{}'. Valid providers: gemini, codex, claude, opencode, apple-intelligence",
+                    "Unknown provider '{}'. Valid providers: antigravity (alias: agy, gemini), codex, claude, opencode, apple-intelligence",
                     provider_name
                 ))
             })?;
@@ -167,7 +167,14 @@ impl App {
         println!("  providers: {:?}", config.providers);
         println!("  language: {}", config.language);
         println!("  models.opencode: {}", config.models.opencode);
-        println!("  models.gemini: {}", config.models.gemini);
+        // gemini モデルは互換のため受理するが、Antigravity CLI では利用されない。
+        // 空文字列の場合は debug 表示そのものを省略してノイズを避ける。
+        if !config.models.gemini.is_empty() {
+            println!(
+                "  models.gemini: {} (legacy, ignored by Antigravity CLI)",
+                config.models.gemini
+            );
+        }
         println!("  models.codex: {}", config.models.codex);
         println!(
             "  codex_reasoning_effort: {}",

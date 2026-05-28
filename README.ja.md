@@ -32,7 +32,7 @@
 
 ## 特徴
 
-- **マルチプロバイダー対応**: Gemini CLI、Codex CLI、Claude Code、opencode、Apple Intelligence を自動フォールバック付きでサポート
+- **マルチプロバイダー対応**: Antigravity CLI (`agy`、Gemini CLI の後継)、Codex CLI、Claude Code、opencode、Apple Intelligence を自動フォールバック付きでサポート
 - **スマートクールダウン**: 失敗したプロバイダーを1時間（設定可能）優先度を下げて連続失敗を回避
 - **フォーマット自動検出**: 過去のコミットから形式を自動判断（Conventional、Bracket、Emoji等）
 - **空リポジトリ対応**: コミットがまだないリポジトリでも、Git のロケールに依存せず自動判定を安全にフォールバック
@@ -49,7 +49,7 @@
 - **OS**: macOS, Linux, Windows
 - **Git**: 必須
 - **AIプロバイダー**（少なくとも1つ）:
-  - Gemini CLI: `npm install -g @google/gemini-cli`
+  - Antigravity CLI (`agy`、Gemini CLI の後継): https://antigravity.google/docs/gcli-migration を参照 (旧 Gemini CLI は 2026-06-18 で停止)
   - Codex CLI: `npm install -g @openai/codex`
   - Claude Code: `curl -fsSL https://claude.ai/install.sh | bash`
   - opencode: `curl -fsSL https://opencode.ai/install | bash`
@@ -174,7 +174,7 @@ git-sc -n
 
 | オプション | 短縮 | 説明 |
 |-----------|------|------|
-| `--provider` | `-p` | AIプロバイダーを指定 (gemini, codex, claude, opencode, apple-intelligence) |
+| `--provider` | `-p` | AIプロバイダーを指定 (antigravity, codex, claude, opencode, apple-intelligence)。旧名 `gemini` も後方互換のため `antigravity` として受理 |
 | `--lang` | `-l` | コミットメッセージの言語を上書き |
 
 #### デバッグ・情報
@@ -244,7 +244,8 @@ git-sc はプロジェクトレベルでの上書きが可能な階層的設定�
 
 ```toml
 # AIプロバイダーの優先順位
-providers = ["opencode", "gemini", "codex", "claude", "apple-intelligence"]
+# "antigravity" は旧 Gemini CLI の後継 (`agy`)。"gemini" と書いても後方互換のため同じプロバイダーとして扱う
+providers = ["opencode", "antigravity", "codex", "claude", "apple-intelligence"]
 
 # コミットメッセージの言語
 language = "Japanese"
@@ -261,8 +262,9 @@ auto_push = true
 codex_reasoning_effort = "low"
 
 # モデル設定
+# 注: Antigravity CLI (`agy`) はモデル選択フラグを持たないため、`gemini` 行は不要
+# (旧 git-sc が生成した `gemini = "..."` 行は後方互換のためパースされるが実行時には無視されます)
 [models]
-gemini = "gemini-2.5-flash-lite"
 codex = "gpt-5.3-codex-spark"
 claude = "haiku"
 opencode = ""
@@ -278,7 +280,7 @@ provider_timeout_seconds = 60
 
 | オプション | 説明 | デフォルト |
 |-----------|------|-----------|
-| `providers` | AIプロバイダーの優先順位 | `["opencode", "gemini", "codex", "claude", "apple-intelligence"]` |
+| `providers` | AIプロバイダーの優先順位 (`antigravity` を推奨。`gemini` も後方互換で受理) | `["opencode", "antigravity", "codex", "claude", "apple-intelligence"]` |
 | `language` | コミットメッセージの言語 | `"Japanese"` |
 | `prefix_type` | コミットプレフィックス形式 | 自動検出 |
 | `auto_push` | コミット後に自動プッシュ | `false` |

@@ -6,6 +6,11 @@ use serde::{Deserialize, Serialize};
 use crate::error::AppError;
 
 /// 各プロバイダーのモデル設定
+///
+/// 注: `gemini` フィールドは旧 Gemini CLI 時代の互換のために残しているが、
+/// 後継の Antigravity CLI (`agy`) はモデル選択フラグを持たないため、
+/// この値が指定されていても内部処理では使用されない。
+/// 既存設定ファイルでパースエラーを起こさない目的のみで存在する。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelsConfig {
     #[serde(default = "default_gemini_model")]
@@ -18,8 +23,10 @@ pub struct ModelsConfig {
     pub opencode: String,
 }
 
+/// 旧 Gemini CLI 時代の互換用デフォルト。Antigravity CLI ではモデル指定が無いため
+/// 既定では空文字列にして「未指定」を示す。
 fn default_gemini_model() -> String {
-    "gemini-2.5-flash-lite".to_string()
+    String::new()
 }
 
 fn default_codex_model() -> String {
@@ -240,7 +247,7 @@ impl Default for Config {
     fn default() -> Self {
         let mut providers = vec![
             "opencode".to_string(),
-            "gemini".to_string(),
+            "antigravity".to_string(),
             "codex".to_string(),
             "claude".to_string(),
         ];
@@ -391,16 +398,18 @@ impl Config {
     pub fn default_config_content() -> String {
         let codex_model = default_codex_model();
         let providers = if cfg!(all(target_os = "macos", feature = "apple-ai")) {
-            r#"providers = ["opencode", "gemini", "codex", "claude", "apple-intelligence"]"#
+            r#"providers = ["opencode", "antigravity", "codex", "claude", "apple-intelligence"]"#
         } else {
-            r#"providers = ["opencode", "gemini", "codex", "claude"]"#
+            r#"providers = ["opencode", "antigravity", "codex", "claude"]"#
         };
 
         let apple_ai_available = if cfg!(all(target_os = "macos", feature = "apple-ai")) {
-            r#"# 使用可能: "opencode", "gemini", "codex", "claude", "apple-intelligence"
+            r#"# 使用可能: "opencode", "antigravity", "codex", "claude", "apple-intelligence"
+# "antigravity" は旧 Gemini CLI の後継 (`agy`)。"gemini" と書いても同じプロバイダーとして扱う
 # "apple-intelligence" には macOS 26+ と Apple Silicon が必要"#
         } else {
-            r#"# 使用可能: "opencode", "gemini", "codex", "claude""#
+            r#"# 使用可能: "opencode", "antigravity", "codex", "claude"
+# "antigravity" は旧 Gemini CLI の後継 (`agy`)。"gemini" と書いても同じプロバイダーとして扱う"#
         };
 
         format!(
@@ -434,8 +443,9 @@ provider_timeout_seconds = 60
 codex_reasoning_effort = "low"
 
 # 各プロバイダーのモデル設定
+# 注: Antigravity CLI (`agy`) はモデル選択フラグを持たないため、`gemini` 行は記載しません
+# (旧 git-sc が生成した `gemini = "..."` 行が残っていても無視されます)
 [models]
-gemini = "gemini-2.5-flash-lite"
 codex = "{codex_model}"
 claude = "haiku"
 opencode = ""
@@ -540,7 +550,7 @@ mod tests {
 
         let mut expected_providers = vec![
             "opencode".to_string(),
-            "gemini".to_string(),
+            "antigravity".to_string(),
             "codex".to_string(),
             "claude".to_string(),
         ];
@@ -583,7 +593,9 @@ codex_reasoning_effort = "high"
     fn test_default_models_config() {
         let models = ModelsConfig::default();
 
-        assert_eq!(models.gemini, "gemini-2.5-flash-lite");
+        // gemini フィールドは互換用に残しているが、Antigravity CLI ではモデル指定が不要なので
+        // 既定値は空文字列。
+        assert_eq!(models.gemini, "");
         assert_eq!(models.codex, default_codex_model());
         assert_eq!(models.claude, "haiku");
         assert_eq!(models.opencode, "");
@@ -598,6 +610,8 @@ codex_reasoning_effort = "high"
 
     #[test]
     fn test_parse_minimal_config() {
+        // 旧 "gemini" エイリアスを設定ファイルに書いてもパースは成功し、文字列はそのまま保持される
+        // (実行時に from_str() で Antigravity に解決される)。
         let toml = r#"
         providers = ["gemini"]
         language = "English"
@@ -607,8 +621,8 @@ codex_reasoning_effort = "high"
 
         assert_eq!(config.providers, vec!["gemini".to_string()]);
         assert_eq!(config.language, "English");
-        // デフォルト値が使用される
-        assert_eq!(config.models.gemini, "gemini-2.5-flash-lite");
+        // gemini モデルフィールドは互換のため受理するが、既定は空文字列
+        assert_eq!(config.models.gemini, "");
         assert!(config.prefix_scripts.is_empty());
         assert!(config.prefix_rules.is_empty());
         assert_eq!(config.provider_cooldown_minutes, 60);

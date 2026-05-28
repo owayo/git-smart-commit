@@ -32,7 +32,7 @@
 
 ## Features
 
-- **Multi-Provider Support**: Supports Gemini CLI, Codex CLI, Claude Code, opencode, and Apple Intelligence with automatic fallback
+- **Multi-Provider Support**: Supports Antigravity CLI (`agy`, the successor of Gemini CLI), Codex CLI, Claude Code, opencode, and Apple Intelligence with automatic fallback
 - **Smart Cooldown**: Automatically demotes failed providers for 1 hour (configurable)
 - **Format Detection**: Detects commit format from recent commits (Conventional, Bracket, Emoji, etc.)
 - **Empty Repo Safe**: Auto format detection falls back cleanly even when the repository has no commits and Git outputs localized messages
@@ -49,7 +49,7 @@
 - **OS**: macOS, Linux, Windows
 - **Git**: Required
 - **AI Provider** (at least one):
-  - Gemini CLI: `npm install -g @google/gemini-cli`
+  - Antigravity CLI (`agy`, successor of Gemini CLI): see https://antigravity.google/docs/gcli-migration (the legacy Gemini CLI stops serving requests on 2026-06-18)
   - Codex CLI: `npm install -g @openai/codex`
   - Claude Code: `curl -fsSL https://claude.ai/install.sh | bash`
   - opencode: `curl -fsSL https://opencode.ai/install | bash`
@@ -174,7 +174,7 @@ Operation modes (`--amend`, `--squash`, `--reword`, `--generate-for`) are mutual
 
 | Option | Short | Description |
 |--------|-------|-------------|
-| `--provider` | `-p` | Use specific AI provider (gemini, codex, claude, opencode, apple-intelligence) |
+| `--provider` | `-p` | Use specific AI provider (antigravity, codex, claude, opencode, apple-intelligence). The legacy name `gemini` is accepted as a backward-compatible alias for `antigravity`. |
 | `--lang` | `-l` | Override commit message language |
 
 #### Debug & Info
@@ -244,7 +244,9 @@ Project settings override global settings. Fields not specified in project confi
 
 ```toml
 # AI provider priority
-providers = ["opencode", "gemini", "codex", "claude", "apple-intelligence"]
+# "antigravity" is the successor of the legacy Gemini CLI (`agy` command).
+# Writing "gemini" instead is still accepted as a backward-compatible alias.
+providers = ["opencode", "antigravity", "codex", "claude", "apple-intelligence"]
 
 # Commit message language
 language = "Japanese"
@@ -261,8 +263,9 @@ auto_push = true
 codex_reasoning_effort = "low"
 
 # Model configuration
+# Note: Antigravity CLI (`agy`) does not accept a model flag, so no `gemini` line is needed here.
+# A legacy `gemini = "..."` value is parsed for backward compatibility but ignored at runtime.
 [models]
-gemini = "gemini-2.5-flash-lite"
 codex = "gpt-5.3-codex-spark"
 claude = "haiku"
 opencode = ""
@@ -278,7 +281,7 @@ provider_timeout_seconds = 60
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `providers` | AI provider priority | `["opencode", "gemini", "codex", "claude", "apple-intelligence"]` |
+| `providers` | AI provider priority (use `antigravity`; `gemini` is accepted as an alias) | `["opencode", "antigravity", "codex", "claude", "apple-intelligence"]` |
 | `language` | Commit message language | `"Japanese"` |
 | `prefix_type` | Commit prefix format | Auto-detect |
 | `auto_push` | Auto-push after commit | `false` |

@@ -4,7 +4,7 @@ AI-powered smart commit message generator CLI tool written in Rust.
 
 ## Project Overview
 
-This CLI tool generates commit messages using AI coding agents (opencode, Gemini CLI, Codex CLI, Claude Code, Apple Intelligence) with automatic provider fallback and format detection.
+This CLI tool generates commit messages using AI coding agents (opencode, Antigravity CLI (`agy`, the successor of Gemini CLI), Codex CLI, Claude Code, Apple Intelligence) with automatic provider fallback and format detection.
 
 ## Quick Reference
 
@@ -26,7 +26,7 @@ git-sc -a -y        # Stage all and commit without confirmation
 git-sc -n           # Dry run (preview only)
 git-sc -a -y -q     # Quiet mode (suppress progress logs for hooks/scripts)
 git-sc --debug      # Show AI prompt and command being executed
-git-sc -p claude    # Use specific AI provider (gemini, codex, claude, opencode, apple-intelligence)
+git-sc -p claude    # Use specific AI provider (antigravity, codex, claude, opencode, apple-intelligence); legacy "gemini" name is accepted as alias
 git-sc --amend      # Regenerate last commit message
 git-sc --squash main # Squash commits since main branch
 git-sc --reword HEAD # Regenerate a specific commit message
@@ -58,7 +58,7 @@ src/
 | Module | Responsibility |
 |--------|----------------|
 | `App` | Orchestrates workflow: verify env → load config → get diff → detect format → generate → commit |
-| `AiService` | Multi-provider AI with fallback (opencode → gemini → codex → claude → apple-intelligence) |
+| `AiService` | Multi-provider AI with fallback (opencode → antigravity → codex → claude → apple-intelligence). `AiProvider::from_str("gemini")` resolves to `Antigravity` for backward compatibility. |
 | `GitService` | Git operations (diff, commit, amend, squash, reword) |
 | `Config` | Hierarchical config: global (~/.config/git-sc/config.toml) + project (.git-sc), via `PartialConfig` merge |
 | `ProviderState` | Tracks failed providers with 1-hour cooldown |
@@ -105,7 +105,7 @@ Notification safety note:
 
 Each provider is called via CLI subprocess:
 - **opencode**: Uses temp file with `-f` flag to avoid command line length limits
-- **gemini**: Uses `-p` flag for prompt input
+- **antigravity** (`agy`, the successor of the Gemini CLI as of 2026-05): Uses `-p` flag for prompt input. The CLI exposes no `-m`/`--model` or `--debug` flag, so model/debug related options are intentionally omitted from the command line. Before launching, `AiService::check_arg_size_limit` rejects prompts larger than 512 KiB with an explicit error to avoid hitting OS-level `ARG_MAX`. The legacy `gemini` provider name remains accepted as an alias both in `from_str` and in the state-file cooldown key (auto-migrated to `antigravity` in memory on load).
 - **codex/claude**: Uses stdin for prompt input; Codex also uses `-o`/`--output-last-message` to read only the final agent message instead of the execution transcript
 - **apple-intelligence**: fm-rs (Rust FFI) via Foundation Models on-device (macOS 26+, Apple Intelligence enabled)
 
