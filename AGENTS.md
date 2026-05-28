@@ -130,7 +130,7 @@ Provider state file note:
 When invoked from a coding agent, `App::run()` reads the `CLAW_HOOKS_AGENT_MESSAGE` environment variable and passes it to `AiService::build_prompt()` as `agent_context`. This context is injected into the AI prompt before the diff section, guiding the AI to reflect the developer's high-level intent in the commit message. The context is applied across standard generation and `--amend` / `--reword` / `--squash` / `--generate-for` workflows.
 
 Default Codex model note:
-- As of May 28, 2026 (JST), the default Codex model is `gpt-5.3-codex-spark` after re-running `codex debug models` and `echo "Hello" | codex exec -c model_reasoning_effort='medium' -m <model>` for each listed Codex model. Single-run token consumption (cold start): `gpt-5.3-codex-spark` (`8,429`), `gpt-5.2` (`11,381`), `gpt-5.5` (`11,477`), `gpt-5.4` (`11,620`), `codex-auto-review` (`11,627`), `gpt-5.3-codex` (`11,700`), and `gpt-5.4-mini` (`11,852`). `gpt-5.3-codex-spark` was selected because it had the lowest measured consumption among the currently available Codex models.
+- As of May 28, 2026 (JST), the default Codex model is `gpt-5.3-codex-spark` after re-running `codex debug models` and `echo "Hello" | codex exec -c model_reasoning_effort='medium' -m <model>` for each listed Codex model. Single-run token consumption (cold start): `gpt-5.3-codex-spark` (`8,597`), `gpt-5.5` (`11,628`), `codex-auto-review` (`11,771`), `gpt-5.4` (`11,801`), `gpt-5.3-codex` (`11,851`), `gpt-5.4-mini` (`11,983`), and `gpt-5.2` (`16,645`). `gpt-5.3-codex-spark` was selected because it had the lowest measured consumption among the currently available Codex models.
 
 ## Configuration Files
 

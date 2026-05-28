@@ -1,9 +1,9 @@
 .PHONY: build release install clean test fmt check help
 
-# Default target
+# デフォルトターゲット
 .DEFAULT_GOAL := help
 
-# Variables
+# 変数
 BINARY_NAME := git-sc
 INSTALL_PATH := /usr/local/bin
 UNAME_S := $(shell uname -s)
@@ -15,46 +15,46 @@ else
 CARGO_FEATURES :=
 endif
 
-## Build Commands
+## ビルドコマンド
 
-build: ## Build debug version
+build: ## デバッグビルドを作成
 	cargo build $(CARGO_FEATURES)
 
-release: ## Build release version
+release: ## リリースビルドを作成
 	cargo build --release $(CARGO_FEATURES)
 
-## Installation
+## インストール
 
-install: release ## Build release and install to /usr/local/bin
+install: release ## リリースビルドを作成して /usr/local/bin にインストール
 	cp target/release/$(BINARY_NAME) $(INSTALL_PATH)/
 ifeq ($(UNAME_S),Darwin)
 	codesign --force --sign - $(INSTALL_PATH)/$(BINARY_NAME)
 endif
 
-## Development
+## 開発
 
-test: ## Run tests
+test: ## テストを実行
 	cargo test
 
-fmt: ## Format code
+fmt: ## コードをフォーマット
 	cargo fmt
 
-check: ## Run clippy and check
+check: ## clippy と cargo check を実行
 	cargo clippy $(CARGO_FEATURES) -- -D warnings
 	cargo check $(CARGO_FEATURES)
 
-clean: ## Clean build artifacts
+clean: ## ビルド成果物を削除
 	cargo clean
 
-## Help
+## ヘルプ
 
-help: ## Show this help message
-	@echo "git-sc Build Commands"
+help: ## このヘルプを表示
+	@echo "git-sc ビルドコマンド"
 	@echo ""
 	@echo "Usage: make [target]"
 	@echo ""
 	@echo "Targets:"
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 	@echo ""
-	@echo "Release:"
-	@echo "  Use GitHub Actions > Release > Run workflow"
+	@echo "リリース:"
+	@echo "  GitHub Actions > Release > Run workflow を使用"

@@ -15,7 +15,7 @@ pub enum Command {
 #[derive(Parser, Debug)]
 #[command(name = "git-sc")]
 #[command(
-    about = "AI-powered smart commit message generator using coding agents (Gemini CLI, Codex CLI, or Claude Code)"
+    about = "AI-powered smart commit message generator using coding agents (opencode, Gemini CLI, Codex CLI, Claude Code, or Apple Intelligence)"
 )]
 #[command(version)]
 pub struct Cli {

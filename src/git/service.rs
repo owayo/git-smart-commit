@@ -3620,6 +3620,22 @@ Binary files /dev/null and b/script.bin differ"#;
         assert!(git.has_staged_changes());
     }
 
+    #[test]
+    fn test_has_staged_changes_with_untracked_file_is_false() {
+        let temp = tempfile::tempdir().unwrap();
+        Command::new("git")
+            .args(["init"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        std::fs::write(temp.path().join("untracked.txt"), "content").unwrap();
+
+        let git = GitService {
+            repo_path: temp.path().to_path_buf(),
+        };
+        assert!(!git.has_staged_changes());
+    }
+
     // ============================================================
     // truncate_diff: 境界値テスト
     // ============================================================

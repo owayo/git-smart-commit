@@ -289,7 +289,7 @@ provider_timeout_seconds = 60
 | `prefix_rules` | URLベースのプレフィックス形式 | `[]` |
 | `prefix_scripts` | 外部プレフィックススクリプト | `[]` |
 
-既存のグローバル設定ファイルは自動では書き換えられません。現在の Codex 既定モデルを使うには、`~/.config/git-sc/config.toml` の `models.codex` を更新してください。
+既存のグローバル設定ファイルは自動では書き換えられません。現在の Codex 既定モデルは `gpt-5.3-codex-spark` です。既存設定で使うには、`~/.config/git-sc/config.toml` の `models.codex` を更新してください。
 
 ### prefix_type の値
 
