@@ -292,7 +292,7 @@ provider_timeout_seconds = 60
 | `prefix_rules` | URL-based prefix format | `[]` |
 | `prefix_scripts` | External prefix scripts | `[]` |
 
-Existing global config files are not rewritten automatically. The current Codex default is `gpt-5.3-codex-spark`; to use it in an existing setup, update `models.codex` in `~/.config/git-sc/config.toml`.
+Existing global config files are not rewritten automatically. The current Codex default is `gpt-5.3-codex-spark`; to use it in an existing setup, update `models.codex` in `~/.config/git-sc/config.toml`. This default was revalidated against the available Codex model list on May 30, 2026 (JST).
 
 ### prefix_type Values
 

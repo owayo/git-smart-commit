@@ -130,7 +130,7 @@ Provider state file note:
 When invoked from a coding agent, `App::run()` reads the `CLAW_HOOKS_AGENT_MESSAGE` environment variable and passes it to `AiService::build_prompt()` as `agent_context`. This context is injected into the AI prompt before the diff section, guiding the AI to reflect the developer's high-level intent in the commit message. The context is applied across standard generation and `--amend` / `--reword` / `--squash` / `--generate-for` workflows.
 
 Default Codex model note:
-- As of May 28, 2026 (JST), the default Codex model is `gpt-5.3-codex-spark` after re-running `codex debug models` and `echo "Hello" | codex exec -c model_reasoning_effort='medium' -m <model>` for each listed Codex model. Single-run token consumption (cold start): `gpt-5.3-codex-spark` (`8,597`), `gpt-5.5` (`11,628`), `codex-auto-review` (`11,771`), `gpt-5.4` (`11,801`), `gpt-5.3-codex` (`11,851`), `gpt-5.4-mini` (`11,983`), and `gpt-5.2` (`16,645`). `gpt-5.3-codex-spark` was selected because it had the lowest measured consumption among the currently available Codex models.
+- As of May 30, 2026 (JST), the default Codex model is `gpt-5.3-codex-spark` after re-running `codex debug models` and `echo "Hello" | codex exec -c model_reasoning_effort='medium' -m <model>` for each listed Codex model. Single-run token consumption (cold start): `gpt-5.3-codex-spark` (`8,737`), `gpt-5.5` (`11,798`), `codex-auto-review` (`11,942`), `gpt-5.3-codex` (`12,021`), `gpt-5.4-mini` (`12,136`), `gpt-5.4` (`15,533`), and `gpt-5.2` (`16,828`). `gpt-5.3-codex-spark` was selected because it had the lowest measured consumption among the currently available Codex models.
 
 ## Configuration Files
 
@@ -178,7 +178,7 @@ cargo test -- --nocapture     # Show println! output
 - **regex**: Commit format detection
 - **ignore**: Gitignore-style pattern matching
 - **dirs**: Platform-specific directory paths
-- **fm-rs** (optional, macOS, pinned to `0.1.4`): Apple Intelligence Foundation Models FFI. Keep pinned unless a newer release passes `cargo clippy --features apple-ai -- -D warnings`; `0.1.5` was rechecked on May 28, 2026 (JST) and still fails against the macOS 26.5 SDK because its Swift token usage API does not compile.
+- **fm-rs** (optional, macOS, pinned to `0.1.4`): Apple Intelligence Foundation Models FFI. Keep pinned unless a newer release passes `cargo clippy --features apple-ai -- -D warnings`; `0.1.5` was rechecked on May 30, 2026 (JST) and still fails against the macOS 26.5 SDK because its Swift token usage API does not compile.
 
 ### Dev
 - **rstest**: Parameterized test framework

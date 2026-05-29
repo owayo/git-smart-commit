@@ -2773,6 +2773,49 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn test_run_process_with_timeout_captures_stdout_and_stderr() {
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("printf 'stdout-line\\n'; printf 'stderr-line\\n' >&2")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut service = AiService::new();
+        service.timeout_seconds = 5;
+
+        let (status, stdout, stderr) = service
+            .run_process_with_timeout(&mut child, &AiProvider::Codex)
+            .unwrap();
+
+        assert!(status.success());
+        assert_eq!(stdout, "stdout-line\n");
+        assert_eq!(stderr, "stderr-line\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_run_process_with_timeout_kills_timed_out_process() {
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 2")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut service = AiService::new();
+        service.timeout_seconds = 0;
+
+        let result = service.run_process_with_timeout(&mut child, &AiProvider::Codex);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("timed out"));
+        // タイムアウト経路でも wait 済みで、子プロセスが残らないことを確認する。
+        assert!(child.try_wait().unwrap().is_some());
+    }
+
     #[test]
     fn test_process_provider_output_success_with_message() {
         let status = exit_status(true);
