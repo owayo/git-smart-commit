@@ -131,6 +131,21 @@ impl State {
         cooldown_minutes.saturating_mul(60)
     }
 
+    /// 状態ファイルと設定ファイルのプロバイダー名を比較用の正規名にそろえる。
+    ///
+    /// 設定ファイルには後方互換エイリアスが残ることがあるため、保存済みの失敗キーと
+    /// 現在の provider 配列を同じプロバイダーとして扱えるようにする。
+    fn canonical_provider_key(provider: &str) -> String {
+        let lower = provider.to_lowercase();
+        match lower.as_str() {
+            "agy" | "gemini" | "antigravity" => "antigravity".to_string(),
+            "apple-ai" | "apple_intelligence" | "apple-intelligence" => {
+                "apple-intelligence".to_string()
+            }
+            _ => lower,
+        }
+    }
+
     /// プロバイダーの失敗を記録
     pub fn record_failure(&mut self, provider: &str) {
         self.provider_failures.insert(
@@ -171,16 +186,20 @@ impl State {
     /// 降格されたプロバイダーは末尾に移動
     pub fn reorder_providers(&self, providers: Vec<String>, cooldown_minutes: u64) -> Vec<String> {
         let demoted = self.get_demoted_providers(cooldown_minutes);
+        let demoted: Vec<String> = demoted
+            .iter()
+            .map(|p| Self::canonical_provider_key(p))
+            .collect();
 
         let mut normal: Vec<String> = providers
             .iter()
-            .filter(|p| !demoted.contains(&p.to_lowercase()))
+            .filter(|p| !demoted.contains(&Self::canonical_provider_key(p)))
             .cloned()
             .collect();
 
         let mut demoted_providers: Vec<String> = providers
             .iter()
-            .filter(|p| demoted.contains(&p.to_lowercase()))
+            .filter(|p| demoted.contains(&Self::canonical_provider_key(p)))
             .cloned()
             .collect();
 
@@ -280,6 +299,50 @@ mod tests {
                 "codex".to_string(),
                 "claude".to_string(),
                 "gemini".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_reorder_providers_demotes_antigravity_when_config_uses_gemini_alias() {
+        let mut state = State::default();
+        state.record_failure("antigravity");
+
+        let providers = vec![
+            "gemini".to_string(),
+            "codex".to_string(),
+            "claude".to_string(),
+        ];
+
+        let reordered = state.reorder_providers(providers, 60);
+        assert_eq!(
+            reordered,
+            vec![
+                "codex".to_string(),
+                "claude".to_string(),
+                "gemini".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_reorder_providers_demotes_apple_intelligence_from_legacy_state_key() {
+        let mut state = State::default();
+        state.record_failure("apple-ai");
+
+        let providers = vec![
+            "opencode".to_string(),
+            "apple-intelligence".to_string(),
+            "codex".to_string(),
+        ];
+
+        let reordered = state.reorder_providers(providers, 60);
+        assert_eq!(
+            reordered,
+            vec![
+                "opencode".to_string(),
+                "codex".to_string(),
+                "apple-intelligence".to_string(),
             ]
         );
     }

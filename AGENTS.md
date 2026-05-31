@@ -124,13 +124,14 @@ Provider state file note:
 - `State::save()` writes to `~/.config/git-sc/.providers-state.tmp` first and then `rename(2)`s it onto the final path so concurrent `git-sc` invocations never read a half-written TOML file. On rename failure the temporary file is deleted before the error is returned.
 - The temporary file suffix combines PID, monotonic nanosecond timestamp, and a process-local `AtomicU64` counter, so multiple threads (or rapid consecutive saves) that happen to observe the same wall-clock nanosecond never share a tmp path. Without the counter, two concurrent threads could write to the same `*.tmp.PID.NANOS` file and the slower thread's `rename(2)` would fail with `ENOENT` after the faster thread already moved it.
 - `provider_cooldown_minutes` is converted to seconds with saturating arithmetic, so extremely large user-provided values do not panic in debug builds or wrap in release builds; they are treated as effectively indefinite cooldowns.
+- Cooldown reordering canonicalizes provider aliases before comparing state keys with configured providers, so `gemini`/`agy` remain tied to `antigravity` and legacy `apple-ai`/`apple_intelligence` keys remain tied to `apple-intelligence`.
 
 ### Agent Context
 
 When invoked from a coding agent, `App::run()` reads the `CLAW_HOOKS_AGENT_MESSAGE` environment variable and passes it to `AiService::build_prompt()` as `agent_context`. This context is injected into the AI prompt before the diff section, guiding the AI to reflect the developer's high-level intent in the commit message. The context is applied across standard generation and `--amend` / `--reword` / `--squash` / `--generate-for` workflows.
 
 Default Codex model note:
-- As of May 30, 2026 (JST), the default Codex model is `gpt-5.3-codex-spark` after re-running `codex debug models` and `echo "Hello" | codex exec -c model_reasoning_effort='medium' -m <model>` for each listed Codex model. Single-run token consumption (cold start): `gpt-5.3-codex-spark` (`8,737`), `gpt-5.5` (`11,798`), `codex-auto-review` (`11,942`), `gpt-5.3-codex` (`12,021`), `gpt-5.4-mini` (`12,136`), `gpt-5.4` (`15,533`), and `gpt-5.2` (`16,828`). `gpt-5.3-codex-spark` was selected because it had the lowest measured consumption among the currently available Codex models.
+- As of May 31, 2026 (JST), the default Codex model is `gpt-5.2` after re-running `codex debug models` and `echo "Hello" | codex exec -c model_reasoning_effort='medium' -m <model>` for each listed Codex model. Single-run token consumption: `gpt-5.2` (`11,668`), `gpt-5.5` (`11,799`), `gpt-5.4` (`11,950`), `codex-auto-review` (`11,950`), `gpt-5.3-codex` (`12,023`), `gpt-5.3-codex-spark` (`12,083`), and `gpt-5.4-mini` (`15,214`). `gpt-5.2` was selected because it had the lowest measured consumption among the currently available Codex models.
 
 ## Configuration Files
 
