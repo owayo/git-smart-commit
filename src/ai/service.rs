@@ -646,18 +646,13 @@ Instructions:
             }
         })?;
 
-        // stdin にプロンプトを書き込み (codex, claude)
-        // 失敗時はゾンビプロセスとパイプ FD のリークを防ぐため、確実に kill+wait してから返す
-        // (std::process::Child::drop は何もしないため明示的なクリーンアップが必要)
-        if let Err(e) = Self::write_stdin_prompt(&mut child, uses_stdin, prompt) {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(e);
-        }
-
-        // stdout/stderr をスレッドで読み取り、タイムアウト付きで完了を待機
+        // stdout/stderr をスレッドで読み取りつつ、stdin にも別スレッドで書き込み、
+        // タイムアウト付きで完了を待機する。
+        // stdin 書き込みと stdout/stderr 読み取りを並行させることで、
+        // 大きいプロンプト使用時のパイプ双方向デッドロックを防ぐ
+        // (詳細は run_process_with_timeout のコメントを参照)。
         let (exit_status, stdout_str, stderr_str) =
-            self.run_process_with_timeout(&mut child, provider)?;
+            self.run_process_with_timeout(&mut child, provider, uses_stdin, prompt)?;
 
         let stdout_str = if let Some(output_file) = &codex_output_file {
             fs::read_to_string(output_file.path()).map_err(|e| {
@@ -807,26 +802,14 @@ Instructions:
         println!();
     }
 
-    /// stdin にプロンプトを書き込む (codex, claude 用)
-    fn write_stdin_prompt(
-        child: &mut Child,
-        uses_stdin: bool,
-        prompt: &str,
-    ) -> Result<(), AppError> {
-        if uses_stdin && let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(prompt.as_bytes())
-                .map_err(|e| AppError::AiProviderError(format!("Failed to write prompt: {}", e)))?;
-        }
-        Ok(())
-    }
-
     /// stdout/stderr をスレッドで読み取り、タイムアウト付きでプロセス完了を待機する。
     /// 返り値: (ExitStatus, stdout, stderr)
     fn run_process_with_timeout(
         &self,
         child: &mut Child,
         provider: &AiProvider,
+        uses_stdin: bool,
+        prompt: &str,
     ) -> Result<(ExitStatus, String, String), AppError> {
         let is_debug = self.debug;
 
@@ -843,6 +826,33 @@ Instructions:
 
         let stdout_pipe = child.stdout.take();
         let stderr_pipe = child.stderr.take();
+
+        // stdin 書き込みスレッド (codex, claude 用)。
+        // stdout/stderr リーダースレッドと「並行して」書き込むことで、
+        // 大きいプロンプト(例: CLAW_HOOKS_AGENT_MESSAGE 由来の長大なコンテキスト)
+        // 使用時のパイプ双方向デッドロックを防ぐ。
+        // stdin 全量を同期で書き切ってから stdout を読み始める実装では、
+        // 子プロセスが stdin を読み切る前に stdout/stderr へ大量出力した場合、
+        // 双方のパイプバッファが満杯になって相互にブロックし、さらに write_all の
+        // ブロック中はタイムアウト判定にも到達できず無期限ハングに陥る。
+        let stdin_pipe = child.stdin.take();
+        let stdin_thread = if uses_stdin {
+            let prompt_bytes = prompt.as_bytes().to_vec();
+            Some(std::thread::spawn(move || -> std::io::Result<()> {
+                if let Some(mut stdin) = stdin_pipe {
+                    // 書き込み結果は join 後に検査する。子が先に終了して EPIPE になった
+                    // 場合は Err を返し、不完全なプロンプトを成功扱いしないよう呼び出し側で扱う。
+                    stdin.write_all(&prompt_bytes)?;
+                }
+                // 書き込み後はスコープを抜けて stdin が drop/close され、子へ EOF を伝える。
+                Ok(())
+            }))
+        } else {
+            // stdin を使わないプロバイダー(antigravity/opencode)は
+            // build_provider_command で Stdio::null 済みのため take() は None。
+            drop(stdin_pipe);
+            None
+        };
 
         // stdout 読み取りスレッド（デバッグ時はリアルタイム表示）
         let stdout_thread = std::thread::spawn(move || {
@@ -912,10 +922,29 @@ Instructions:
 
         // ループから抜けた時点で子プロセスは終了済みなので、パイプ読み取りスレッドも
         // EOF を受けて必ず終了する。タイムアウト/エラー経路でも join してから抜ける。
+        // stdin 書き込みスレッドも、子プロセスの終了に伴う EOF/EPIPE で必ず完了するため join する。
+        let stdin_write_result: std::io::Result<()> = match stdin_thread {
+            Some(handle) => handle.join().unwrap_or(Ok(())),
+            None => Ok(()),
+        };
         let stdout_str = stdout_thread.join().unwrap_or_default();
         let stderr_str = stderr_thread.join().unwrap_or_default();
 
         let exit_status = wait_result?;
+
+        // stdin への書き込みが失敗したにもかかわらず子が成功扱い(exit 0)で終了した場合、
+        // プロンプトが途中までしか渡っていない可能性が高い。不完全なプロンプトで生成された
+        // 結果を正常な応答として誤って採用しないよう、明示的にエラーにする。
+        // (子が異常終了している場合は exit_status 側のエラーを process_provider_output に委ねる)
+        if exit_status.success()
+            && let Err(e) = stdin_write_result
+        {
+            return Err(AppError::AiProviderError(format!(
+                "Failed to write prompt to {} stdin: {}",
+                provider.name(),
+                e
+            )));
+        }
 
         if is_debug {
             println!("{}", "─".repeat(50).dimmed());
@@ -2787,7 +2816,7 @@ mod tests {
         service.timeout_seconds = 5;
 
         let (status, stdout, stderr) = service
-            .run_process_with_timeout(&mut child, &AiProvider::Codex)
+            .run_process_with_timeout(&mut child, &AiProvider::Codex, false, "")
             .unwrap();
 
         assert!(status.success());
@@ -2808,12 +2837,109 @@ mod tests {
         let mut service = AiService::new();
         service.timeout_seconds = 0;
 
-        let result = service.run_process_with_timeout(&mut child, &AiProvider::Codex);
+        let result = service.run_process_with_timeout(&mut child, &AiProvider::Codex, false, "");
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("timed out"));
         // タイムアウト経路でも wait 済みで、子プロセスが残らないことを確認する。
         assert!(child.try_wait().unwrap().is_some());
+    }
+
+    /// 大きいプロンプトを stdin に書き込みつつ、子プロセスが stdin を読み切る前に
+    /// 大量の stdout を出力するケースでもデッドロックしないことを検証する。
+    /// stdin 書き込みと stdout 読み取りが並行していない実装(旧実装)では、双方の
+    /// パイプバッファが満杯になって相互にブロックし、タイムアウトしてしまう。
+    #[cfg(unix)]
+    #[test]
+    fn test_run_process_with_timeout_large_stdin_no_deadlock() {
+        // 子プロセス: 先に約 1MiB を stdout へ出力してから stdin を読み捨てる。
+        // 先に大量出力することで「子が stdin 消費前に stdout でブロックする」状況を作る。
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("yes ABCDEFGHIJ | head -n 100000; cat >/dev/null")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut service = AiService::new();
+        service.timeout_seconds = 30;
+
+        // パイプバッファ(macOS/Linux で概ね 16〜64KiB)を確実に超えるプロンプト
+        let large_prompt = "x".repeat(1_000_000);
+
+        let (status, stdout, _stderr) = service
+            .run_process_with_timeout(&mut child, &AiProvider::Codex, true, &large_prompt)
+            .unwrap();
+
+        // デッドロックせず子は正常終了し、stdout も全量読み取れている
+        assert!(status.success());
+        assert_eq!(stdout.len(), 100_000 * 11); // "ABCDEFGHIJ\n" = 11 バイト/行
+    }
+
+    /// uses_stdin=true で子プロセスが stdin を読まないまま動き続ける場合でも、
+    /// (stdin 書き込みスレッドがブロックしても)メインループのタイムアウトで kill され、
+    /// デッドロックせずタイムアウトエラーになることを検証する。
+    #[cfg(unix)]
+    #[test]
+    fn test_run_process_with_timeout_blocked_stdin_still_times_out() {
+        // 子: stdin を読まず、出力もせず、長時間 sleep する
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 30")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut service = AiService::new();
+        service.timeout_seconds = 1;
+
+        // パイプバッファを超える大きさ。子が読まないため write_all はブロックするが、
+        // メインの try_wait ループがタイムアウトを検出して kill するためデッドロックしない。
+        let large_prompt = "x".repeat(1_000_000);
+
+        let result =
+            service.run_process_with_timeout(&mut child, &AiProvider::Codex, true, &large_prompt);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("timed out"));
+        // タイムアウト経路でも wait 済みで、子プロセスが残らないことを確認する。
+        assert!(child.try_wait().unwrap().is_some());
+    }
+
+    /// uses_stdin=true で子プロセスが stdin を読まずに正常終了(exit 0)した場合、
+    /// プロンプトの書き込みが BrokenPipe で失敗するため、不完全なプロンプトでの結果を
+    /// 成功扱いせず provider エラーになることを検証する。
+    #[cfg(unix)]
+    #[test]
+    fn test_run_process_with_timeout_stdin_write_failure_errors_on_success_exit() {
+        // 子: stdin を一切読まず即座に exit 0
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("exit 0")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut service = AiService::new();
+        service.timeout_seconds = 5;
+
+        // パイプバッファを超える大きさ。子が読まずに終了するため write_all は BrokenPipe になる。
+        let large_prompt = "x".repeat(1_000_000);
+
+        let result =
+            service.run_process_with_timeout(&mut child, &AiProvider::Codex, true, &large_prompt);
+
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Failed to write prompt"),
+            "stdin 書き込み失敗かつ exit 0 のときは provider エラーになるべき"
+        );
     }
 
     #[test]
