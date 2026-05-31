@@ -339,7 +339,7 @@ dependencies = [
 
 [[package]]
 name = "git-sc"
-version = "26.5.103"
+version = "26.5.104"
 dependencies = [
  "anyhow",
  "assert_cmd",
