@@ -348,6 +348,65 @@ mod tests {
     }
 
     #[test]
+    fn test_reorder_providers_demotes_apple_intelligence_via_config_key() {
+        // 本番フロー record_provider_failure → record_failure(provider.config_key()) を再現する。
+        // AppleIntelligence の config_key() は "apple-ai" を返す一方、設定や providers 配列では
+        // 正規名 "apple-intelligence" を使う。両者は canonical_provider_key が結びつけているため
+        // 降格が成立する。上の legacy テストはキーをハードコードしているので config_key() 側の
+        // 定義変更を検知できないが、このテストは config_key() の実値を使うことで
+        // ai::service と state の結合不変条件を固定する。
+        use crate::ai::AiProvider;
+
+        let mut state = State::default();
+        state.record_failure(AiProvider::AppleIntelligence.config_key());
+
+        let providers = vec![
+            "opencode".to_string(),
+            "apple-intelligence".to_string(),
+            "codex".to_string(),
+        ];
+
+        let reordered = state.reorder_providers(providers, 60);
+        assert_eq!(
+            reordered,
+            vec![
+                "opencode".to_string(),
+                "codex".to_string(),
+                "apple-intelligence".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_all_provider_config_keys_canonicalize_to_configured_name() {
+        // すべての AiProvider について、record_failure に渡される config_key() が
+        // canonical_provider_key を通すと「設定 providers 配列で使う正規名」に解決されることを
+        // 保証する。これは record_failure(config_key()) で保存したキーと reorder_providers 内の
+        // canonical 比較が確実に一致するための不変条件であり、新しいプロバイダー追加時や
+        // config_key()/canonical_provider_key() のいずれかを変更した際の取りこぼしを防ぐ。
+        use crate::ai::AiProvider;
+
+        let cases = [
+            (AiProvider::Antigravity, "antigravity"),
+            (AiProvider::Codex, "codex"),
+            (AiProvider::Claude, "claude"),
+            (AiProvider::Opencode, "opencode"),
+            (AiProvider::AppleIntelligence, "apple-intelligence"),
+        ];
+
+        for (provider, expected_canonical) in cases {
+            let key = provider.config_key();
+            assert_eq!(
+                State::canonical_provider_key(key).as_str(),
+                expected_canonical,
+                "provider {:?} の config_key() {:?} が想定の正規キーに解決されません",
+                provider,
+                key
+            );
+        }
+    }
+
+    #[test]
     fn test_reorder_providers_multiple_demoted() {
         let mut state = State::default();
         state.record_failure("gemini");
