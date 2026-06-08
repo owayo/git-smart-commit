@@ -265,7 +265,7 @@ codex_reasoning_effort = "low"
 # 注: Antigravity CLI (`agy`) はモデル選択フラグを持たないため、`gemini` 行は不要
 # (旧 git-sc が生成した `gemini = "..."` 行は後方互換のためパースされるが実行時には無視されます)
 [models]
-codex = "gpt-5.4"
+codex = "gpt-5.4-mini"
 claude = "haiku"
 opencode = ""
 
@@ -291,7 +291,7 @@ provider_timeout_seconds = 60
 | `prefix_rules` | URLベースのプレフィックス形式 | `[]` |
 | `prefix_scripts` | 外部プレフィックススクリプト | `[]` |
 
-既存のグローバル設定ファイルは自動では書き換えられません。現在の Codex 既定モデルは `gpt-5.4` です。既存設定で使うには、`~/.config/git-sc/config.toml` の `models.codex` を更新してください。この既定値は、旧既定の `gpt-5.2` が Codex モデル一覧から廃止されたため、2026年6月3日 (JST) に再選定したものです。
+既存のグローバル設定ファイルは自動では書き換えられません。現在の Codex 既定モデルは `gpt-5.4-mini` です。既存設定で使うには、`~/.config/git-sc/config.toml` の `models.codex` を更新してください。この既定値は、API で利用可能・一覧表示対象・`medium` reasoning 対応の Codex モデルについて `input_tokens` を比較し、2026年6月9日 (JST) に再選定したものです。
 
 プロバイダーのクールダウン状態は、並び替え前に旧エイリアスを正規化します。そのため `gemini`/`agy` のクールダウンは `antigravity` に、旧 `apple-ai` / `apple_intelligence` キーは `apple-intelligence` に引き続き適用されます。
 

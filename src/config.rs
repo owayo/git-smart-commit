@@ -30,7 +30,7 @@ fn default_gemini_model() -> String {
 }
 
 fn default_codex_model() -> String {
-    "gpt-5.4".to_string()
+    "gpt-5.4-mini".to_string()
 }
 
 fn default_claude_model() -> String {
@@ -604,9 +604,9 @@ codex_reasoning_effort = "high"
     #[test]
     fn test_default_codex_model_uses_current_default() {
         // codex debug models で medium reasoning 対応モデルの入力トークンを比較し、
-        // 品質マージンも踏まえて選定した現在の既定モデルを固定する。
-        assert_eq!(default_codex_model(), "gpt-5.4");
-        assert_eq!(Config::default().models.codex, "gpt-5.4");
+        // 最小の入力トークン数だった現在の既定モデルを固定する。
+        assert_eq!(default_codex_model(), "gpt-5.4-mini");
+        assert_eq!(Config::default().models.codex, "gpt-5.4-mini");
     }
 
     #[test]
@@ -1065,7 +1065,7 @@ provider_cooldown_minutes = 60
 
 [models]
 gemini = "gemini-2.5-flash-lite"
-codex = "gpt-5.4"
+codex = "gpt-5.4-mini"
 claude = "haiku"
 "#;
 
@@ -1079,7 +1079,7 @@ provider_cooldown_minutes = 15
 
 [models]
 gemini = "pro"
-codex = "gpt-5.4"
+codex = "gpt-5.4-mini"
 claude = "haiku"
 "#;
 
@@ -1918,7 +1918,7 @@ gemini = "gemini-2.5-pro"
 
         assert_eq!(config.models.gemini, default_gemini_model());
         assert_eq!(config.models.codex, default_codex_model());
-        assert!(content.contains(r#"codex = "gpt-5.4""#));
+        assert!(content.contains(r#"codex = "gpt-5.4-mini""#));
         assert_eq!(config.models.claude, default_claude_model());
         assert_eq!(config.models.opencode, default_opencode_model());
     }
@@ -1930,6 +1930,14 @@ gemini = "gemini-2.5-pro"
 
         assert!(include_str!("../README.md").contains(&expected));
         assert!(include_str!("../README.ja.md").contains(&expected));
+    }
+
+    #[test]
+    fn test_agents_notes_use_current_codex_default_model() {
+        // 運用メモの Codex 既定モデル説明もコード上の既定値と同期する。
+        let expected = format!("The default Codex model is `{}`", default_codex_model());
+
+        assert!(include_str!("../AGENTS.md").contains(&expected));
     }
 
     #[test]

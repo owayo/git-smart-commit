@@ -266,7 +266,7 @@ codex_reasoning_effort = "low"
 # Note: Antigravity CLI (`agy`) does not accept a model flag, so no `gemini` line is needed here.
 # A legacy `gemini = "..."` value is parsed for backward compatibility but ignored at runtime.
 [models]
-codex = "gpt-5.4"
+codex = "gpt-5.4-mini"
 claude = "haiku"
 opencode = ""
 
@@ -292,7 +292,7 @@ provider_timeout_seconds = 60
 | `prefix_rules` | URL-based prefix format | `[]` |
 | `prefix_scripts` | External prefix scripts | `[]` |
 
-Existing global config files are not rewritten automatically. The current Codex default is `gpt-5.4`; to use it in an existing setup, update `models.codex` in `~/.config/git-sc/config.toml`. This default was reselected on June 3, 2026 (JST) after the former default `gpt-5.2` was retired from the Codex model list.
+Existing global config files are not rewritten automatically. The current Codex default is `gpt-5.4-mini`; to use it in an existing setup, update `models.codex` in `~/.config/git-sc/config.toml`. This default was reselected on June 9, 2026 (JST) by comparing `input_tokens` for Codex models that are API-visible, listed, and support `medium` reasoning.
 
 Provider cooldown state normalizes legacy aliases before reordering providers, so `gemini`/`agy` cooldown entries still apply to `antigravity`, and legacy `apple-ai` / `apple_intelligence` entries still apply to `apple-intelligence`.
 
