@@ -167,9 +167,11 @@ git-sc -n
 - 対象コミットと `HEAD` の間に merge commit がある場合は、「マージを跨ぐ reword は不可」という明確なエラーで拒否されます（`fatal: ambiguous argument` のような分かりにくい git 内部エラーにはなりません）。
 - 現在の履歴で最古のコミットも reword できます（必要時は内部で `git rebase -i --root` を使用）。
 - `HEAD` を reword する場合も、無関係な staged 変更は書き換え後のコミットに混ぜず、そのまま staged として保持します。
+- 内部の rebase は `--no-autosquash` 付きで実行するため、ユーザー設定の `rebase.autoSquash = true` が範囲内の `fixup!`/`squash!` コミットを reword のついでに勝手に取り込むことはありません。
 
 `--squash` の注意:
 - 無関係な staged 変更が既にある場合、履歴を書き換える前にエラーで停止します。先に commit、unstage、または stash してください。
+- squash のコミット自体が失敗した場合（`pre-commit`/`commit-msg` フックの拒否や GPG 署名エラーなど）、ブランチは merge-base に巻き戻されたまま放置されず、自動的に元の `HEAD` へ復旧されます。
 
 #### 設定
 
@@ -191,6 +193,9 @@ git-sc -n
 - 通常実行 / amend / squash / reword の進捗・プレビュー・成功/キャンセル表示を抑制
 - エラー出力はそのまま表示
 - `--generate-for` はパイプ処理向けに生成メッセージのみを標準出力に出力
+
+`--debug` の動作:
+- `--generate-for` と併用した場合、デバッグ出力（設定情報・AIプロンプト・プロバイダーコマンド・ストリーミング出力）はすべて標準エラー出力に出るため、標準出力は生成メッセージのみが保たれ、安全にパイプできます
 
 ### 使用例
 
@@ -361,7 +366,7 @@ echo "conventional"
 Git が日本語ファイル名などを quoted path としてエスケープしていても、復元後の実パスに対してパターン照合します。
 rename diff では変更前と変更後の両パスを対象に照合するため、無視対象ディレクトリへの移動も一貫して除外されます。
 ファイル名にスペースが含まれている場合も対応しています。Git はスペースだけを含むファイル名をクォートせずに `diff --git` ヘッダーへ出力しますが、`git-sc` は正しいパスを抽出するため、無視パターンが一貫して適用されます。
-変更前後のパスが異なり、両方にスペースを含む rename ヘッダーも同じように処理します。
+変更前後のパスが異なり、両方にスペースを含む rename ヘッダーも同じように処理します。片側だけがクォートされる混在ヘッダー（例: `old name.txt` を Git がクォートする非 ASCII ファイル名へ rename した場合）も両方向に対応しています。
 
 ```gitignore
 package-lock.json
@@ -444,9 +449,13 @@ flowchart LR
 Apple Intelligence プロバイダーは、[fm-rs](https://github.com/blacktop/fm-rs)（Appleの [Foundation Models](https://developer.apple.com/documentation/foundationmodels) フレームワークのRustバインディング）を使用し、完全オンデバイス推論を行います。APIキーやネットワーク接続は不要です。
 
 - **動作要件**: macOS 26（Tahoe）以降、Apple Silicon、システム設定でApple Intelligenceが有効であること
-- **仕組み**: Apple Intelligence を有効化した状態で実行すると（macOSではデフォルト）、git-scがfm-rs経由でFoundation Modelsを直接呼び出します。コミットメッセージ生成用のinstructionsを設定した `LanguageModelSession` を毎回作成します
+- **仕組み**: Apple Intelligence を有効化した状態で実行すると（macOSではデフォルト）、git-scがfm-rs経由でFoundation Modelsを直接呼び出します。コミットメッセージ生成用のinstructionsを設定した `LanguageModelSession` を毎回作成します。instructionsは解決済みのプレフィックス種別から構築されるため、`prefix_type = "none"` / `"bracket"` / `"emoji"` や直近コミットからの自動判定が尊重されます（常に Conventional Commits を強制することはありません）
 - **ビルド**: `cargo build --features apple-ai`（macOSでは `make build` / `make install` で自動的に有効）
 - **クロスプラットフォーム**: Linux/WindowsではApple Intelligenceは利用できず、自動的にスキップされます
+
+## プラットフォームの注意
+
+- **Windows**: Antigravity CLI (`agy`) プロバイダーは明示エラーでスキップされます。Windows では全プロバイダーを `cmd /C` 経由で起動します（npm でインストールされる `.cmd` シム対応のため）が、cmd.exe は複数行の diff を含むプロンプトをコマンドライン引数として安全に受け取れず、渡すとコマンドラインが破損します（CVE-2024-24576 と同クラスのコマンドインジェクション経路でもあります）。フォールバックチェーンは次のプロバイダーへ進みます。プロンプトを stdin や一時ファイルで受け取るプロバイダー（codex、claude、opencode）は影響を受けません。
 
 ## ビルドコマンド
 

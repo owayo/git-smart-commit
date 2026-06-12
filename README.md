@@ -167,9 +167,11 @@ Operation modes (`--amend`, `--squash`, `--reword`, `--generate-for`) are mutual
 - Rewording a commit that has a merge commit between it and `HEAD` is rejected with a clear "cannot reword across merge commits" error (merge-spanning reword is unsupported), rather than a confusing low-level git error such as `fatal: ambiguous argument`.
 - Rewording the oldest commit in current history is also supported (internally uses `git rebase -i --root` when required).
 - Rewording `HEAD` preserves unrelated staged changes instead of folding them into the rewritten commit.
+- The internal rebase runs with `--no-autosquash`, so a user-level `rebase.autoSquash = true` config cannot silently fold `fixup!`/`squash!` commits into the reworded commit.
 
 `--squash` note:
 - Fails before rewriting history when unrelated staged changes already exist. Commit, unstage, or stash them first.
+- If the squash commit itself fails (e.g. rejected by a `pre-commit`/`commit-msg` hook or a GPG signing error), the branch is automatically restored to its original `HEAD` instead of being left rewound at the merge-base.
 
 #### Settings
 
@@ -191,6 +193,9 @@ Operation modes (`--amend`, `--squash`, `--reword`, `--generate-for`) are mutual
 - Suppresses progress, preview, and success/cancel messages in normal/amend/squash/reword flows
 - Keeps error output visible
 - In `--generate-for` mode, still prints only the generated commit message (for piping/scripting)
+
+`--debug` behavior:
+- In `--generate-for` mode, all debug output (config settings, AI prompt, provider command, streaming output) goes to stderr, so stdout remains the generated message only and stays safe to pipe
 
 ### Examples
 
@@ -362,7 +367,7 @@ echo "conventional"
 Patterns are matched against the decoded Git path, so quoted diff headers such as Japanese filenames escaped by Git are excluded correctly as well.
 Rename diffs are checked against both the source path and destination path, so moving a file into an ignored directory is excluded consistently too.
 Filenames containing spaces are also supported: Git does not quote space-only filenames in `diff --git` headers, but `git-sc` still extracts the correct path so that ignore patterns apply consistently.
-This also covers rename headers where the source and destination paths differ and both paths contain spaces.
+This also covers rename headers where the source and destination paths differ and both paths contain spaces, as well as mixed headers where only one side is quoted (e.g. renaming `old name.txt` to a non-ASCII filename that Git quotes).
 
 ```gitignore
 package-lock.json
@@ -445,9 +450,13 @@ flowchart LR
 Apple Intelligence provider uses [fm-rs](https://github.com/blacktop/fm-rs) (Rust bindings for Apple's [Foundation Models](https://developer.apple.com/documentation/foundationmodels) framework) for fully on-device inference. No API key or network connection is required.
 
 - **Requirements**: macOS 26 (Tahoe) or later, Apple Silicon, Apple Intelligence enabled in System Settings
-- **How it works**: With Apple Intelligence enabled (default on macOS), git-sc calls Foundation Models directly via fm-rs. A `LanguageModelSession` is created with commit-message-specific instructions for each generation.
+- **How it works**: With Apple Intelligence enabled (default on macOS), git-sc calls Foundation Models directly via fm-rs. A `LanguageModelSession` is created with commit-message-specific instructions for each generation. The instructions are built from the resolved prefix type, so `prefix_type = "none"` / `"bracket"` / `"emoji"` and auto-detection from recent commits are respected instead of always forcing Conventional Commits.
 - **Build**: `cargo build --features apple-ai` (automatic with `make build` / `make install` on macOS)
 - **Cross-platform**: On Linux/Windows, Apple Intelligence is not available and is automatically skipped
+
+## Platform Notes
+
+- **Windows**: the Antigravity CLI (`agy`) provider is skipped with an explicit error. All providers launch through `cmd /C` on Windows (to support npm-installed `.cmd` shims), but cmd.exe cannot safely receive a multi-line diff prompt as a command-line argument, so passing it would corrupt the command (and is a known command-injection vector class, CVE-2024-24576). The fallback chain simply moves on to the next provider. Providers that read the prompt from stdin or a temp file (codex, claude, opencode) are unaffected.
 
 ## Build Commands
 

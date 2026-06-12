@@ -45,13 +45,20 @@ src/
 ├── state.rs     # Provider cooldown state management
 ├── notify.rs    # NanoBuddy notification (macOS DistributedNotificationCenter)
 ├── ai/
-│   ├── mod.rs
-│   └── service.rs  # AiService with multi-provider fallback
+│   ├── mod.rs              # Module wiring (apple is cfg-gated here)
+│   ├── service.rs          # AiProvider/AiService, fallback orchestration
+│   ├── prompt.rs           # Prompt construction & message cleanup
+│   ├── provider_command.rs # Per-provider Command construction & debug display
+│   ├── process.rs          # Subprocess execution (timeout, concurrent I/O), TempFile
+│   └── apple.rs            # Apple Intelligence native call (macOS + apple-ai only)
 └── git/
     ├── mod.rs
     └── service.rs  # GitService for git operations
 
 ```
+
+AI module layout note:
+- `ai/` is split by responsibility: `service.rs` keeps the `AiProvider`/`AiService` types and the provider-fallback orchestration; prompt format contracts live in `prompt.rs`, per-provider CLI argument knowledge in `provider_command.rs`, subprocess lifecycle (the deadlock-avoidance threading in `run_process_with_timeout`) and output interpretation in `process.rs`, and the fm-rs native path in `apple.rs`. Cross-module items use `pub(super)` visibility. The unit tests for all of these currently remain in `ai/service.rs`'s `#[cfg(test)]` module (they exercise the same `AiService` associated functions regardless of which file defines them); relocating them next to their units is optional follow-up work, not a behavioral concern.
 
 ### Key Components
 
