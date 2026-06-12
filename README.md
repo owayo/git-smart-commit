@@ -164,6 +164,7 @@ Operation modes (`--amend`, `--squash`, `--reword`, `--generate-for`) are mutual
 - Only accepts commits reachable from the current `HEAD` history.
 - Passing a hash from another branch (not in current history) fails with an error.
 - Passing a merge commit hash also fails, even when the merge commit itself is the reword target.
+- Rewording a commit that has a merge commit between it and `HEAD` is rejected with a clear "cannot reword across merge commits" error (merge-spanning reword is unsupported), rather than a confusing low-level git error such as `fatal: ambiguous argument`.
 - Rewording the oldest commit in current history is also supported (internally uses `git rebase -i --root` when required).
 - Rewording `HEAD` preserves unrelated staged changes instead of folding them into the rewritten commit.
 

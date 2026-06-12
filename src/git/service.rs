@@ -111,6 +111,17 @@ impl GitService {
         }
     }
 
+    /// 指定したリポジトリパスに対するGitServiceを作成（テスト専用）
+    ///
+    /// `new()` はカレントディレクトリ固定だが、こちらは任意のパスを対象にできる。
+    /// 現状は一時リポジトリを対象としたユニットテストでのみ利用するため、
+    /// 通常ビルドで dead_code 警告（CI の `-D warnings` で失敗）にならないよう
+    /// `#[cfg(test)]` でゲートしている。非テストコードから使う必要が生じたら外す。
+    #[cfg(test)]
+    pub fn with_repo_path(repo_path: PathBuf) -> Self {
+        Self { repo_path }
+    }
+
     // ============================================================
     // git コマンド実行ヘルパー
     // ============================================================
@@ -805,13 +816,14 @@ impl GitService {
             return Err(AppError::InvalidRewordTarget);
         }
 
-        let total_commits = self.get_head_commit_count()?;
-        if n > total_commits {
+        // n は HEAD~n（first-parent 深さ）として使うため、判定も first-parent 深さで揃える。
+        let first_parent_total = self.get_head_first_parent_count()?;
+        if n > first_parent_total {
             return Err(AppError::InvalidRewordTarget);
         }
 
         // マージコミットは親が2つ以上ある
-        let merges = if n == total_commits {
+        let merges = if n == first_parent_total {
             // 最古コミットを含む範囲では HEAD~n が無効になるため履歴全体を対象にする
             self.run_git(&["rev-list", "--merges", "HEAD"])?
         } else {
@@ -820,9 +832,14 @@ impl GitService {
         Ok(!merges.is_empty())
     }
 
-    /// HEAD から辿れる総コミット数を取得
-    fn get_head_commit_count(&self) -> Result<usize, AppError> {
-        let count_str = self.run_git(&["rev-list", "--count", "HEAD"])?;
+    /// HEAD から first-parent 経路を辿った深さ（コミット数）を取得
+    ///
+    /// reword で使う位置 `n` は後段で `HEAD~n`（= first-parent 深さ）として消費されるため、
+    /// 「最古コミットか（`n == 深さ`）」「範囲外か（`n > 深さ`）」の判定もこの first-parent
+    /// 深さで揃える必要がある。`rev-list --count HEAD`（全祖先のトポロジカル数）で数えると、
+    /// マージで取り込まれた側ブランチのコミットが余分に加算され、`HEAD~n` の世界と乖離する。
+    fn get_head_first_parent_count(&self) -> Result<usize, AppError> {
+        let count_str = self.run_git(&["rev-list", "--count", "--first-parent", "HEAD"])?;
         count_str
             .parse()
             .map_err(|_| AppError::GitError("Failed to parse commit count".to_string()))
@@ -908,15 +925,22 @@ impl GitService {
     pub fn get_commit_position_by_hash(&self, hash: &str) -> Result<usize, AppError> {
         self.validate_reword_target_hash(hash)?;
 
-        // HEADからそのコミットまでのコミット数をカウント
-        // git rev-list --count hash..HEAD で hash から HEAD までのコミット数を取得
-        // これに1を足すと、そのコミット自体の位置になる
-        let count_str = self.run_git(&["rev-list", "--count", &format!("{}..HEAD", hash)])?;
+        // 位置 n は後段で `HEAD~n`（first-parent 深さ）として消費されるため、ここでも
+        // `--first-parent` で数える。`rev-list --count hash..HEAD`（全祖先のトポロジカル数）
+        // だと、マージで取り込まれた側ブランチのコミットが余分に加算されて n が過大になり、
+        // `HEAD~n` が無効化して不可解な git エラー（fatal: ambiguous argument 'HEAD~n..HEAD'）
+        // を招く。first-parent 経路で hash..HEAD のコミット数を数え、+1 で対象自身の位置にする。
+        let count_str = self.run_git(&[
+            "rev-list",
+            "--count",
+            "--first-parent",
+            &format!("{}..HEAD", hash),
+        ])?;
         let count: usize = count_str
             .parse()
             .map_err(|_| AppError::GitError("Failed to parse commit count".to_string()))?;
 
-        // count はそのコミットより新しいコミットの数なので、+1で位置になる
+        // count はそのコミットより新しい（first-parent 経路上の）コミット数なので、+1で位置になる
         Ok(count + 1)
     }
 
@@ -953,8 +977,9 @@ impl GitService {
             return self.amend_commit_message(new_message);
         }
 
-        let total_commits = self.get_head_commit_count()?;
-        if n > total_commits {
+        // n は HEAD~n（first-parent 深さ）として使うため、判定も first-parent 深さで揃える。
+        let first_parent_total = self.get_head_first_parent_count()?;
+        if n > first_parent_total {
             return Err(AppError::InvalidRewordTarget);
         }
 
@@ -995,7 +1020,7 @@ impl GitService {
         let mut rebase_cmd = Command::new("git");
         rebase_cmd.arg("-c").arg("rebase.abbreviateCommands=false");
         rebase_cmd.arg("rebase").arg("-i");
-        if n == total_commits {
+        if n == first_parent_total {
             rebase_cmd.arg("--root");
         } else {
             rebase_cmd.arg(format!("HEAD~{}", n));
@@ -4087,6 +4112,98 @@ Binary files /dev/null and b/script.bin differ"#;
                 .has_merge_commits_in_range_by_hash(&merge_hash)
                 .unwrap()
         );
+    }
+
+    /// マージを含む履歴を構築し、(一時ディレクトリ, C0=最古, C1=マージ下の first-parent 祖先) を返す。
+    ///
+    /// first-parent 鎖: T2 → T1 → MERGE → C1 → C0
+    /// feature ブランチ(F1..F5)を C1 から分岐して main に `--no-ff` マージするため、
+    /// `C1..HEAD` のトポロジカルなコミット数(=8)は first-parent 深さ(=3)より大きくなる。
+    /// これにより「位置算出をトポロジカル数で行うと n が過大になり HEAD~n が無効化する」
+    /// という不具合を再現できる。
+    fn setup_merge_history_repo() -> (tempfile::TempDir, String, String) {
+        let temp_dir = setup_temp_git_repo();
+        let repo = temp_dir.path();
+
+        std::fs::write(repo.join("c0.txt"), "c0\n").unwrap();
+        run_git_in(repo, &["add", "."]);
+        run_git_in(repo, &["commit", "-m", "C0"]);
+        let c0 = git_output_in(repo, &["rev-parse", "HEAD"]);
+        let base_branch = git_output_in(repo, &["branch", "--show-current"]);
+
+        std::fs::write(repo.join("c1.txt"), "c1\n").unwrap();
+        run_git_in(repo, &["add", "."]);
+        run_git_in(repo, &["commit", "-m", "C1"]);
+        let c1 = git_output_in(repo, &["rev-parse", "HEAD"]);
+
+        // C1 から feature ブランチを分岐し、側コミットを5つ積む
+        run_git_in(repo, &["checkout", "-b", "feature/fp"]);
+        for i in 1..=5 {
+            let name = format!("f{i}.txt");
+            std::fs::write(repo.join(&name), format!("f{i}\n")).unwrap();
+            run_git_in(repo, &["add", "."]);
+            run_git_in(repo, &["commit", "-m", &format!("F{i}")]);
+        }
+
+        // main(=base_branch, C1 のまま) に戻り、--no-ff で first-parent 上に MERGE を作る
+        run_git_in(repo, &["checkout", &base_branch]);
+        run_git_in(repo, &["merge", "--no-ff", "feature/fp", "-m", "MERGE"]);
+
+        // マージの上に線形コミットを2つ積む
+        std::fs::write(repo.join("t1.txt"), "t1\n").unwrap();
+        run_git_in(repo, &["add", "."]);
+        run_git_in(repo, &["commit", "-m", "T1"]);
+        std::fs::write(repo.join("t2.txt"), "t2\n").unwrap();
+        run_git_in(repo, &["add", "."]);
+        run_git_in(repo, &["commit", "-m", "T2"]);
+
+        (temp_dir, c0, c1)
+    }
+
+    #[test]
+    fn test_reword_by_hash_below_merge_returns_has_merge_commits_not_cryptic_error() {
+        // 回帰テスト: マージより下の first-parent 祖先 C1 を reword しようとすると、
+        // 位置算出をトポロジカル数で行っていた頃は n が過大になり `HEAD~n` が無効化して
+        // 不可解な git エラー（fatal: ambiguous argument 'HEAD~n..HEAD'）が露出していた。
+        // first-parent で数えることで、範囲内の MERGE を正しく検出し、明確な
+        // HasMergeCommits（「マージ越し reword は不可」）を返す。
+        let (temp_dir, _c0, c1) = setup_merge_history_repo();
+        let service = GitService::with_repo_path(temp_dir.path().to_path_buf());
+
+        let result = service.reword_commit_by_hash(&c1, "新しいメッセージ");
+        assert!(
+            matches!(result, Err(AppError::HasMergeCommits)),
+            "C1 と HEAD の間に MERGE があるので HasMergeCommits を返すべき。実際: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_reword_by_hash_root_below_merge_returns_has_merge_commits() {
+        // 最古コミット C0 を対象にしたとき、first-parent 深さ(=5)と位置 n が一致するため
+        // 「最古コミット」センチネルに入り、履歴全体のマージ(MERGE)を検出して
+        // HasMergeCommits を返す（トポロジカル総数で判定していると n!=総数となり、
+        // ここでも HEAD~n 無効化の不可解エラーになっていた）。
+        let (temp_dir, c0, _c1) = setup_merge_history_repo();
+        let service = GitService::with_repo_path(temp_dir.path().to_path_buf());
+
+        let result = service.reword_commit_by_hash(&c0, "新しいメッセージ");
+        assert!(
+            matches!(result, Err(AppError::HasMergeCommits)),
+            "履歴全体に MERGE があるので HasMergeCommits を返すべき。実際: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_get_commit_position_by_hash_counts_first_parent_depth() {
+        // 位置はトポロジカル数ではなく first-parent 深さで算出される。
+        // first-parent 鎖: T2(HEAD~0) T1(HEAD~1) MERGE(HEAD~2) C1(HEAD~3) C0(HEAD~4)
+        // 位置 n は「対象の親が HEAD~n」になる値なので、C1 は 4、最古の C0 は 5。
+        // 旧実装（トポロジカル数）では C1 が 9 を返し、後段の HEAD~9 で破綻していた。
+        let (temp_dir, c0, c1) = setup_merge_history_repo();
+        let service = GitService::with_repo_path(temp_dir.path().to_path_buf());
+
+        assert_eq!(service.get_commit_position_by_hash(&c1).unwrap(), 4);
+        assert_eq!(service.get_commit_position_by_hash(&c0).unwrap(), 5);
     }
 
     // ============================================================

@@ -164,6 +164,7 @@ git-sc -n
 - 現在の `HEAD` 履歴に含まれるコミットのみ指定できます。
 - 別ブランチなど現在の履歴外ハッシュを指定すると「無効なreword対象です」エラーで失敗します。
 - 対象コミット自身が merge commit の場合も、`reword` 対象として拒否されます。
+- 対象コミットと `HEAD` の間に merge commit がある場合は、「マージを跨ぐ reword は不可」という明確なエラーで拒否されます（`fatal: ambiguous argument` のような分かりにくい git 内部エラーにはなりません）。
 - 現在の履歴で最古のコミットも reword できます（必要時は内部で `git rebase -i --root` を使用）。
 - `HEAD` を reword する場合も、無関係な staged 変更は書き換え後のコミットに混ぜず、そのまま staged として保持します。
 

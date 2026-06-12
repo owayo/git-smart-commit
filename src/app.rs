@@ -204,26 +204,74 @@ impl App {
     /// プレフィックスモードを判定
     ///
     /// 優先順位:
-    /// 1. prefix_scripts: url_patternの正規表現にマッチすればスクリプト実行
-    /// 2. prefix_rules: url_patternの正規表現にマッチすればそのprefix_typeを使用
-    /// 3. Auto: 上記に該当しなければ過去コミットから自動判定
+    /// 1. prefix_scripts: url_patternの正規表現にマッチすればスクリプト実行（リモートURLが必要）
+    /// 2. prefix_rules: url_patternの正規表現にマッチすればそのprefix_typeを使用（リモートURLが必要）
+    /// 3. 設定ファイルの prefix_type: 指定があればそれを使用（リモートURL非依存）
+    /// 4. Auto: 上記に該当しなければ過去コミットから自動判定
     fn get_prefix_mode(&self, quiet: bool) -> PrefixMode {
         self.get_prefix_mode_internal(quiet)
     }
 
     /// 内部実装: プレフィックスモード判定
     fn get_prefix_mode_internal(&self, silent: bool) -> PrefixMode {
-        // リモートURLとブランチ名を取得
-        let remote_url = match self.git.get_remote_url() {
-            Some(url) => url,
-            None => return PrefixMode::Auto,
-        };
-        let branch = self.git.get_current_branch();
+        // 手順1・2はリモートURL（とブランチ名）に依存するため、取得できた場合のみ評価する。
+        // 手順3（設定ファイルの prefix_type）・手順4（Auto）はリモートURL非依存なので、
+        // リモート未設定（remote.origin.url 無しのローカル専用リポジトリ等）でも必ず到達させる。
+        if let Some(remote_url) = self.git.get_remote_url() {
+            let branch = self.git.get_current_branch();
 
-        // 1. プレフィックススクリプトをチェック（最優先、正規表現マッチ）
+            // 1. プレフィックススクリプトをチェック（最優先、正規表現マッチ）
+            if let Some(mode) = self.try_prefix_scripts(&remote_url, &branch, silent) {
+                return mode;
+            }
+
+            // 2. プレフィックスルールをチェック（正規表現マッチ）
+            if let Some(mode) = self.try_prefix_rules(&remote_url, silent) {
+                return mode;
+            }
+        }
+
+        // 3. 設定ファイルの prefix_type をチェック
+        if let Some(ref prefix_type) = self.prefix_type {
+            if is_valid_prefix_type(prefix_type) {
+                if !silent {
+                    println!(
+                        "{}",
+                        format!("Using config prefix_type: {}", prefix_type).cyan()
+                    );
+                }
+                return PrefixMode::Config(prefix_type.clone());
+            } else {
+                // 無効な prefix_type の場合は警告を出力
+                eprintln!(
+                    "{}",
+                    format!(
+                        "警告: 無効な prefix_type '{}' が設定されています。有効な値: {:?}",
+                        prefix_type, VALID_PREFIX_TYPES
+                    )
+                    .yellow()
+                );
+            }
+        }
+
+        // 4. 該当なし: 自動判定モード
+        PrefixMode::Auto
+    }
+
+    /// 手順1: prefix_scripts を評価する（リモートURL必須）
+    ///
+    /// url_pattern にマッチするスクリプトを順に試し、最初に結果を返したものを採用する。
+    /// マッチしてもブランチ名が取得できない（detached HEAD 等）場合は、その候補をスキップして
+    /// 次の候補へ進む。採用できるスクリプトが無ければ None を返し、呼び出し側は手順2へ進む。
+    fn try_prefix_scripts(
+        &self,
+        remote_url: &str,
+        branch: &Option<String>,
+        silent: bool,
+    ) -> Option<PrefixMode> {
         for script_config in &self.prefix_scripts {
             if let Ok(re) = Regex::new(&script_config.url_pattern)
-                && re.is_match(&remote_url)
+                && re.is_match(remote_url)
             {
                 if !silent {
                     println!(
@@ -232,7 +280,7 @@ impl App {
                             .cyan()
                     );
                 }
-                let branch_name = match &branch {
+                let branch_name = match branch {
                     Some(b) => b.as_str(),
                     None => {
                         // detached HEAD などでブランチ名を取得できない場合は、
@@ -250,7 +298,7 @@ impl App {
                 };
                 let result =
                     self.git
-                        .run_prefix_script(&script_config.script, &remote_url, branch_name);
+                        .run_prefix_script(&script_config.script, remote_url, branch_name);
 
                 // スクリプト実行結果を出力
                 if !silent {
@@ -284,15 +332,21 @@ impl App {
                             format!("  → interpreted as prefix_type: {}", pt).cyan()
                         );
                     }
-                    return mode;
+                    return Some(mode);
                 }
             }
         }
+        None
+    }
 
-        // 2. プレフィックスルールをチェック（正規表現マッチ）
+    /// 手順2: prefix_rules を評価する（リモートURL必須）
+    ///
+    /// url_pattern にマッチする最初のルールの prefix_type を採用する。
+    /// マッチが無ければ None を返し、呼び出し側は手順3へ進む。
+    fn try_prefix_rules(&self, remote_url: &str, silent: bool) -> Option<PrefixMode> {
         for rule_config in &self.prefix_rules {
             if let Ok(re) = Regex::new(&rule_config.url_pattern)
-                && re.is_match(&remote_url)
+                && re.is_match(remote_url)
             {
                 if !silent {
                     println!(
@@ -304,35 +358,10 @@ impl App {
                         .cyan()
                     );
                 }
-                return PrefixMode::Rule(rule_config.prefix_type.clone());
+                return Some(PrefixMode::Rule(rule_config.prefix_type.clone()));
             }
         }
-
-        // 3. 設定ファイルの prefix_type をチェック
-        if let Some(ref prefix_type) = self.prefix_type {
-            if is_valid_prefix_type(prefix_type) {
-                if !silent {
-                    println!(
-                        "{}",
-                        format!("Using config prefix_type: {}", prefix_type).cyan()
-                    );
-                }
-                return PrefixMode::Config(prefix_type.clone());
-            } else {
-                // 無効な prefix_type の場合は警告を出力
-                eprintln!(
-                    "{}",
-                    format!(
-                        "警告: 無効な prefix_type '{}' が設定されています。有効な値: {:?}",
-                        prefix_type, VALID_PREFIX_TYPES
-                    )
-                    .yellow()
-                );
-            }
-        }
-
-        // 4. 該当なし: 自動判定モード
-        PrefixMode::Auto
+        None
     }
 
     /// コミットメッセージにプレフィックスを適用
@@ -940,6 +969,12 @@ impl App {
         if combined_diff.trim().is_empty() {
             return Err(AppError::NoChanges);
         }
+
+        // 各コミット単位では切り詰め済みだが、複数コミットを結合した総量は
+        // MAX_DIFF_CHARS を超えうる。他の diff 生成経路（staged/amend/squash）は
+        // すべて一度の apply_all_filters で上限が効くため、generate-for でも
+        // 結合後に再度切り詰めて同じ上限契約を守る。
+        let combined_diff = GitService::truncate_diff(&combined_diff);
 
         // AI CLIがインストールされているか確認
         self.ai.verify_installation()?;
@@ -1967,5 +2002,154 @@ mod tests {
         // 複数行のメッセージにプレフィックスを付加
         let result = TestHelper::apply_prefix("feat: add feature\n\nbody text", "PROJ-1 ");
         assert_eq!(result, "PROJ-1 add feature\n\nbody text");
+    }
+
+    // ============================================================
+    // get_prefix_mode のテスト（リモートURL非依存の手順を含む）
+    // ============================================================
+
+    /// リモート未設定（remote.origin.url 無し）の一時 git リポジトリを作成する
+    fn init_repo_without_remote() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("一時ディレクトリの作成に失敗");
+        let path = dir.path().to_path_buf();
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&path)
+                .output()
+                .expect("git コマンドの実行に失敗");
+        };
+        run(&["init"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "Test User"]);
+        dir
+    }
+
+    /// テスト用に、指定した git サービスと prefix_type を持つ App を構築する
+    fn app_with(git: GitService, prefix_type: Option<&str>) -> App {
+        App {
+            git,
+            ai: AiService::new(),
+            prefix_scripts: Vec::new(),
+            prefix_rules: Vec::new(),
+            prefix_type: prefix_type.map(|s| s.to_string()),
+            auto_push: None,
+            nano_buddy: false,
+        }
+    }
+
+    #[test]
+    fn test_get_prefix_mode_uses_config_prefix_type_without_remote() {
+        // 回帰テスト: remote.origin.url が無いリポジトリでも、設定ファイルの
+        // prefix_type（リモートURL非依存の手順3）は尊重されなければならない。
+        // 以前は冒頭でリモートURL未取得時に早期 return していたため、手順3に到達しなかった。
+        let dir = init_repo_without_remote();
+        let git = GitService::with_repo_path(dir.path().to_path_buf());
+        // 前提: リモート未設定なので get_remote_url() は None を返す
+        assert!(git.get_remote_url().is_none());
+
+        let app = app_with(git, Some("conventional"));
+        match app.get_prefix_mode(true) {
+            PrefixMode::Config(pt) => assert_eq!(pt, "conventional"),
+            _ => panic!("リモート未設定でも PrefixMode::Config(\"conventional\") を返すべき"),
+        }
+    }
+
+    #[test]
+    fn test_get_prefix_mode_auto_without_remote_and_no_config() {
+        // リモート未設定 かつ prefix_type 未設定 なら Auto になる（既存挙動の維持）。
+        let dir = init_repo_without_remote();
+        let git = GitService::with_repo_path(dir.path().to_path_buf());
+        let app = app_with(git, None);
+        match app.get_prefix_mode(true) {
+            PrefixMode::Auto => {}
+            _ => panic!("リモート未設定かつ prefix_type 無しなら PrefixMode::Auto を返すべき"),
+        }
+    }
+
+    #[test]
+    fn test_get_prefix_mode_invalid_config_prefix_type_without_remote() {
+        // リモート未設定 + 無効な prefix_type は、警告のうえ Auto にフォールバックする。
+        let dir = init_repo_without_remote();
+        let git = GitService::with_repo_path(dir.path().to_path_buf());
+        let app = app_with(git, Some("not-a-valid-type"));
+        match app.get_prefix_mode(true) {
+            PrefixMode::Auto => {}
+            _ => panic!("無効な prefix_type は Auto にフォールバックすべき"),
+        }
+    }
+
+    /// remote.origin.url を設定した一時 git リポジトリを作成する
+    fn init_repo_with_remote(url: &str) -> tempfile::TempDir {
+        let dir = init_repo_without_remote();
+        std::process::Command::new("git")
+            .args(["remote", "add", "origin", url])
+            .current_dir(dir.path())
+            .output()
+            .expect("git remote add の実行に失敗");
+        dir
+    }
+
+    /// テスト用に、指定した git サービスと prefix_rules / prefix_type を持つ App を構築する
+    fn app_with_rules(
+        git: GitService,
+        prefix_rules: Vec<PrefixRuleConfig>,
+        prefix_type: Option<&str>,
+    ) -> App {
+        App {
+            git,
+            ai: AiService::new(),
+            prefix_scripts: Vec::new(),
+            prefix_rules,
+            prefix_type: prefix_type.map(|s| s.to_string()),
+            auto_push: None,
+            nano_buddy: false,
+        }
+    }
+
+    #[test]
+    fn test_get_prefix_mode_uses_matching_prefix_rule_with_remote() {
+        // リモートURLが prefix_rule の url_pattern にマッチすれば、その prefix_type を
+        // PrefixMode::Rule として採用する（手順2）。リファクタで try_prefix_rules に
+        // 抽出した「リモートあり + ルールマッチ」経路を直接検証する。
+        let dir = init_repo_with_remote("https://github.com/myorg/myrepo.git");
+        let git = GitService::with_repo_path(dir.path().to_path_buf());
+        assert!(
+            git.get_remote_url().is_some(),
+            "remote を設定したので Some のはず"
+        );
+
+        let rules = vec![PrefixRuleConfig {
+            url_pattern: r"github\.com[:/]myorg/".to_string(),
+            prefix_type: "conventional".to_string(),
+        }];
+        // prefix_type も設定しておき、rule（手順2）が config（手順3）より優先されることも確認する
+        let app = app_with_rules(git, rules, Some("bracket"));
+
+        match app.get_prefix_mode(true) {
+            PrefixMode::Rule(pt) => assert_eq!(pt, "conventional"),
+            _ => panic!("マッチする rule があれば PrefixMode::Rule(\"conventional\") を返すべき"),
+        }
+    }
+
+    #[test]
+    fn test_get_prefix_mode_non_matching_rule_falls_through_to_config() {
+        // リモートはあるが prefix_rule がどれもマッチしない場合、手順2を素通りして
+        // 手順3（設定の prefix_type）に到達する（フォールスルーの保証）。
+        let dir = init_repo_with_remote("https://github.com/other/repo.git");
+        let git = GitService::with_repo_path(dir.path().to_path_buf());
+
+        let rules = vec![PrefixRuleConfig {
+            url_pattern: r"github\.com[:/]myorg/".to_string(),
+            prefix_type: "conventional".to_string(),
+        }];
+        let app = app_with_rules(git, rules, Some("bracket"));
+
+        match app.get_prefix_mode(true) {
+            PrefixMode::Config(pt) => assert_eq!(pt, "bracket"),
+            _ => panic!(
+                "マッチしない rule は素通りして PrefixMode::Config(\"bracket\") に到達すべき"
+            ),
+        }
     }
 }

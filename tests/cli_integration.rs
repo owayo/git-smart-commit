@@ -874,6 +874,63 @@ fn test_agent_context_is_included_in_generate_for_debug_prompt() {
 }
 
 #[test]
+fn test_generate_for_combined_diff_is_truncated_to_max_chars() {
+    // 回帰テスト: --generate-for は複数コミットの diff を結合する。
+    // 各コミットの diff は個別に MAX_DIFF_CHARS(10000) 以下でも、結合後の総量は
+    // 上限を超えうる。結合後にも切り詰めが効くことを、デバッグ出力（stderr）に現れる
+    // 切り詰めマーカーで確認する。修正前は結合後に切り詰めず、マーカーが出なかった。
+    let dir = setup_git_repo_with_commit();
+    let path = setup_fake_opencode_path(&dir);
+
+    // 各コミットで別ファイルを追加する。各 diff は約6KB（10000字未満）だが、
+    // 2コミット結合で約12KB となり 10000字上限を超える。
+    let mut content1 = String::new();
+    let mut content2 = String::new();
+    for i in 0..150 {
+        content1.push_str(&format!("f1 line {i:04}: lorem ipsum dolor sit amet\n"));
+        content2.push_str(&format!("f2 line {i:04}: lorem ipsum dolor sit amet\n"));
+    }
+
+    std::fs::write(dir.path().join("file1.txt"), &content1).unwrap();
+    std::process::Command::new("git")
+        .args(["add", "file1.txt"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "add file1"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let hash1 = head_hash(&dir);
+
+    std::fs::write(dir.path().join("file2.txt"), &content2).unwrap();
+    std::process::Command::new("git")
+        .args(["add", "file2.txt"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "add file2"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let hash2 = head_hash(&dir);
+
+    git_sc!()
+        .args(["--generate-for", &hash1, &hash2, "--debug"])
+        .env("PATH", path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "diff truncated: exceeded 10000 characters",
+        ));
+}
+
+#[test]
 fn test_generate_for_with_reword_conflict() {
     let dir = setup_git_repo_with_commit();
 
