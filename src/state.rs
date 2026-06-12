@@ -104,8 +104,15 @@ impl State {
             .unwrap_or(0);
         let counter = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         let tmp_path = path.with_extension(format!("tmp.{}.{}.{}", pid, nanos, counter));
-        fs::write(&tmp_path, &content)
-            .map_err(|e| AppError::ConfigError(format!("Failed to write state: {}", e)))?;
+        if let Err(e) = fs::write(&tmp_path, &content) {
+            // create 成功後の write 失敗(ENOSPC等)でも一時ファイルを残さない。
+            // tmp 名は毎回ユニークで再利用されないため、ここで消さないと永久に蓄積する。
+            let _ = fs::remove_file(&tmp_path);
+            return Err(AppError::ConfigError(format!(
+                "Failed to write state: {}",
+                e
+            )));
+        }
         fs::rename(&tmp_path, path).map_err(|e| {
             // rename に失敗した場合は中途半端な一時ファイルを残さないように削除を試みる
             let _ = fs::remove_file(&tmp_path);

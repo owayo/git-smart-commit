@@ -92,9 +92,11 @@ impl App {
     pub fn new(cli: &Cli) -> Result<Self, AppError> {
         let config = Config::load()?;
 
-        // デバッグモード: 設定ファイル情報を表示
+        // デバッグモード: 設定ファイル情報を表示。
+        // --generate-for は「stdout には生成メッセージのみ」が契約のため、
+        // デバッグ出力は stderr へ逃がす。
         if cli.debug {
-            Self::print_config_debug(&config)?;
+            Self::print_config_debug(&config, cli.generate_for.is_some())?;
         }
 
         let mut ai = AiService::from_config(&config);
@@ -132,71 +134,91 @@ impl App {
     }
 
     /// デバッグモード: 設定ファイル情報を表示
-    fn print_config_debug(config: &Config) -> Result<(), AppError> {
-        println!();
-        println!("{}", "=== DEBUG: Config Settings ===".yellow().bold());
-        println!("{}", "─".repeat(50).dimmed());
+    ///
+    /// to_stderr: --generate-for のように stdout を生成メッセージ専用に保つモードでは
+    /// true を渡し、デバッグ出力を stderr へ書き出す。
+    fn print_config_debug(config: &Config, to_stderr: bool) -> Result<(), AppError> {
+        let emit = |line: String| {
+            if to_stderr {
+                eprintln!("{}", line);
+            } else {
+                println!("{}", line);
+            }
+        };
+
+        emit(String::new());
+        emit(format!(
+            "{}",
+            "=== DEBUG: Config Settings ===".yellow().bold()
+        ));
+        emit(format!("{}", "─".repeat(50).dimmed()));
 
         // グローバル設定ファイルパス
         if let Ok(global_path) = Config::global_config_path() {
             if global_path.exists() {
-                println!(
+                emit(format!(
                     "  Global config: {}",
                     global_path.display().to_string().cyan()
-                );
+                ));
             } else {
-                println!(
+                emit(format!(
                     "  Global config: {} (not found)",
                     global_path.display().to_string().dimmed()
-                );
+                ));
             }
         }
 
         // プロジェクト設定ファイルパス
         if let Ok(Some(project_path)) = Config::project_config_path() {
-            println!(
+            emit(format!(
                 "  Project config: {}",
                 project_path.display().to_string().cyan()
-            );
+            ));
         } else {
-            println!("  Project config: {}", "(not found)".dimmed());
+            emit(format!("  Project config: {}", "(not found)".dimmed()));
         }
 
-        println!("{}", "─".repeat(50).dimmed());
-        println!("{}", "Effective settings:".yellow());
-        println!("  providers: {:?}", config.providers);
-        println!("  language: {}", config.language);
-        println!("  models.opencode: {}", config.models.opencode);
+        emit(format!("{}", "─".repeat(50).dimmed()));
+        emit(format!("{}", "Effective settings:".yellow()));
+        emit(format!("  providers: {:?}", config.providers));
+        emit(format!("  language: {}", config.language));
+        emit(format!("  models.opencode: {}", config.models.opencode));
         // gemini モデルは互換のため受理するが、Antigravity CLI では利用されない。
         // 空文字列の場合は debug 表示そのものを省略してノイズを避ける。
         if !config.models.gemini.is_empty() {
-            println!(
+            emit(format!(
                 "  models.gemini: {} (legacy, ignored by Antigravity CLI)",
                 config.models.gemini
-            );
+            ));
         }
-        println!("  models.codex: {}", config.models.codex);
-        println!(
+        emit(format!("  models.codex: {}", config.models.codex));
+        emit(format!(
             "  codex_reasoning_effort: {}",
             if config.codex_reasoning_effort.is_empty() {
                 "(omitted)".to_string()
             } else {
                 config.codex_reasoning_effort.clone()
             }
-        );
-        println!("  models.claude: {}", config.models.claude);
-        println!("  prefix_type: {:?}", config.prefix_type);
-        println!("  auto_push: {:?}", config.auto_push);
-        println!("  nano_buddy: {}", config.nano_buddy);
-        println!("  prefix_scripts: {} rule(s)", config.prefix_scripts.len());
-        println!("  prefix_rules: {} rule(s)", config.prefix_rules.len());
-        println!(
+        ));
+        emit(format!("  models.claude: {}", config.models.claude));
+        emit(format!("  prefix_type: {:?}", config.prefix_type));
+        emit(format!("  auto_push: {:?}", config.auto_push));
+        emit(format!("  nano_buddy: {}", config.nano_buddy));
+        emit(format!(
+            "  prefix_scripts: {} rule(s)",
+            config.prefix_scripts.len()
+        ));
+        emit(format!(
+            "  prefix_rules: {} rule(s)",
+            config.prefix_rules.len()
+        ));
+        emit(format!(
             "  provider_cooldown_minutes: {}",
             config.provider_cooldown_minutes
-        );
-        println!("{}", "─".repeat(50).dimmed());
-        println!("{}", "=== END DEBUG ===".yellow().bold());
-        println!();
+        ));
+        emit(format!("{}", "─".repeat(50).dimmed()));
+        emit(format!("{}", "=== END DEBUG ===".yellow().bold()));
+        emit(String::new());
 
         Ok(())
     }
@@ -907,9 +929,23 @@ impl App {
 
         // 確認してsquash実行
         if cli.auto_confirm || self.confirm_squash(commit_count)? {
-            // soft resetしてコミット
+            // soft resetしてコミット。
+            // commit はフック(pre-commit/commit-msg)拒否や GPG 署名失敗で現実的に失敗するため、
+            // reset 前の HEAD を控えておき、失敗時はブランチを元の位置へ復旧してから
+            // エラーを返す(reset --soft は index/worktree に触れないため、復旧で実行前の
+            // 状態に完全に戻る)。復旧しないと元のコミット列が reflog にしか残らない。
+            let original_head = self.git.get_head_hash()?;
             self.git.soft_reset_to(&merge_base)?;
-            self.git.commit(&message)?;
+            if let Err(commit_err) = self.git.commit(&message) {
+                if let Err(recover_err) = self.git.soft_reset_to(&original_head) {
+                    return Err(AppError::GitError(format!(
+                        "squash commit failed: {}. Branch recovery also failed: {}. \
+                         Restore manually with: git reset --soft {}",
+                        commit_err, recover_err, original_head
+                    )));
+                }
+                return Err(commit_err);
+            }
             if cli.quiet {
                 println!("Squashed");
             } else {

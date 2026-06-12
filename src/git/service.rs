@@ -311,6 +311,23 @@ impl GitService {
             }
         }
 
+        // 「非クォート(スペース含み得る) → クォート」の rename ヘッダーを処理する
+        // (例: `diff --git a/old name.txt "b/new\303\251.txt"`)。
+        // Git は a 側 / b 側を独立にクォートするため、スペースだけを含む旧パスは
+        // 非クォート、非 ASCII の新パスはクォートという混在形が実際に出力される。
+        // 非クォート側のパスに `"` は現れない(含むなら Git がクォートする)ので、
+        // 行内で最初に現れる `"` がクォート側の開始位置として一意に定まる。
+        if !rest.starts_with('"')
+            && let Some(quote_pos) = rest.find('"')
+        {
+            let before_part = rest[..quote_pos].trim_end();
+            let (after_path, _) = Self::decode_quoted_diff_path_with_rest(&rest[quote_pos + 1..])?;
+            return Some((
+                before_part.strip_prefix("a/")?.to_string(),
+                after_path.strip_prefix("b/")?.to_string(),
+            ));
+        }
+
         // 先頭がクォートの場合はクォート解析、そうでなければ空白分割
         let (before_path, rest_after) = Self::take_diff_header_path(rest)?;
         let rest_after = rest_after.trim_start();
@@ -805,6 +822,13 @@ impl GitService {
         Ok(self.apply_all_filters(&raw))
     }
 
+    /// 現在のHEADのコミットハッシュを取得する
+    ///
+    /// squash の `reset --soft` 前に復旧先として控えるために使う。
+    pub fn get_head_hash(&self) -> Result<String, AppError> {
+        self.run_git(&["rev-parse", "HEAD"])
+    }
+
     /// 指定したコミットにsoft resetする
     pub fn soft_reset_to(&self, commit: &str) -> Result<(), AppError> {
         self.run_git_ok(&["reset", "--soft", commit])
@@ -1017,9 +1041,14 @@ impl GitService {
         // git rebase -i を実行（最古コミット対象時は --root を使う）。
         // `rebase.abbreviateCommands=false` で todo を必ず `pick` で出力させ、
         // 短縮形 `p` を前提にした置換漏れを防ぐ。
+        // `--no-autosquash` は `rebase.autoSquash=true` のユーザー設定を隔離するために必須。
+        // autosquash が効くと範囲内の `fixup!`/`squash!` コミットが todo 上で並べ替えられて
+        // 対象コミットへ黙って溶け込み、reword 以外の履歴改変が起きる。さらに `squash` 行は
+        // GIT_EDITOR (メッセージファイルをコピーするだけ) を通るため、結合先メッセージまで
+        // reword 用メッセージで上書きされてしまう。
         let mut rebase_cmd = Command::new("git");
         rebase_cmd.arg("-c").arg("rebase.abbreviateCommands=false");
-        rebase_cmd.arg("rebase").arg("-i");
+        rebase_cmd.arg("rebase").arg("-i").arg("--no-autosquash");
         if n == first_parent_total {
             rebase_cmd.arg("--root");
         } else {
@@ -1773,6 +1802,23 @@ index 1234567..abcdefg 100644
     }
 
     #[test]
+    fn test_filter_ignored_files_matches_unquoted_space_to_quoted_rename() {
+        // 「非クォート(スペース含み) → クォート」混在ヘッダーの rename でも
+        // 移動先パスが ignore 照合されてブロックが除外されること
+        let mut builder = GitignoreBuilder::new(".");
+        builder.add_line(None, "generated/**").unwrap();
+        let ignore = builder.build().unwrap();
+
+        let diff = "diff --git a/old file.txt \"b/generated/\\343\\203\\206.txt\"\n\
+                    similarity index 100%\n\
+                    rename from old file.txt\n\
+                    rename to generated/テ.txt\n";
+
+        let result = GitService::filter_ignored_files(diff, &ignore);
+        assert!(result.is_empty());
+    }
+
+    #[test]
     fn test_filter_ignored_files_matches_unquoted_path_with_spaces() {
         // 非クォートでスペースを含むパス（Git はスペースをクォートしない）を
         // .git-sc-ignore で正しく除外できることを確認する
@@ -2444,6 +2490,58 @@ index 555..666 100644
         assert!(
             !stdout.contains("rebase in progress"),
             "git status が rebase 進行中を報告している"
+        );
+    }
+
+    /// `rebase.autosquash=true` のユーザー設定下でも、reword が範囲内の
+    /// `fixup!` コミットを勝手に取り込まないことを確認する。
+    /// `--no-autosquash` がないと todo が並べ替えられ、fixup コミットが
+    /// 対象コミットへ溶け込んで履歴から消える(reword 以外の履歴改変)。
+    #[test]
+    fn test_reword_with_autosquash_config_keeps_fixup_commits_intact() {
+        let temp_dir = setup_temp_git_repo();
+        let repo = temp_dir.path();
+
+        std::fs::write(repo.join("base.txt"), "base\n").unwrap();
+        run_git_in(repo, &["add", "base.txt"]);
+        run_git_in(repo, &["commit", "-m", "base commit"]);
+
+        std::fs::write(repo.join("target.txt"), "target\n").unwrap();
+        run_git_in(repo, &["add", "target.txt"]);
+        run_git_in(repo, &["commit", "-m", "target commit"]);
+        let target_hash = git_output_in(repo, &["rev-parse", "HEAD"]);
+
+        std::fs::write(repo.join("middle.txt"), "middle\n").unwrap();
+        run_git_in(repo, &["add", "middle.txt"]);
+        run_git_in(repo, &["commit", "-m", "middle commit"]);
+
+        // 対象コミットに対する fixup! コミット(autosquash の並べ替え対象)
+        std::fs::write(repo.join("fixup.txt"), "fixup\n").unwrap();
+        run_git_in(repo, &["add", "fixup.txt"]);
+        run_git_in(repo, &["commit", "-m", "fixup! target commit"]);
+
+        // ユーザー設定で autosquash を有効化した状態を再現
+        run_git_in(repo, &["config", "rebase.autosquash", "true"]);
+
+        let service = GitService {
+            repo_path: repo.to_path_buf(),
+        };
+
+        service
+            .reword_commit_by_hash(&target_hash, "reworded target")
+            .unwrap();
+
+        // fixup! コミットが独立したまま残り、対象だけが reword されていること
+        let messages = git_output_in(repo, &["log", "--format=%s"]);
+        let subjects: Vec<&str> = messages.lines().collect();
+        assert_eq!(
+            subjects,
+            vec![
+                "fixup! target commit",
+                "middle commit",
+                "reworded target",
+                "base commit"
+            ]
         );
     }
 
@@ -3307,6 +3405,30 @@ index 555..666 100644
         let header = "diff --git a/old.txt b/new.txt";
         let result = GitService::extract_file_paths_from_diff_header(header);
         assert_eq!(result, Some(("old.txt".to_string(), "new.txt".to_string())));
+    }
+
+    #[test]
+    fn test_extract_file_paths_from_diff_header_unquoted_space_before_quoted_after() {
+        // 先頭が非クォート(スペース含み)、後半がクォートのケース。
+        // Git は a/b 両側を独立にクォートするため、スペースのみの旧パスは非クォート、
+        // 非ASCIIの新パスはクォートという混在形が実運用で発生する
+        let header = r#"diff --git a/old name.txt "b/new\303\251.txt""#;
+        let result = GitService::extract_file_paths_from_diff_header(header);
+        assert_eq!(
+            result,
+            Some(("old name.txt".to_string(), "newé.txt".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_file_paths_from_diff_header_unquoted_no_space_before_quoted_after() {
+        // 先頭が非クォート(スペースなし)、後半がクォートの既存動作の回帰確認
+        let header = r#"diff --git a/old.txt "b/new\303\251.txt""#;
+        let result = GitService::extract_file_paths_from_diff_header(header);
+        assert_eq!(
+            result,
+            Some(("old.txt".to_string(), "newé.txt".to_string()))
+        );
     }
 
     #[test]

@@ -556,12 +556,17 @@ Instructions:
             // Apple Intelligence: fm-rs feature 有効時はネイティブ呼び出し
             #[cfg(all(target_os = "macos", feature = "apple-ai"))]
             let result = if matches!(provider, AiProvider::AppleIntelligence) {
-                Self::call_apple_intelligence_native(&prompt, &self.language)
+                Self::call_apple_intelligence_native(
+                    &prompt,
+                    &self.language,
+                    prefix_type,
+                    !recent_commits.is_empty(),
+                )
             } else {
-                self.call_provider(provider, &prompt)
+                self.call_provider(provider, &prompt, silent)
             };
             #[cfg(not(all(target_os = "macos", feature = "apple-ai")))]
-            let result = self.call_provider(provider, &prompt);
+            let result = self.call_provider(provider, &prompt, silent);
 
             match result {
                 Ok(message) => {
@@ -602,7 +607,15 @@ Instructions:
     }
 
     /// 特定のAIプロバイダーを呼び出し
-    fn call_provider(&self, provider: &AiProvider, prompt: &str) -> Result<String, AppError> {
+    ///
+    /// silent: --generate-for のように stdout を生成メッセージ専用に保つモード。
+    /// デバッグ出力(コマンド表示・ストリーミング)を stderr へ逃がす。
+    fn call_provider(
+        &self,
+        provider: &AiProvider,
+        prompt: &str,
+        silent: bool,
+    ) -> Result<String, AppError> {
         // opencode は一時ファイル経由でプロンプトを渡す（stdinサポートが不明確なため）
         // TempFile の RAII ガードにより、どのパスで return しても自動クリーンアップされる
         let temp_file = if matches!(provider, AiProvider::Opencode) {
@@ -634,7 +647,7 @@ Instructions:
             } else {
                 temp_file.as_ref()
             };
-            self.print_debug_command(provider, prompt, debug_file);
+            self.print_debug_command(provider, prompt, debug_file, silent);
         }
 
         // プロセスを起動
@@ -652,7 +665,7 @@ Instructions:
         // 大きいプロンプト使用時のパイプ双方向デッドロックを防ぐ
         // (詳細は run_process_with_timeout のコメントを参照)。
         let (exit_status, stdout_str, stderr_str) =
-            self.run_process_with_timeout(&mut child, provider, uses_stdin, prompt)?;
+            self.run_process_with_timeout(&mut child, provider, uses_stdin, prompt, silent)?;
 
         let stdout_str = if let Some(output_file) = &codex_output_file {
             fs::read_to_string(output_file.path()).map_err(|e| {
@@ -690,12 +703,30 @@ Instructions:
         // 各プロバイダーの models が空文字列の場合、モデルパラメータを省略する
         let uses_stdin = match provider {
             AiProvider::Antigravity => {
+                // Windows では全プロバイダーを `cmd /C` 経由で起動するが、cmd.exe は
+                // Rust 標準の引数クォート(MSVCRT 方式の `\"`)を解釈しない。diff を含む
+                // プロンプトは常に改行や `"` を含むため、`-p` 引数渡しでは確実に
+                // コマンドラインが破損し、最悪は diff 内容を細工した任意コマンド実行
+                // (CVE-2024-24576 と同クラス)に繋がる。安全に渡す手段がないため、
+                // Windows では明示エラーにして次のプロバイダーへフォールバックさせる。
+                #[cfg(windows)]
+                {
+                    let _ = prompt;
+                    return Err(AppError::AiProviderError(
+                        "Antigravity (agy) is not supported on Windows: \
+                         prompts cannot be passed safely through cmd.exe"
+                            .to_string(),
+                    ));
+                }
                 // Antigravity CLI (`agy`) はモデル選択フラグを持たず、`--debug` フラグもない。
                 // プロンプトは `-p` 引数で渡す。長大な diff で OS の ARG_MAX を超えないよう
                 // 事前にプロンプト長をチェックし、超過時は明確なエラーで失敗させる。
-                Self::check_arg_size_limit(prompt)?;
-                cmd.args(["-p", prompt]);
-                false
+                #[cfg(not(windows))]
+                {
+                    Self::check_arg_size_limit(prompt)?;
+                    cmd.args(["-p", prompt]);
+                    false
+                }
             }
             AiProvider::Codex => {
                 // Codex のフックを常に無効化する。
@@ -773,33 +804,58 @@ Instructions:
         Ok((cmd, uses_stdin))
     }
 
+    /// デバッグ行を出力する
+    ///
+    /// silent モード(--generate-for)は「stdout には生成メッセージのみ」が契約のため、
+    /// デバッグ出力は stderr へ逃がす。通常モードでは従来どおり stdout に出す。
+    fn emit_debug_line(silent: bool, line: &str) {
+        if silent {
+            eprintln!("{}", line);
+        } else {
+            println!("{}", line);
+        }
+    }
+
     /// デバッグモード: 実行するコマンド情報を表示
     fn print_debug_command(
         &self,
         provider: &AiProvider,
         prompt: &str,
         temp_file: Option<&TempFile>,
+        silent: bool,
     ) {
         let cmd_str =
             self.format_command_for_debug(provider, prompt, temp_file.map(|tf| tf.path()));
-        println!();
-        println!("{}", "=== DEBUG: AI Provider Command ===".yellow().bold());
-        println!("{}", "─".repeat(50).dimmed());
-        println!("{}", cmd_str.cyan());
+        Self::emit_debug_line(silent, "");
+        Self::emit_debug_line(
+            silent,
+            &"=== DEBUG: AI Provider Command ==="
+                .yellow()
+                .bold()
+                .to_string(),
+        );
+        Self::emit_debug_line(silent, &"─".repeat(50).dimmed().to_string());
+        Self::emit_debug_line(silent, &cmd_str.cyan().to_string());
         // 一時ファイル使用時はファイル情報を表示
         if let Some(tf) = temp_file {
             match fs::metadata(tf.path()) {
-                Ok(meta) => println!(
-                    "  {} temp_file: {} ({} bytes)",
-                    "✓".green(),
-                    tf.path().display(),
-                    meta.len()
+                Ok(meta) => Self::emit_debug_line(
+                    silent,
+                    &format!(
+                        "  {} temp_file: {} ({} bytes)",
+                        "✓".green(),
+                        tf.path().display(),
+                        meta.len()
+                    ),
                 ),
-                Err(e) => println!("  {} temp_file: {} ({})", "✗".red(), tf.path().display(), e),
+                Err(e) => Self::emit_debug_line(
+                    silent,
+                    &format!("  {} temp_file: {} ({})", "✗".red(), tf.path().display(), e),
+                ),
             }
         }
-        println!("{}", "─".repeat(50).dimmed());
-        println!();
+        Self::emit_debug_line(silent, &"─".repeat(50).dimmed().to_string());
+        Self::emit_debug_line(silent, "");
     }
 
     /// stdout/stderr をスレッドで読み取り、タイムアウト付きでプロセス完了を待機する。
@@ -810,18 +866,20 @@ Instructions:
         provider: &AiProvider,
         uses_stdin: bool,
         prompt: &str,
+        silent: bool,
     ) -> Result<(ExitStatus, String, String), AppError> {
         let is_debug = self.debug;
 
         if is_debug {
-            println!();
-            println!(
-                "{}",
-                "=== DEBUG: AI Provider Output (streaming) ==="
+            Self::emit_debug_line(silent, "");
+            Self::emit_debug_line(
+                silent,
+                &"=== DEBUG: AI Provider Output (streaming) ==="
                     .yellow()
                     .bold()
+                    .to_string(),
             );
-            println!("{}", "─".repeat(50).dimmed());
+            Self::emit_debug_line(silent, &"─".repeat(50).dimmed().to_string());
         }
 
         let stdout_pipe = child.stdout.take();
@@ -862,7 +920,7 @@ Instructions:
                 let reader = std::io::BufReader::new(pipe);
                 for line in reader.lines().map_while(Result::ok) {
                     if is_debug {
-                        println!("  {}", line);
+                        Self::emit_debug_line(silent, &format!("  {}", line));
                     }
                     buf.push_str(&line);
                     buf.push('\n');
@@ -947,13 +1005,16 @@ Instructions:
         }
 
         if is_debug {
-            println!("{}", "─".repeat(50).dimmed());
-            println!(
-                "  {}: {}",
-                "exit code".dimmed(),
-                exit_status.to_string().cyan()
+            Self::emit_debug_line(silent, &"─".repeat(50).dimmed().to_string());
+            Self::emit_debug_line(
+                silent,
+                &format!(
+                    "  {}: {}",
+                    "exit code".dimmed(),
+                    exit_status.to_string().cyan()
+                ),
             );
-            println!();
+            Self::emit_debug_line(silent, "");
         }
 
         Ok((exit_status, stdout_str, stderr_str))
@@ -1020,9 +1081,101 @@ Instructions:
         Ok(message)
     }
 
+    /// Apple Intelligence の system instructions を構築する
+    ///
+    /// Foundation Models では system instructions がプロンプトより優先されるため、
+    /// 旧実装のように Conventional Commits を固定で強制すると `prefix_type = "none"` や
+    /// `"bracket"`、過去コミット様式への自動追従と矛盾し、prefix 設定が無視される。
+    /// 一方、on-device の小型モデルは指示への感度が低く、形式指定をプロンプト側に
+    /// 一本化した中立 instructions では出力形式が安定しない(diff の復唱等が起きる)。
+    /// そのため、プロンプトの format_section と同じ prefix_type から強制力のある
+    /// 形式ルールを動的に構築し、instructions とプロンプトを常に一致させる。
+    #[cfg(all(target_os = "macos", feature = "apple-ai"))]
+    fn build_apple_instructions(
+        language: &str,
+        prefix_type: Option<&str>,
+        has_recent_commits: bool,
+    ) -> String {
+        // Conventional Commits を強制する形式ルール。
+        // 明示指定時と、自動判定で参照すべき直近コミットがない場合
+        // (プロンプト側も Conventional ガイドへフォールバックする)に使う。
+        let conventional_rule = || {
+            format!(
+                "CRITICAL FORMAT RULE: The commit message MUST start with a type prefix \
+                 followed by a COLON and a SPACE.\n\
+                 Correct: \"feat: add user authentication\"\n\
+                 Correct: \"fix: resolve null pointer error\"\n\
+                 WRONG:   \"feat add user authentication\" (missing colon)\n\
+                 WRONG:   \"Add user authentication\" (missing prefix)\n\n\
+                 The format is ALWAYS: <type>: <description>\n\n\
+                 Available types and when to use each:\n{}",
+                CONVENTIONAL_COMMITS_GUIDE
+            )
+        };
+
+        let format_rule = match prefix_type {
+            Some("conventional") => conventional_rule(),
+            Some("bracket") => "CRITICAL FORMAT RULE: The commit message MUST start with a \
+                 bracket prefix such as [Add], [Fix], [Update], [Remove], [Refactor]."
+                .to_string(),
+            Some("colon") => "CRITICAL FORMAT RULE: The commit message MUST start with a \
+                 prefix such as Add:, Fix:, Update:, Remove:, Refactor:."
+                .to_string(),
+            Some("emoji") => "CRITICAL FORMAT RULE: The commit message MUST start with an \
+                 emoji prefix (e.g., ✨ for new feature, 🐛 for bug fix, 📝 for docs, \
+                 ♻️ for refactor, 🔧 for config)."
+                .to_string(),
+            Some("plain") | Some("none") => {
+                "CRITICAL FORMAT RULE: The commit message MUST NOT start with any type \
+                 prefix (no \"feat:\", \"fix:\", \"[Add]\", emoji, etc.). \
+                 Write only the description itself."
+                    .to_string()
+            }
+            Some(custom) => format!(
+                "CRITICAL FORMAT RULE: The commit message MUST use the following prefix \
+                 format: {}",
+                custom
+            ),
+            // 自動判定モード: プロンプト内の直近コミット一覧に倣わせる。
+            // 注意: ここに具体的な prefix 例("feat:" や "[Add]" 等)を書くと、
+            // on-device の小型モデルが直近コミットではなく例の方をオウム返しして
+            // しまうため、具体トークンを含まない言い回しで「形式の模倣」だけを強制する。
+            // 直近コミットが無い場合はプロンプト側も Conventional ガイドへ
+            // フォールバックするため、instructions も conventional ルールで揃える。
+            None if has_recent_commits => {
+                "CRITICAL FORMAT RULE: The user prompt lists recent commit messages from \
+                 this repository. Your commit message MUST imitate their format exactly: \
+                 the same kind of prefix (or no prefix if they have none) and the same \
+                 overall structure. Reuse the exact prefix words that appear in those \
+                 messages — never translate the prefix word into another language. \
+                 Do NOT introduce a prefix style that does not appear in those messages."
+                    .to_string()
+            }
+            None => conventional_rule(),
+        };
+
+        format!(
+            "You are a Git commit message generator. \
+            Output ONLY the commit message in {language}. No explanation, no markdown, no code blocks. \
+            Never repeat or quote the code changes themselves.\n\n\
+            {format_rule}\n\n\
+            Style rules:\n\
+            - Use short, direct phrases\n\
+            - Do NOT end with a period\n\
+            - Do NOT use polite or formal sentence endings",
+            language = language,
+            format_rule = format_rule
+        )
+    }
+
     /// Apple Intelligence をネイティブ呼び出し（fm-rs経由）
     #[cfg(all(target_os = "macos", feature = "apple-ai"))]
-    fn call_apple_intelligence_native(prompt: &str, language: &str) -> Result<String, AppError> {
+    fn call_apple_intelligence_native(
+        prompt: &str,
+        language: &str,
+        prefix_type: Option<&str>,
+        has_recent_commits: bool,
+    ) -> Result<String, AppError> {
         let model = fm_rs::SystemLanguageModel::new().map_err(|e| {
             AppError::AiProviderError(format!("Failed to initialize Apple Intelligence: {}", e))
         })?;
@@ -1033,36 +1186,8 @@ Instructions:
             )
         })?;
 
-        let instructions = format!(
-            "You are a Git commit message generator. \
-            Output ONLY a commit message in {language}. No explanation, no markdown, no code blocks.\n\n\
-            CRITICAL FORMAT RULE: The commit message MUST start with a type prefix followed by a COLON and a SPACE.\n\
-            Correct: \"feat: add user authentication\"\n\
-            Correct: \"fix: resolve null pointer error\"\n\
-            WRONG:   \"feat add user authentication\" (missing colon)\n\
-            WRONG:   \"Add user authentication\" (missing prefix)\n\n\
-            The format is ALWAYS: <type>: <description>\n\n\
-            Available types and when to use each:\n{guide}\n\n\
-            Examples:\n\
-            - New function/struct/feature → feat: <description>\n\
-            - Bug fix/error correction → fix: <description>\n\
-            - Documentation/comments/README → docs: <description>\n\
-            - Formatting/whitespace/import order → style: <description>\n\
-            - Code restructuring (no behavior change) → refactor: <description>\n\
-            - Performance improvement/caching → perf: <description>\n\
-            - Adding/updating tests → test: <description>\n\
-            - Dependencies/Cargo.toml/Makefile → build: <description>\n\
-            - CI/CD workflow changes → ci: <description>\n\
-            - .gitignore/LICENSE/config files → chore: <description>\n\
-            - Removing/reverting code → revert: <description>\n\n\
-            Style rules:\n\
-            - Use short, direct phrases\n\
-            - Do NOT end with a period\n\
-            - Do NOT use polite or formal sentence endings\n\
-            - Keep under 72 characters",
-            language = language,
-            guide = CONVENTIONAL_COMMITS_GUIDE
-        );
+        let instructions =
+            Self::build_apple_instructions(language, prefix_type, has_recent_commits);
 
         let session = fm_rs::Session::with_instructions(&model, &instructions)
             .map_err(|e| AppError::AiProviderError(format!("Failed to create session: {}", e)))?;
@@ -2200,6 +2325,82 @@ mod tests {
         assert!(debug.contains(&output_file.path().to_string_lossy().to_string()));
     }
 
+    /// Windows では全プロバイダーを `cmd /C` 経由で起動するが、cmd.exe は Rust 標準の
+    /// 引数クォートを解釈しないため、diff を含むプロンプトを `-p` 引数で安全に渡せない。
+    /// Antigravity はコマンド構築段階で明示エラーになり、フォールバックへ進むこと。
+    #[cfg(windows)]
+    #[test]
+    fn test_build_provider_command_rejects_antigravity_on_windows() {
+        let service = AiService::new();
+
+        let result =
+            service.build_provider_command(&AiProvider::Antigravity, "feat: test", None, None);
+
+        match result {
+            Err(AppError::AiProviderError(msg)) => {
+                assert!(msg.contains("Windows"), "unexpected message: {}", msg);
+            }
+            other => panic!("expected AiProviderError, got {:?}", other.map(|_| ())),
+        }
+    }
+
+    /// Antigravity (Unix系) はプロンプトを `-p` 引数で渡し、stdin を使わないこと
+    #[cfg(not(windows))]
+    #[test]
+    fn test_build_provider_command_antigravity_passes_prompt_as_arg() {
+        let service = AiService::new();
+
+        let (cmd, uses_stdin) = service
+            .build_provider_command(&AiProvider::Antigravity, "feat: test", None, None)
+            .unwrap();
+        let debug = format!("{:?}", cmd);
+
+        assert!(!uses_stdin);
+        assert!(debug.contains("\"-p\""));
+        assert!(debug.contains("feat: test"));
+    }
+
+    /// Apple Intelligence の system instructions が prefix_type に連動すること。
+    /// 旧実装は Conventional Commits を固定強制しており、prefix_type 設定
+    /// (none/bracket/emoji等)や過去コミット様式への自動追従と矛盾していた。
+    #[cfg(all(target_os = "macos", feature = "apple-ai"))]
+    #[test]
+    fn test_apple_instructions_follow_prefix_type() {
+        // conventional: 従来どおり type prefix を強制
+        let conventional =
+            AiService::build_apple_instructions("Japanese", Some("conventional"), false);
+        assert!(conventional.contains("Japanese"));
+        assert!(conventional.contains("MUST start with a type prefix"));
+        assert!(conventional.contains("feat:"));
+
+        // none/plain: prefix の禁止を明示(固定強制の矛盾が解消されていること)
+        let none = AiService::build_apple_instructions("Japanese", Some("none"), false);
+        assert!(none.contains("MUST NOT start with any type prefix"));
+        let plain = AiService::build_apple_instructions("Japanese", Some("plain"), false);
+        assert!(plain.contains("MUST NOT start with any type prefix"));
+
+        // bracket: 角括弧形式を強制
+        let bracket = AiService::build_apple_instructions("Japanese", Some("bracket"), false);
+        assert!(bracket.contains("[Add]"));
+        assert!(!bracket.contains("MUST start with a type prefix"));
+
+        // カスタム prefix はそのまま指示に含める
+        let custom = AiService::build_apple_instructions("Japanese", Some("MYPROJ-"), false);
+        assert!(custom.contains("MYPROJ-"));
+
+        // 自動判定(直近コミットあり): 模倣を強制しつつ、具体的な prefix 例を
+        // 含めない(小型モデルが例をオウム返しするのを防ぐ)
+        let auto = AiService::build_apple_instructions("Japanese", None, true);
+        assert!(auto.contains("MUST imitate their format"));
+        assert!(!auto.contains("feat:"));
+        assert!(!auto.contains("[Add]"));
+
+        // 自動判定(直近コミットなし): プロンプト側のフォールバックと同じく
+        // conventional ルールで揃える
+        let auto_empty = AiService::build_apple_instructions("Japanese", None, false);
+        assert!(auto_empty.contains("MUST start with a type prefix"));
+    }
+
     #[test]
     fn test_format_command_for_debug_claude_empty_model() {
         let mut service = AiService::new();
@@ -2314,7 +2515,10 @@ mod tests {
         }
         let prompt = AiService::build_prompt(diff, &[], "English", prefix_type, with_body, None);
         Some(AiService::call_apple_intelligence_native(
-            &prompt, "English",
+            &prompt,
+            "English",
+            prefix_type,
+            false,
         ))
     }
 
@@ -2711,7 +2915,10 @@ mod tests {
         }
         let prompt = AiService::build_prompt(diff, &[], "Japanese", prefix_type, false, None);
         Some(AiService::call_apple_intelligence_native(
-            &prompt, "Japanese",
+            &prompt,
+            "Japanese",
+            prefix_type,
+            false,
         ))
     }
 
@@ -2816,7 +3023,7 @@ mod tests {
         service.timeout_seconds = 5;
 
         let (status, stdout, stderr) = service
-            .run_process_with_timeout(&mut child, &AiProvider::Codex, false, "")
+            .run_process_with_timeout(&mut child, &AiProvider::Codex, false, "", false)
             .unwrap();
 
         assert!(status.success());
@@ -2837,7 +3044,8 @@ mod tests {
         let mut service = AiService::new();
         service.timeout_seconds = 0;
 
-        let result = service.run_process_with_timeout(&mut child, &AiProvider::Codex, false, "");
+        let result =
+            service.run_process_with_timeout(&mut child, &AiProvider::Codex, false, "", false);
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("timed out"));
@@ -2869,7 +3077,7 @@ mod tests {
         let large_prompt = "x".repeat(1_000_000);
 
         let (status, stdout, _stderr) = service
-            .run_process_with_timeout(&mut child, &AiProvider::Codex, true, &large_prompt)
+            .run_process_with_timeout(&mut child, &AiProvider::Codex, true, &large_prompt, false)
             .unwrap();
 
         // デッドロックせず子は正常終了し、stdout も全量読み取れている
@@ -2899,8 +3107,13 @@ mod tests {
         // メインの try_wait ループがタイムアウトを検出して kill するためデッドロックしない。
         let large_prompt = "x".repeat(1_000_000);
 
-        let result =
-            service.run_process_with_timeout(&mut child, &AiProvider::Codex, true, &large_prompt);
+        let result = service.run_process_with_timeout(
+            &mut child,
+            &AiProvider::Codex,
+            true,
+            &large_prompt,
+            false,
+        );
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("timed out"));
@@ -2929,8 +3142,13 @@ mod tests {
         // パイプバッファを超える大きさ。子が読まずに終了するため write_all は BrokenPipe になる。
         let large_prompt = "x".repeat(1_000_000);
 
-        let result =
-            service.run_process_with_timeout(&mut child, &AiProvider::Codex, true, &large_prompt);
+        let result = service.run_process_with_timeout(
+            &mut child,
+            &AiProvider::Codex,
+            true,
+            &large_prompt,
+            false,
+        );
 
         assert!(result.is_err());
         assert!(

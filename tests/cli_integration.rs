@@ -1080,3 +1080,111 @@ fn test_reword_succeeds_with_rebase_abbreviate_commands_true() {
         messages
     );
 }
+
+/// squash で `reset --soft` 後の `git commit` がフックに拒否された場合、
+/// ブランチが merge-base まで巻き戻されたまま放置されず、元の HEAD へ
+/// 復旧されることを確認する(復旧がないと元のコミット列は reflog にしか残らない)
+#[cfg(unix)]
+#[test]
+fn test_squash_commit_failure_restores_original_head() {
+    let dir = setup_git_repo_with_commit();
+    let path = setup_fake_opencode_path(&dir);
+
+    let branch_output = std::process::Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let base_branch = String::from_utf8_lossy(&branch_output.stdout)
+        .trim()
+        .to_string();
+
+    std::process::Command::new("git")
+        .args(["checkout", "-b", "feature/squash-recovery"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    commit_change(&dir, "# Test\nfeature1\n", "feature commit 1");
+    commit_change(&dir, "# Test\nfeature2\n", "feature commit 2");
+
+    let head_output = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let original_head = String::from_utf8_lossy(&head_output.stdout)
+        .trim()
+        .to_string();
+
+    // squash 本体の commit だけを拒否する pre-commit フックを配置
+    // (テスト用コミットの作成後に配置するため、上記の commit_change には影響しない)
+    let hooks_dir = dir.path().join(".git").join("hooks");
+    std::fs::create_dir_all(&hooks_dir).unwrap();
+    let hook_path = hooks_dir.join("pre-commit");
+    std::fs::write(&hook_path, "#!/bin/sh\nexit 1\n").unwrap();
+    let mut perms = std::fs::metadata(&hook_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&hook_path, perms).unwrap();
+
+    git_sc!()
+        .args(["--quiet", "--squash", &base_branch, "--yes"])
+        .env("PATH", path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure();
+
+    // ブランチが元の HEAD に復旧していること
+    let restored_head = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&restored_head.stdout).trim(),
+        original_head,
+        "squash 失敗後にブランチが元の HEAD へ復旧されていない"
+    );
+
+    // staged 状態も実行前(なし)に戻っていること
+    let staged_output = std::process::Command::new("git")
+        .args(["diff", "--cached", "--name-only"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&staged_output.stdout).trim(),
+        "",
+        "squash 失敗後に staged 変更が残存している"
+    );
+}
+
+/// --generate-for は「stdout には生成メッセージのみ」が契約。
+/// --debug を併用してもデバッグ出力(設定・コマンド・ストリーミング)は
+/// すべて stderr へ出力され、stdout がメッセージのみであることを確認する
+#[test]
+fn test_generate_for_debug_keeps_stdout_message_only() {
+    let dir = setup_git_repo_with_commit();
+    let path = setup_fake_opencode_path(&dir);
+
+    let hash_output = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let head_hash = String::from_utf8_lossy(&hash_output.stdout)
+        .trim()
+        .to_string();
+
+    git_sc!()
+        .args(["--generate-for", &head_hash, "--debug"])
+        .env("PATH", path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::eq("feat: quiet integration test\n"))
+        .stderr(predicate::str::contains("=== DEBUG"));
+}
