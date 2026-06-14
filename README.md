@@ -303,9 +303,11 @@ provider_timeout_seconds = 60
 | `prefix_rules` | URL-based prefix format | `[]` |
 | `prefix_scripts` | External prefix scripts | `[]` |
 
-Existing global config files are not rewritten automatically. The current Codex default is `gpt-5.4-mini`; to use it in an existing setup, update `models.codex` in `~/.config/git-sc/config.toml`. This default was reselected on June 9, 2026 (JST) by comparing `input_tokens` for Codex models that are API-visible, listed, and support `medium` reasoning.
+Existing global config files are not rewritten automatically. The current Codex default is `gpt-5.4-mini`; to use it in an existing setup, update `models.codex` in `~/.config/git-sc/config.toml`. This default was reselected on June 9, 2026 (JST) by comparing `input_tokens` for Codex models that are API-visible, listed, and support `medium` reasoning, and re-verified on June 15, 2026 (JST).
 
-Provider cooldown state normalizes legacy aliases before reordering providers, so `gemini`/`agy` cooldown entries still apply to `antigravity`, and legacy `apple-ai` / `apple_intelligence` entries still apply to `apple-intelligence`.
+The default Antigravity (`agy`) model is `GPT-OSS 120B (Medium)`. `agy`'s print mode currently exposes no official way to emit per-request token usage (as of June 2026, `--json` / `--output` are still a feature request upstream), so an `input_tokens` comparison like Codex's is not possible. The default therefore follows public pricing: OpenAI's GPT-OSS 120B (open-weight) has the lowest per-token price among the models `agy` offers (listed input $0.039-0.15 / output $0.18-0.60 per 1M tokens). Selected June 15, 2026 (JST). To use it in an existing setup, add or update `models.antigravity` in `~/.config/git-sc/config.toml`, or set it to `""` to defer to agy's own default.
+
+Provider cooldown state normalizes legacy aliases before reordering providers, so `gemini`/`agy` cooldown entries still apply to `antigravity`, and legacy `apple-ai` / `apple_intelligence` entries still apply to `apple-intelligence`. Running with `--debug` also prints a one-time notice when a legacy `gemini` provider alias is found in your config, reminding you that it is normalized to `antigravity`.
 
 ### prefix_type Values
 

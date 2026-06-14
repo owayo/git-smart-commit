@@ -268,9 +268,14 @@ auto_push = true
 codex_reasoning_effort = "low"
 
 # モデル設定
-# 注: Antigravity CLI (`agy`) はモデル選択フラグを持たないため、`gemini` 行は不要
-# (旧 git-sc が生成した `gemini = "..."` 行は後方互換のためパースされるが実行時には無視されます)
+# Antigravity CLI (`agy`) は `--model` に対応。`antigravity` の値はそのまま
+# `agy --model "<名前>"` に渡されます。`agy models` が表示する名前
+# (例: "GPT-OSS 120B (Medium)"、"Gemini 3.5 Flash (Low)") をそのまま指定してください。
+# 空文字列なら `--model` を省略し agy 自身の既定モデルに委ねます。
+# 旧 `gemini = "..."` キーは後方互換の入力エイリアスとして受理され、`antigravity` に
+# 昇格します(両方指定した場合は `antigravity` が優先)。
 [models]
+antigravity = "GPT-OSS 120B (Medium)"
 codex = "gpt-5.4-mini"
 claude = "haiku"
 opencode = ""
@@ -297,9 +302,11 @@ provider_timeout_seconds = 60
 | `prefix_rules` | URLベースのプレフィックス形式 | `[]` |
 | `prefix_scripts` | 外部プレフィックススクリプト | `[]` |
 
-既存のグローバル設定ファイルは自動では書き換えられません。現在の Codex 既定モデルは `gpt-5.4-mini` です。既存設定で使うには、`~/.config/git-sc/config.toml` の `models.codex` を更新してください。この既定値は、API で利用可能・一覧表示対象・`medium` reasoning 対応の Codex モデルについて `input_tokens` を比較し、2026年6月9日 (JST) に再選定したものです。
+既存のグローバル設定ファイルは自動では書き換えられません。現在の Codex 既定モデルは `gpt-5.4-mini` です。既存設定で使うには、`~/.config/git-sc/config.toml` の `models.codex` を更新してください。この既定値は、API で利用可能・一覧表示対象・`medium` reasoning 対応の Codex モデルについて `input_tokens` を比較し、2026年6月9日 (JST) に再選定し、2026年6月15日 (JST) に再確認したものです。
 
-プロバイダーのクールダウン状態は、並び替え前に旧エイリアスを正規化します。そのため `gemini`/`agy` のクールダウンは `antigravity` に、旧 `apple-ai` / `apple_intelligence` キーは `apple-intelligence` に引き続き適用されます。
+Antigravity (`agy`) の既定モデルは `GPT-OSS 120B (Medium)` です。`agy` の print mode には現状、1リクエストのトークン使用量を出力する公式手段がない（2026年6月時点、`--json` / `--output` は upstream で機能要望段階）ため、Codex のような `input_tokens` 実測比較はできません。そこで公式の料金情報に従い、`agy` が提供するモデル中もっともトークン単価が安い OpenAI の GPT-OSS 120B（オープンウェイト、公称 input $0.039-0.15 / output $0.18-0.60 per 1M tokens）を既定としています。2026年6月15日 (JST) 選定。既存設定で使うには `~/.config/git-sc/config.toml` の `models.antigravity` を追加・更新するか、`""` を指定して agy 自身の既定に委ねてください。
+
+プロバイダーのクールダウン状態は、並び替え前に旧エイリアスを正規化します。そのため `gemini`/`agy` のクールダウンは `antigravity` に、旧 `apple-ai` / `apple_intelligence` キーは `apple-intelligence` に引き続き適用されます。`--debug` 付きで実行すると、設定の providers に旧 `gemini` エイリアスが残っている場合に「`antigravity` に正規化される」旨の注意が一度だけ表示されます。
 
 ### prefix_type の値
 
