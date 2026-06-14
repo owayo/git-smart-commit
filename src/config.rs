@@ -7,14 +7,17 @@ use crate::error::AppError;
 
 /// 各プロバイダーのモデル設定
 ///
-/// 注: `gemini` フィールドは旧 Gemini CLI 時代の互換のために残しているが、
-/// 後継の Antigravity CLI (`agy`) はモデル選択フラグを持たないため、
-/// この値が指定されていても内部処理では使用されない。
-/// 既存設定ファイルでパースエラーを起こさない目的のみで存在する。
+/// 注: Antigravity CLI (`agy`) は v1.0.x で `--model` フラグに対応したため、
+/// `antigravity` フィールドの値を agy の `--model` にそのまま渡す。
+/// 旧 `gemini` キーは後方互換の入力エイリアスとして受理し、読み込み時に
+/// `antigravity` へ昇格する(`PartialModelsConfig` 参照)。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelsConfig {
-    #[serde(default = "default_gemini_model")]
-    pub gemini: String,
+    /// Antigravity CLI (`agy`) の `--model` に渡すモデル名。
+    /// `agy models` が表示する名前(例: "GPT-OSS 120B (Medium)")をそのまま指定する。
+    /// 空文字列なら `--model` を省略し agy 自身の既定モデルに委ねる。
+    #[serde(default = "default_antigravity_model")]
+    pub antigravity: String,
     #[serde(default = "default_codex_model")]
     pub codex: String,
     #[serde(default = "default_claude_model")]
@@ -23,10 +26,16 @@ pub struct ModelsConfig {
     pub opencode: String,
 }
 
-/// 旧 Gemini CLI 時代の互換用デフォルト。Antigravity CLI ではモデル指定が無いため
-/// 既定では空文字列にして「未指定」を示す。
-fn default_gemini_model() -> String {
-    String::new()
+/// Antigravity CLI (`agy`) のデフォルトモデル。
+///
+/// agy の print mode にはトークン使用量(input_tokens)を機械的に出力する公式手段が
+/// 無い(2026-06 時点。公式フォーラムで `--json`/`--output` が未実装の機能要望段階)ため、
+/// Codex のような実測比較はできない。そこで公式の料金情報で、agy が提供するモデル中
+/// もっともトークン単価が安い OpenAI の GPT-OSS 120B(オープンウェイト、公称 input
+/// $0.039-0.15 / output $0.18-0.60 per 1M tokens)を既定とする。2026-06-15 (JST) 選定。
+/// `agy models` の表示名をそのまま使う。空文字列にすれば agy 自身の既定に委ねられる。
+fn default_antigravity_model() -> String {
+    "GPT-OSS 120B (Medium)".to_string()
 }
 
 fn default_codex_model() -> String {
@@ -44,7 +53,7 @@ fn default_opencode_model() -> String {
 impl Default for ModelsConfig {
     fn default() -> Self {
         Self {
-            gemini: default_gemini_model(),
+            antigravity: default_antigravity_model(),
             codex: default_codex_model(),
             claude: default_claude_model(),
             opencode: default_opencode_model(),
@@ -57,6 +66,10 @@ impl Default for ModelsConfig {
 /// `Option<T>` により「未指定」と「明示的にデフォルト値を指定」を区別する。
 #[derive(Debug, Default, Deserialize)]
 struct PartialModelsConfig {
+    /// Antigravity CLI (`agy`) の `--model` に渡すモデル名(canonical キー)
+    pub antigravity: Option<String>,
+    /// 旧 Gemini CLI 時代の互換キー(入力専用)。
+    /// `antigravity` 未指定時のみ昇格して使う。
     pub gemini: Option<String>,
     pub codex: Option<String>,
     pub claude: Option<String>,
@@ -91,7 +104,12 @@ impl PartialConfig {
             providers: self.providers.unwrap_or(defaults.providers),
             language: self.language.unwrap_or(defaults.language),
             models: ModelsConfig {
-                gemini: self.models.gemini.unwrap_or(defaults.models.gemini),
+                // 旧 `gemini` キーは `antigravity` 未指定時のみ昇格して採用する。
+                antigravity: self
+                    .models
+                    .antigravity
+                    .or(self.models.gemini)
+                    .unwrap_or(defaults.models.antigravity),
                 codex: self.models.codex.unwrap_or(defaults.models.codex),
                 claude: self.models.claude.unwrap_or(defaults.models.claude),
                 opencode: self.models.opencode.unwrap_or(defaults.models.opencode),
@@ -123,8 +141,9 @@ impl PartialConfig {
         if let Some(language) = self.language {
             config.language = language;
         }
-        if let Some(gemini) = self.models.gemini {
-            config.models.gemini = gemini;
+        // 旧 `gemini` キーは `antigravity` 未指定時のみ昇格して採用する。
+        if let Some(antigravity) = self.models.antigravity.or(self.models.gemini) {
+            config.models.antigravity = antigravity;
         }
         if let Some(codex) = self.models.codex {
             config.models.codex = codex;
@@ -397,6 +416,7 @@ impl Config {
     /// init コマンド用のデフォルト設定ファイル内容を生成
     pub fn default_config_content() -> String {
         let codex_model = default_codex_model();
+        let antigravity_model = default_antigravity_model();
         let providers = if cfg!(all(target_os = "macos", feature = "apple-ai")) {
             r#"providers = ["opencode", "antigravity", "codex", "claude", "apple-intelligence"]"#
         } else {
@@ -443,9 +463,11 @@ provider_timeout_seconds = 60
 codex_reasoning_effort = "low"
 
 # 各プロバイダーのモデル設定
-# 注: Antigravity CLI (`agy`) はモデル選択フラグを持たないため、`gemini` 行は記載しません
-# (旧 git-sc が生成した `gemini = "..."` 行が残っていても無視されます)
+# Antigravity CLI (`agy`) は `--model` に対応。`agy models` の表示名をそのまま指定する
+# (空文字列なら agy 既定モデルに委ねる)。旧 `gemini = "..."` キーは後方互換で
+# antigravity に昇格して扱われる。
 [models]
+antigravity = "{antigravity_model}"
 codex = "{codex_model}"
 claude = "haiku"
 opencode = ""
@@ -513,8 +535,8 @@ impl Config {
         }
 
         // ModelsConfig: 個別フィールドをマージ
-        if other.models.gemini != ModelsConfig::default().gemini {
-            self.models.gemini = other.models.gemini;
+        if other.models.antigravity != ModelsConfig::default().antigravity {
+            self.models.antigravity = other.models.antigravity;
         }
         if other.models.codex != ModelsConfig::default().codex {
             self.models.codex = other.models.codex;
@@ -593,9 +615,8 @@ codex_reasoning_effort = "high"
     fn test_default_models_config() {
         let models = ModelsConfig::default();
 
-        // gemini フィールドは互換用に残しているが、Antigravity CLI ではモデル指定が不要なので
-        // 既定値は空文字列。
-        assert_eq!(models.gemini, "");
+        // antigravity のデフォルトは agy 提供モデル中もっとも単価が安い GPT-OSS 120B。
+        assert_eq!(models.antigravity, default_antigravity_model());
         assert_eq!(models.codex, default_codex_model());
         assert_eq!(models.claude, "haiku");
         assert_eq!(models.opencode, "");
@@ -622,8 +643,8 @@ codex_reasoning_effort = "high"
 
         assert_eq!(config.providers, vec!["gemini".to_string()]);
         assert_eq!(config.language, "English");
-        // gemini モデルフィールドは互換のため受理するが、既定は空文字列
-        assert_eq!(config.models.gemini, "");
+        // antigravity モデルは未指定なのでデフォルト値
+        assert_eq!(config.models.antigravity, default_antigravity_model());
         assert!(config.prefix_scripts.is_empty());
         assert!(config.prefix_rules.is_empty());
         assert_eq!(config.provider_cooldown_minutes, 60);
@@ -732,7 +753,7 @@ providers = ["claude", "gemini", "codex"]
 language = "English"
 
 [models]
-gemini = "pro"
+antigravity = "pro"
 codex = "gpt-4"
 claude = "opus"
 
@@ -756,7 +777,7 @@ prefix_type = "conventional"
             ]
         );
         assert_eq!(config.language, "English");
-        assert_eq!(config.models.gemini, "pro");
+        assert_eq!(config.models.antigravity, "pro");
         assert_eq!(config.models.codex, "gpt-4");
         assert_eq!(config.models.claude, "opus");
         assert_eq!(config.prefix_scripts.len(), 1);
@@ -773,7 +794,7 @@ prefix_type = "conventional"
 
         assert_eq!(config.providers, deserialized.providers);
         assert_eq!(config.language, deserialized.language);
-        assert_eq!(config.models.gemini, deserialized.models.gemini);
+        assert_eq!(config.models.antigravity, deserialized.models.antigravity);
     }
 
     // ============================================================
@@ -962,7 +983,7 @@ language = "Japanese"
 
         let project = Config {
             models: ModelsConfig {
-                gemini: "pro".to_string(),
+                antigravity: "pro".to_string(),
                 claude: "opus".to_string(),
                 ..Default::default()
             },
@@ -972,7 +993,7 @@ language = "Japanese"
         global.merge_with(project);
 
         // プロジェクト設定のモデルが上書きされる
-        assert_eq!(global.models.gemini, "pro");
+        assert_eq!(global.models.antigravity, "pro");
         assert_eq!(global.models.claude, "opus");
         // 変更されていないモデルはデフォルトのまま
         assert_eq!(global.models.codex, default_codex_model());
@@ -1064,7 +1085,7 @@ auto_push = true
 provider_cooldown_minutes = 60
 
 [models]
-gemini = "gemini-2.5-flash-lite"
+antigravity = "gemini-2.5-flash-lite"
 codex = "gpt-5.4-mini"
 claude = "haiku"
 "#;
@@ -1078,7 +1099,7 @@ auto_push = false
 provider_cooldown_minutes = 15
 
 [models]
-gemini = "pro"
+antigravity = "pro"
 codex = "gpt-5.4-mini"
 claude = "haiku"
 "#;
@@ -1094,7 +1115,7 @@ claude = "haiku"
         assert_eq!(global.prefix_type, Some("bracket".to_string()));
         assert_eq!(global.auto_push, Some(false));
         assert_eq!(global.provider_cooldown_minutes, 15);
-        assert_eq!(global.models.gemini, "pro");
+        assert_eq!(global.models.antigravity, "pro");
         // claude は変更されていないのでグローバル設定のまま（両方 haiku）
         assert_eq!(global.models.claude, "haiku");
     }
@@ -1483,15 +1504,15 @@ unknown_field = "some_value"
 
         let project = Config {
             models: ModelsConfig {
-                gemini: "gemini-2.5-pro".to_string(),
+                antigravity: "gemini-2.5-pro".to_string(),
                 ..Default::default()
             },
             ..Default::default()
         };
 
         global.merge_with(project);
-        // gemini のみ上書きされる
-        assert_eq!(global.models.gemini, "gemini-2.5-pro");
+        // antigravity のみ上書きされる
+        assert_eq!(global.models.antigravity, "gemini-2.5-pro");
         // 他はデフォルトのまま
         assert_eq!(global.models.codex, default_codex_model());
         assert_eq!(global.models.claude, "haiku");
@@ -1661,7 +1682,7 @@ gemini = "gemini-2.5-pro"
             providers: vec!["claude".to_string()],
             language: "English".to_string(),
             models: ModelsConfig {
-                gemini: "pro".to_string(),
+                antigravity: "pro".to_string(),
                 codex: "gpt-5".to_string(),
                 claude: "opus".to_string(),
                 opencode: "custom".to_string(),
@@ -1689,7 +1710,7 @@ gemini = "gemini-2.5-pro"
         // 全フィールドが元の値のまま保持される
         assert_eq!(config.providers, vec!["claude".to_string()]);
         assert_eq!(config.language, "English");
-        assert_eq!(config.models.gemini, "pro");
+        assert_eq!(config.models.antigravity, "pro");
         assert_eq!(config.models.codex, "gpt-5");
         assert_eq!(config.models.claude, "opus");
         assert_eq!(config.models.opencode, "custom");
@@ -1720,7 +1741,7 @@ provider_timeout_seconds = 90
 nano_buddy = true
 
 [models]
-gemini = "gemini-2.5-pro"
+antigravity = "gemini-2.5-pro"
 codex = "gpt-5"
 claude = "opus"
 opencode = "custom-model"
@@ -1742,7 +1763,7 @@ prefix_type = "conventional"
             vec!["codex".to_string(), "claude".to_string()]
         );
         assert_eq!(config.language, "English");
-        assert_eq!(config.models.gemini, "gemini-2.5-pro");
+        assert_eq!(config.models.antigravity, "gemini-2.5-pro");
         assert_eq!(config.models.codex, "gpt-5");
         assert_eq!(config.models.claude, "opus");
         assert_eq!(config.models.opencode, "custom-model");
@@ -1797,12 +1818,12 @@ prefix_type = "conventional"
         assert_eq!(config.prefix_scripts[0].script, "original.sh");
     }
 
-    /// ModelsConfig の部分マージ: gemini のみ指定し、他のモデルは保持される
+    /// ModelsConfig の部分マージ: 旧 `gemini` キーは `antigravity` に昇格し、他のモデルは保持される
     #[test]
-    fn test_partial_merge_into_models_partial_only_gemini() {
+    fn test_partial_merge_into_legacy_gemini_promotes_to_antigravity() {
         let mut config = Config {
             models: ModelsConfig {
-                gemini: "old-gemini".to_string(),
+                antigravity: "old-antigravity".to_string(),
                 codex: "old-codex".to_string(),
                 claude: "old-claude".to_string(),
                 opencode: "old-opencode".to_string(),
@@ -1810,6 +1831,7 @@ prefix_type = "conventional"
             ..Default::default()
         };
 
+        // 旧 git-sc が書いた legacy `gemini` キーのみを含むプロジェクト設定
         let toml = r#"
 [models]
 gemini = "gemini-2.5-pro"
@@ -1817,8 +1839,8 @@ gemini = "gemini-2.5-pro"
         let partial: PartialConfig = toml::from_str(toml).unwrap();
         partial.merge_into(&mut config);
 
-        // gemini のみ上書きされる
-        assert_eq!(config.models.gemini, "gemini-2.5-pro");
+        // legacy `gemini` が antigravity に昇格して上書きされる
+        assert_eq!(config.models.antigravity, "gemini-2.5-pro");
         // 他のモデルは元の値が保持される
         assert_eq!(config.models.codex, "old-codex");
         assert_eq!(config.models.claude, "old-claude");
@@ -1916,7 +1938,7 @@ gemini = "gemini-2.5-pro"
         let content = Config::default_config_content();
         let config = Config::from_str(&content).unwrap();
 
-        assert_eq!(config.models.gemini, default_gemini_model());
+        assert_eq!(config.models.antigravity, default_antigravity_model());
         assert_eq!(config.models.codex, default_codex_model());
         assert!(content.contains(r#"codex = "gpt-5.4-mini""#));
         assert_eq!(config.models.claude, default_claude_model());

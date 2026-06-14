@@ -269,9 +269,14 @@ auto_push = true
 codex_reasoning_effort = "low"
 
 # Model configuration
-# Note: Antigravity CLI (`agy`) does not accept a model flag, so no `gemini` line is needed here.
-# A legacy `gemini = "..."` value is parsed for backward compatibility but ignored at runtime.
+# Antigravity CLI (`agy`) supports `--model`: the `antigravity` value is passed straight
+# to `agy --model "<name>"`. Use the display name shown by `agy models`
+# (e.g. "GPT-OSS 120B (Medium)", "Gemini 3.5 Flash (Low)"); an empty string omits
+# `--model` and lets agy pick its own default. A legacy `gemini = "..."` key is still
+# accepted as an input alias and is promoted to `antigravity` (an explicit `antigravity`
+# value wins if both are present).
 [models]
+antigravity = "GPT-OSS 120B (Medium)"
 codex = "gpt-5.4-mini"
 claude = "haiku"
 opencode = ""

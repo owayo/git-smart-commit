@@ -106,12 +106,12 @@ impl AiService {
     pub fn from_config(config: &Config) -> Self {
         let provider_strings: Vec<String> = config.providers.clone();
 
-        // 旧 "gemini" エイリアス、または [models] gemini に値が残っているかをチェック。
-        // どちらも互換のため受理するが、debug 出力時に「無視されている / agy 用には効かない」旨を伝える。
+        // providers に旧 "gemini" エイリアスが残っているかをチェック。
+        // 互換のため受理するが、debug 出力時に「antigravity に正規化される」旨を伝える。
+        // ([models] gemini は読み込み時に antigravity へ昇格済みで、ここでは区別できない)
         let legacy_gemini_alias_detected = provider_strings
             .iter()
-            .any(|s| AiProvider::is_legacy_gemini_alias(s))
-            || !config.models.gemini.is_empty();
+            .any(|s| AiProvider::is_legacy_gemini_alias(s));
 
         // 状態を読み込んで、クールダウン中のプロバイダーを降格
         let reordered_strings = if let Ok(state) = State::load() {
@@ -169,8 +169,8 @@ impl AiService {
         if debug && self.legacy_gemini_alias_detected {
             eprintln!(
                 "{}",
-                "[git-sc] notice: 'gemini' is an alias for the new Antigravity CLI ('agy'). \
-                 The legacy [models] gemini field has no effect because agy does not accept a model flag."
+                "[git-sc] notice: 'gemini' is a legacy alias for the Antigravity CLI ('agy') and is \
+                 normalized to 'antigravity'. Prefer writing 'antigravity' (and [models] antigravity) instead."
                     .yellow()
             );
             // 通知は一度だけで十分
@@ -1084,8 +1084,11 @@ mod tests {
             4
         };
         assert_eq!(service.providers.len(), expected_len);
-        // Antigravity CLI ではモデル指定が不要なので gemini フィールドの既定は空文字列
-        assert_eq!(service.models.gemini, "");
+        // antigravity のデフォルトは GPT-OSS 120B (Medium)
+        assert_eq!(
+            service.models.antigravity,
+            Config::default().models.antigravity
+        );
         assert_eq!(service.models.codex, Config::default().models.codex);
         assert_eq!(service.models.claude, "haiku");
         assert_eq!(service.models.opencode, "");
@@ -1123,20 +1126,8 @@ mod tests {
     }
 
     #[test]
-    fn test_ai_service_from_config_detects_legacy_gemini_alias_in_models() {
-        // [models] gemini に値が入っている場合も legacy エイリアス検出フラグが立つ。
-        let mut config = Config::default();
-        config.models.gemini = "gemini-2.5-flash-lite".to_string();
-        let service = AiService::from_config(&config);
-        assert!(
-            service.legacy_gemini_alias_detected,
-            "[models] gemini に値があれば legacy alias 検出フラグが立つべき"
-        );
-    }
-
-    #[test]
     fn test_ai_service_from_config_no_legacy_alias_for_clean_config() {
-        // デフォルト設定 (antigravity provider, gemini モデル空) では legacy 検出されない。
+        // デフォルト設定 (providers に 'gemini' エイリアスなし) では legacy 検出されない。
         let config = Config::default();
         let service = AiService::from_config(&config);
         assert!(!service.legacy_gemini_alias_detected);
@@ -1173,12 +1164,12 @@ mod tests {
     #[test]
     fn test_ai_service_from_config_custom_models() {
         let mut config = Config::default();
-        config.models.gemini = "pro".to_string();
+        config.models.antigravity = "pro".to_string();
         config.models.codex = "gpt-4".to_string();
         config.models.claude = "opus".to_string();
         let service = AiService::from_config(&config);
 
-        assert_eq!(service.models.gemini, "pro");
+        assert_eq!(service.models.antigravity, "pro");
         assert_eq!(service.models.codex, "gpt-4");
         assert_eq!(service.models.claude, "opus");
     }
@@ -1241,7 +1232,8 @@ mod tests {
             cmd
         );
         assert!(cmd.contains("-p 'test prompt'"));
-        assert!(!cmd.contains("-m"));
+        // AiService::new() のデフォルトモデルが --model として付与される
+        assert!(cmd.contains("--model 'GPT-OSS 120B (Medium)'"));
         assert!(!cmd.contains("--debug"));
     }
 
@@ -1312,13 +1304,12 @@ mod tests {
     }
 
     #[test]
-    fn test_format_command_for_debug_antigravity_ignores_models_gemini() {
-        // 旧 [models] gemini に値が入っていても、Antigravity CLI 用コマンドには反映されない。
+    fn test_format_command_for_debug_antigravity_with_model() {
+        // antigravity モデルを指定すると、デバッグ表示に `--model` が現れる。
         let mut service = AiService::new();
-        service.models.gemini = "gemini-2.5-flash-lite".to_string();
+        service.models.antigravity = "GPT-OSS 120B (Medium)".to_string();
         let cmd = service.format_command_for_debug(&AiProvider::Antigravity, "test", None);
-        assert!(cmd.contains("agy -p 'test'"));
-        assert!(!cmd.contains("-m"));
+        assert!(cmd.contains("agy --model 'GPT-OSS 120B (Medium)' -p 'test'"));
     }
 
     #[test]
@@ -1407,6 +1398,37 @@ mod tests {
         assert!(!uses_stdin);
         assert!(debug.contains("\"-p\""));
         assert!(debug.contains("feat: test"));
+    }
+
+    /// Antigravity: モデル指定があれば `--model` を付与すること
+    #[cfg(not(windows))]
+    #[test]
+    fn test_build_provider_command_antigravity_passes_model() {
+        let mut service = AiService::new();
+        service.models.antigravity = "GPT-OSS 120B (Medium)".to_string();
+
+        let (cmd, _) = service
+            .build_provider_command(&AiProvider::Antigravity, "feat: test", None, None)
+            .unwrap();
+        let debug = format!("{:?}", cmd);
+
+        assert!(debug.contains("\"--model\""));
+        assert!(debug.contains("GPT-OSS 120B (Medium)"));
+    }
+
+    /// Antigravity: モデル未指定(空)なら `--model` を付けないこと
+    #[cfg(not(windows))]
+    #[test]
+    fn test_build_provider_command_antigravity_no_model_when_empty() {
+        let mut service = AiService::new();
+        service.models.antigravity = String::new();
+
+        let (cmd, _) = service
+            .build_provider_command(&AiProvider::Antigravity, "feat: test", None, None)
+            .unwrap();
+        let debug = format!("{:?}", cmd);
+
+        assert!(!debug.contains("--model"));
     }
 
     /// Apple Intelligence の system instructions が prefix_type に連動すること。
@@ -3149,14 +3171,14 @@ mod tests {
 
     #[test]
     fn test_format_command_antigravity_basic() {
-        // Antigravity CLI (`agy`) はモデル選択フラグも `--debug` フラグも持たないため、
-        // どのモデル設定であってもデバッグ表示には `-p PROMPT` だけが現れる。
+        // antigravity モデルが空なら、デバッグ表示には `-p PROMPT` だけが現れる
+        // (`--model`/`--debug` は付かない)。
         let service = AiService {
             providers: vec![AiProvider::Antigravity],
             language: "Japanese".to_string(),
             models: ModelsConfig {
-                // 旧 gemini モデル設定が残っていても無視される
-                gemini: "gemini-2.5-flash".to_string(),
+                // モデル未指定(空)なら agy 既定に委ねるため `--model` を付けない
+                antigravity: String::new(),
                 ..Default::default()
             },
             codex_reasoning_effort: "low".to_string(),
@@ -3173,20 +3195,20 @@ mod tests {
             cmd
         );
         assert!(cmd.contains("-p 'test prompt'"));
-        // gemini モデル設定はコマンドラインに反映されない
-        assert!(!cmd.contains("-m"));
+        // モデル未指定なので --model は付かない
+        assert!(!cmd.contains("--model"));
         // agy には --debug フラグがない
         assert!(!cmd.contains("--debug"));
     }
 
     #[test]
-    fn test_format_command_antigravity_ignores_legacy_gemini_model() {
-        // 旧 [models] gemini に値が入っていても、デバッグ表示には現れない
+    fn test_format_command_antigravity_with_model() {
+        // antigravity モデルを指定すると、デバッグ表示に `--model` が現れる。
         let service = AiService {
             providers: vec![AiProvider::Antigravity],
             language: "Japanese".to_string(),
             models: ModelsConfig {
-                gemini: String::new(),
+                antigravity: "GPT-OSS 120B (Medium)".to_string(),
                 ..Default::default()
             },
             codex_reasoning_effort: "low".to_string(),
@@ -3197,7 +3219,9 @@ mod tests {
             legacy_gemini_alias_detected: false,
         };
         let cmd = service.format_command_for_debug(&AiProvider::Antigravity, "prompt", None);
-        assert!(!cmd.contains("-m"));
+        assert!(cmd.contains("--model 'GPT-OSS 120B (Medium)'"));
+        assert!(cmd.contains("-p 'prompt'"));
+        // agy には --debug フラグがない
         assert!(!cmd.contains("--debug"));
     }
 

@@ -194,7 +194,7 @@ mod tests {
             config.provider_cooldown_minutes,
             defaults.provider_cooldown_minutes
         );
-        assert_eq!(config.models.gemini, defaults.models.gemini);
+        assert_eq!(config.models.antigravity, defaults.models.antigravity);
         assert_eq!(config.models.codex, defaults.models.codex);
         assert_eq!(config.models.claude, defaults.models.claude);
         assert_eq!(config.models.opencode, defaults.models.opencode);

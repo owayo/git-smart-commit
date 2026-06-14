@@ -25,9 +25,14 @@ impl AiService {
         let escaped_prompt = prompt.replace('\'', "'\\''");
         match provider {
             AiProvider::Antigravity => {
-                // Antigravity CLI (`agy`) はモデル選択フラグも `--debug` フラグも持たない。
-                // プロンプトは `-p` で 1 引数として渡す。
-                format!("agy -p '{}'", escaped_prompt)
+                // Antigravity CLI (`agy`) は `--model` に対応。空でなければ付与する。
+                // プロンプトは `-p` で 1 引数として渡す(`--debug` フラグは無い)。
+                let model_arg = if self.models.antigravity.is_empty() {
+                    String::new()
+                } else {
+                    format!(" --model '{}'", self.models.antigravity)
+                };
+                format!("agy{} -p '{}'", model_arg, escaped_prompt)
             }
             AiProvider::Codex => {
                 let model_arg = if self.models.codex.is_empty() {
@@ -120,12 +125,16 @@ impl AiService {
                             .to_string(),
                     ));
                 }
-                // Antigravity CLI (`agy`) はモデル選択フラグを持たず、`--debug` フラグもない。
+                // Antigravity CLI (`agy`) は `--model` に対応(空でなければ付与)。`--debug` は無い。
                 // プロンプトは `-p` 引数で渡す。長大な diff で OS の ARG_MAX を超えないよう
                 // 事前にプロンプト長をチェックし、超過時は明確なエラーで失敗させる。
                 #[cfg(not(windows))]
                 {
                     Self::check_arg_size_limit(prompt)?;
+                    // モデル指定がある場合のみ `--model` を付与(空文字列なら agy 既定に委ねる)
+                    if !self.models.antigravity.is_empty() {
+                        cmd.args(["--model", &self.models.antigravity]);
+                    }
                     cmd.args(["-p", prompt]);
                     false
                 }

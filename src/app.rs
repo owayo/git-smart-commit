@@ -183,14 +183,15 @@ impl App {
         emit(format!("  providers: {:?}", config.providers));
         emit(format!("  language: {}", config.language));
         emit(format!("  models.opencode: {}", config.models.opencode));
-        // gemini モデルは互換のため受理するが、Antigravity CLI では利用されない。
-        // 空文字列の場合は debug 表示そのものを省略してノイズを避ける。
-        if !config.models.gemini.is_empty() {
-            emit(format!(
-                "  models.gemini: {} (legacy, ignored by Antigravity CLI)",
-                config.models.gemini
-            ));
-        }
+        // antigravity モデルは agy の `--model` に渡される。空文字列なら agy 既定に委ねる。
+        emit(format!(
+            "  models.antigravity: {}",
+            if config.models.antigravity.is_empty() {
+                "(agy default)".to_string()
+            } else {
+                config.models.antigravity.clone()
+            }
+        ));
         emit(format!("  models.codex: {}", config.models.codex));
         emit(format!(
             "  codex_reasoning_effort: {}",
