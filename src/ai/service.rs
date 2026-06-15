@@ -3712,4 +3712,110 @@ mod tests {
         let result = AiService::extract_error(stderr, &AiProvider::Codex);
         assert_eq!(result, "ERROR: top priority error");
     }
+
+    // ============================================================
+    // env 明示上書き / command バイナリ差し替え
+    // (token-burn の env 継承バグ対策の中核: step.env が Command に明示適用される)
+    // ============================================================
+
+    #[cfg(not(windows))]
+    #[test]
+    fn test_build_provider_command_applies_env_override() {
+        // step.env は Command::env() で明示設定され、spawn 時に親環境を上書きする。
+        let service = AiService::new();
+        let mut step = ProviderStep::from_provider("codex");
+        step.env
+            .insert("CODEX_HOME".to_string(), "/custom/codex".to_string());
+        let output_file = TempFile::create_with_content(b"").unwrap();
+        let (cmd, _) = service
+            .build_provider_command(
+                &AiProvider::Codex,
+                &step,
+                "",
+                "prompt",
+                None,
+                Some(&output_file),
+            )
+            .unwrap();
+        let has_env = cmd.get_envs().any(|(k, v)| {
+            k == std::ffi::OsStr::new("CODEX_HOME")
+                && v == Some(std::ffi::OsStr::new("/custom/codex"))
+        });
+        assert!(
+            has_env,
+            "CODEX_HOME が Command に明示設定されているべき(親環境への暗黙依存を避ける)"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn test_build_provider_command_uses_custom_binary() {
+        // command 指定時は provider 既定バイナリではなく指定バイナリを起動する。
+        let service = AiService::new();
+        let mut step = ProviderStep::from_provider("codex");
+        step.command = Some(vec!["/my/wrapper.sh".to_string()]);
+        let output_file = TempFile::create_with_content(b"").unwrap();
+        let (cmd, _) = service
+            .build_provider_command(
+                &AiProvider::Codex,
+                &step,
+                "",
+                "prompt",
+                None,
+                Some(&output_file),
+            )
+            .unwrap();
+        assert_eq!(cmd.get_program().to_string_lossy(), "/my/wrapper.sh");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn test_build_provider_command_default_binary_when_no_command() {
+        // command 未指定なら provider 既定バイナリ(codex)。
+        let service = AiService::new();
+        let step = ProviderStep::from_provider("codex");
+        let output_file = TempFile::create_with_content(b"").unwrap();
+        let (cmd, _) = service
+            .build_provider_command(
+                &AiProvider::Codex,
+                &step,
+                "",
+                "prompt",
+                None,
+                Some(&output_file),
+            )
+            .unwrap();
+        assert_eq!(cmd.get_program().to_string_lossy(), "codex");
+    }
+
+    #[test]
+    fn test_resolve_model_prefers_step_then_config() {
+        // step.model(非空) > [models].<provider> の優先順位
+        let service = AiService::new();
+        let mut step = ProviderStep::from_provider("codex");
+        step.model = Some("step-model".to_string());
+        assert_eq!(
+            service.resolve_model(&AiProvider::Codex, &step),
+            "step-model"
+        );
+
+        // step.model 未指定なら [models].codex(=デフォルト)を使う
+        let empty = ProviderStep::from_provider("codex");
+        assert_eq!(
+            service.resolve_model(&AiProvider::Codex, &empty),
+            service.models.codex
+        );
+    }
+
+    #[test]
+    fn test_step_label_includes_model_and_account() {
+        // ログラベルに model とアカウント(env 由来)が出る
+        let mut step = ProviderStep::from_provider("codex");
+        step.model = Some("gpt-5.4-mini".to_string());
+        step.env
+            .insert("CODEX_HOME".to_string(), "/home/u/.codex-work".to_string());
+        let label = AiService::step_label(&AiProvider::Codex, &step);
+        assert!(label.contains("gpt-5.4-mini"), "label: {label}");
+        assert!(label.contains(".codex-work"), "label: {label}");
+    }
 }

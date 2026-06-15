@@ -910,4 +910,92 @@ mod tests {
             .collect();
         assert!(stale.is_empty(), "残骸の一時ファイル: {:?}", stale);
     }
+
+    // ============================================================
+    // 複合キー: アカウント/モデル/コマンド別の独立クールダウン
+    // (このリファクタの中核要件: 同一プロバイダでも env/model/command が違えば独立に降格)
+    // ============================================================
+
+    fn step_with_env(provider: &str, key: &str, val: &str) -> ProviderStep {
+        let mut s = ProviderStep::from_provider(provider);
+        s.env.insert(key.to_string(), val.to_string());
+        s
+    }
+
+    fn step_with_model(provider: &str, model: &str) -> ProviderStep {
+        let mut s = ProviderStep::from_provider(provider);
+        s.model = Some(model.to_string());
+        s
+    }
+
+    #[test]
+    fn test_same_provider_different_account_demoted_independently() {
+        // codex(CODEX_HOME=A) が失敗しても codex(CODEX_HOME=B) は生きる
+        let mut state = State::default();
+        let acct_a = step_with_env("codex", "CODEX_HOME", "/home/u/.codex");
+        let acct_b = step_with_env("codex", "CODEX_HOME", "/home/u/.codex-work");
+        state.record_failure(&acct_a);
+        assert!(
+            state.is_demoted(&acct_a, 60),
+            "失敗したアカウントは降格される"
+        );
+        assert!(
+            !state.is_demoted(&acct_b, 60),
+            "別アカウント(別 env)は独立クォータなので降格されない"
+        );
+    }
+
+    #[test]
+    fn test_same_provider_different_model_demoted_independently() {
+        // antigravity(Gemini系) が失敗しても antigravity(GPT-OSS系) は生きる
+        let mut state = State::default();
+        let gemini = step_with_model("antigravity", "Gemini 3.5 Flash (Low)");
+        let gptoss = step_with_model("antigravity", "GPT-OSS 120B (Medium)");
+        state.record_failure(&gemini);
+        assert!(state.is_demoted(&gemini, 60));
+        assert!(
+            !state.is_demoted(&gptoss, 60),
+            "別モデルは独立クォータなので降格されない"
+        );
+    }
+
+    #[test]
+    fn test_reorder_steps_demotes_only_failed_account() {
+        let mut state = State::default();
+        let acct_a = step_with_env("codex", "CODEX_HOME", "/home/u/.codex");
+        let acct_b = step_with_env("codex", "CODEX_HOME", "/home/u/.codex-work");
+        state.record_failure(&acct_a);
+        let chain = vec![acct_a.clone(), acct_b.clone(), step("antigravity")];
+        let reordered = state.reorder_steps(chain, 60);
+        // 失敗した acct_a だけが末尾へ。acct_b と antigravity は元の順序を保つ。
+        assert_eq!(reordered[0], acct_b);
+        assert_eq!(reordered[1].provider, "antigravity");
+        assert_eq!(reordered[2], acct_a);
+    }
+
+    #[test]
+    fn test_name_distinguishes_cooldown_key() {
+        // 同一 provider でも name が違えば独立に降格
+        let mut a = ProviderStep::from_provider("codex");
+        a.name = Some("acct1".to_string());
+        let mut b = ProviderStep::from_provider("codex");
+        b.name = Some("acct2".to_string());
+        let mut state = State::default();
+        state.record_failure(&a);
+        assert!(state.is_demoted(&a, 60));
+        assert!(!state.is_demoted(&b, 60));
+    }
+
+    #[test]
+    fn test_command_distinguishes_cooldown_key() {
+        // 同一 provider でも command(ラッパー)が違えば独立
+        let mut a = ProviderStep::from_provider("codex");
+        a.command = Some(vec!["/wrapper-a.sh".to_string()]);
+        let mut b = ProviderStep::from_provider("codex");
+        b.command = Some(vec!["/wrapper-b.sh".to_string()]);
+        let mut state = State::default();
+        state.record_failure(&a);
+        assert!(state.is_demoted(&a, 60));
+        assert!(!state.is_demoted(&b, 60));
+    }
 }

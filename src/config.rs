@@ -2276,4 +2276,205 @@ gemini = "gemini-2.5-pro"
         assert_eq!(config.prefix_scripts.len(), 1);
         assert_eq!(config.prefix_scripts[0].script, "new.sh");
     }
+
+    // ============================================================
+    // ProviderStep: string-or-table パース
+    // ============================================================
+
+    #[test]
+    fn test_provider_step_parse_plain_string() {
+        let config = Config::from_str(r#"providers = ["codex", "claude"]"#).unwrap();
+        assert_eq!(
+            config.providers,
+            vec![
+                ProviderStep::from_provider("codex"),
+                ProviderStep::from_provider("claude"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_provider_step_parse_table() {
+        let toml = r#"
+providers = [
+  { provider = "codex", model = "gpt-5.4-mini", env = { CODEX_HOME = "/a" } },
+]
+"#;
+        let config = Config::from_str(toml).unwrap();
+        assert_eq!(config.providers.len(), 1);
+        let s = &config.providers[0];
+        assert_eq!(s.provider, "codex");
+        assert_eq!(s.model.as_deref(), Some("gpt-5.4-mini"));
+        assert_eq!(s.env.get("CODEX_HOME").map(String::as_str), Some("/a"));
+    }
+
+    #[test]
+    fn test_provider_step_parse_mixed_chain() {
+        // 文字列とテーブルの混在(後方互換 + 新形式)
+        let toml = r#"
+providers = [
+  { provider = "codex", env = { CODEX_HOME = "/a" } },
+  "antigravity",
+]
+"#;
+        let config = Config::from_str(toml).unwrap();
+        assert_eq!(config.providers.len(), 2);
+        assert_eq!(config.providers[0].provider, "codex");
+        assert!(config.providers[0].env.contains_key("CODEX_HOME"));
+        assert_eq!(
+            config.providers[1],
+            ProviderStep::from_provider("antigravity")
+        );
+    }
+
+    #[test]
+    fn test_provider_step_parse_command_and_name() {
+        let toml = r#"
+providers = [
+  { provider = "codex", command = ["/path/wrapper.sh", "--flag"], name = "acct1" },
+]
+"#;
+        let config = Config::from_str(toml).unwrap();
+        let s = &config.providers[0];
+        assert_eq!(
+            s.command.as_deref(),
+            Some(&["/path/wrapper.sh".to_string(), "--flag".to_string()][..])
+        );
+        assert_eq!(s.name.as_deref(), Some("acct1"));
+    }
+
+    #[test]
+    fn test_provider_step_missing_provider_is_clear_error() {
+        // #[serde(untagged)] を使わないので、provider 欠落時に具体的なエラーが出る
+        let err = Config::from_str(r#"providers = [{ model = "x" }]"#).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("provider"),
+            "missing field provider のエラーであるべき: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_provider_step_empty_model_is_none() {
+        // model = "" は None 扱い(空文字は「未指定」と同義)
+        let config =
+            Config::from_str(r#"providers = [{ provider = "codex", model = "" }]"#).unwrap();
+        assert_eq!(config.providers[0].model, None);
+    }
+
+    // ============================================================
+    // ProviderStep::cooldown_key
+    // ============================================================
+
+    #[test]
+    fn test_cooldown_key_env_order_independent() {
+        // BTreeMap なので env の挿入順に依存せず決定的
+        let mut a = ProviderStep::from_provider("codex");
+        a.env.insert("FOO".to_string(), "1".to_string());
+        a.env.insert("CODEX_HOME".to_string(), "/x".to_string());
+        let mut b = ProviderStep::from_provider("codex");
+        b.env.insert("CODEX_HOME".to_string(), "/x".to_string());
+        b.env.insert("FOO".to_string(), "1".to_string());
+        assert_eq!(a.cooldown_key(), b.cooldown_key());
+    }
+
+    #[test]
+    fn test_cooldown_key_distinguishes_axes() {
+        let base = ProviderStep::from_provider("codex");
+        let mut model = ProviderStep::from_provider("codex");
+        model.model = Some("m".to_string());
+        let mut env = ProviderStep::from_provider("codex");
+        env.env.insert("CODEX_HOME".to_string(), "/x".to_string());
+        let mut cmd = ProviderStep::from_provider("codex");
+        cmd.command = Some(vec!["w".to_string()]);
+        assert_ne!(base.cooldown_key(), model.cooldown_key());
+        assert_ne!(base.cooldown_key(), env.cooldown_key());
+        assert_ne!(base.cooldown_key(), cmd.cooldown_key());
+        assert_ne!(model.cooldown_key(), env.cooldown_key());
+    }
+
+    #[test]
+    fn test_cooldown_key_canonicalizes_provider_alias() {
+        // gemini/agy と antigravity は同じクールダウンキー(後方互換)
+        assert_eq!(
+            ProviderStep::from_provider("gemini").cooldown_key(),
+            ProviderStep::from_provider("antigravity").cooldown_key()
+        );
+        assert_eq!(
+            ProviderStep::from_provider("agy").cooldown_key(),
+            ProviderStep::from_provider("antigravity").cooldown_key()
+        );
+    }
+
+    #[test]
+    fn test_cooldown_key_name_takes_precedence() {
+        let mut a = ProviderStep::from_provider("codex");
+        a.name = Some("MyAcct".to_string());
+        assert_eq!(a.cooldown_key(), "myacct");
+    }
+
+    // ============================================================
+    // ProviderStep::account_hint
+    // ============================================================
+
+    #[test]
+    fn test_account_hint_from_env() {
+        let mut s = ProviderStep::from_provider("codex");
+        s.env
+            .insert("CODEX_HOME".to_string(), "/home/u/.codex-work".to_string());
+        assert_eq!(s.account_hint().as_deref(), Some(".codex-work"));
+    }
+
+    #[test]
+    fn test_account_hint_from_name() {
+        let mut s = ProviderStep::from_provider("codex");
+        s.name = Some("acct1".to_string());
+        assert_eq!(s.account_hint().as_deref(), Some("acct1"));
+    }
+
+    #[test]
+    fn test_account_hint_none_when_no_env_or_name() {
+        assert_eq!(ProviderStep::from_provider("codex").account_hint(), None);
+    }
+
+    // ============================================================
+    // env キー検証 / ~ 展開
+    // ============================================================
+
+    #[test]
+    fn test_is_valid_env_key_accepts_posix() {
+        assert!(is_valid_env_key("CODEX_HOME"));
+        assert!(is_valid_env_key("_X"));
+        assert!(is_valid_env_key("A1"));
+    }
+
+    #[test]
+    fn test_is_valid_env_key_rejects_invalid() {
+        assert!(!is_valid_env_key("1BAD"));
+        assert!(!is_valid_env_key("A-B"));
+        assert!(!is_valid_env_key(""));
+        assert!(!is_valid_env_key("A B"));
+    }
+
+    #[test]
+    fn test_expand_step_env_expands_tilde() {
+        let mut env = BTreeMap::new();
+        env.insert("CODEX_HOME".to_string(), "~/.codex".to_string());
+        let out = expand_step_env(&env, "test").unwrap();
+        let v = out.get("CODEX_HOME").unwrap();
+        assert!(v.starts_with('/'), "~ は絶対パスに展開されるべき: {v}");
+        assert!(!v.contains('~'));
+    }
+
+    #[test]
+    fn test_expand_step_env_rejects_invalid_key() {
+        let mut env = BTreeMap::new();
+        env.insert("BAD KEY".to_string(), "x".to_string());
+        let err = expand_step_env(&env, "test").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("invalid environment variable name"),
+            "不正な env キーは設定エラーになるべき"
+        );
+    }
 }
