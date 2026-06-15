@@ -32,8 +32,8 @@
 
 ## Features
 
-- **Multi-Provider Support**: Supports Antigravity CLI (`agy`, the successor of Gemini CLI), Codex CLI, Claude Code, opencode, and Apple Intelligence with automatic fallback
-- **Smart Cooldown**: Automatically demotes failed providers for 1 hour (configurable)
+- **Multi-Provider Support**: Supports Antigravity CLI (`agy`, the successor of Gemini CLI), Codex CLI, Claude Code, opencode, and Apple Intelligence with automatic fallback. The same provider can appear multiple times with different models or accounts (see "Advanced: Provider Fallback Chain" below).
+- **Smart Cooldown**: Automatically demotes failed steps for 1 hour (configurable), keyed per provider+model+account so one rate-limited account or model does not block the others
 - **Format Detection**: Detects commit format from recent commits (Conventional, Bracket, Emoji, etc.)
 - **Empty Repo Safe**: Auto format detection falls back cleanly even when the repository has no commits and Git outputs localized messages
 - **Interactive**: Prompts for confirmation before committing (skip with `-y`)
@@ -292,7 +292,7 @@ provider_timeout_seconds = 60
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `providers` | AI provider priority (use `antigravity`; `gemini` is accepted as an alias) | `["opencode", "antigravity", "codex", "claude", "apple-intelligence"]` |
+| `providers` | Provider fallback chain — each entry is a provider name string **or** a `{provider, model, command, env, name}` table (see "Advanced: Provider Fallback Chain" below; `antigravity` recommended, `gemini` accepted as an alias) | `["opencode", "antigravity", "codex", "claude", "apple-intelligence"]` |
 | `language` | Commit message language | `"Japanese"` |
 | `prefix_type` | Commit prefix format | Auto-detect |
 | `auto_push` | Auto-push after commit | `false` |

@@ -32,8 +32,8 @@
 
 ## 特徴
 
-- **マルチプロバイダー対応**: Antigravity CLI (`agy`、Gemini CLI の後継)、Codex CLI、Claude Code、opencode、Apple Intelligence を自動フォールバック付きでサポート
-- **スマートクールダウン**: 失敗したプロバイダーを1時間（設定可能）優先度を下げて連続失敗を回避
+- **マルチプロバイダー対応**: Antigravity CLI (`agy`、Gemini CLI の後継)、Codex CLI、Claude Code、opencode、Apple Intelligence を自動フォールバック付きでサポート。同じプロバイダーを異なるモデル・アカウントで複数回並べられる（下記「応用: プロバイダーフォールバックチェーン」参照）
+- **スマートクールダウン**: 失敗したステップを1時間（設定可能）優先度を下げて連続失敗を回避。provider+model+アカウント単位のキーなので、レート制限中の1アカウント/モデルが他をブロックしない
 - **フォーマット自動検出**: 過去のコミットから形式を自動判断（Conventional、Bracket、Emoji等）
 - **空リポジトリ対応**: コミットがまだないリポジトリでも、Git のロケールに依存せず自動判定を安全にフォールバック
 - **インタラクティブ**: コミット前に確認プロンプト表示（`-y` でスキップ可能）
@@ -291,7 +291,7 @@ provider_timeout_seconds = 60
 
 | オプション | 説明 | デフォルト |
 |-----------|------|-----------|
-| `providers` | AIプロバイダーの優先順位 (`antigravity` を推奨。`gemini` も後方互換で受理) | `["opencode", "antigravity", "codex", "claude", "apple-intelligence"]` |
+| `providers` | プロバイダーのフォールバックチェーン。各要素はプロバイダー名の文字列、または `{provider, model, command, env, name}` テーブル（下記「応用: プロバイダーフォールバックチェーン」参照。`antigravity` を推奨、`gemini` も後方互換で受理） | `["opencode", "antigravity", "codex", "claude", "apple-intelligence"]` |
 | `language` | コミットメッセージの言語 | `"Japanese"` |
 | `prefix_type` | コミットプレフィックス形式 | 自動検出 |
 | `auto_push` | コミット後に自動プッシュ | `false` |
