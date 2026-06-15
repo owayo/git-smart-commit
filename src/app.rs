@@ -180,7 +180,24 @@ impl App {
 
         emit(format!("{}", "─".repeat(50).dimmed()));
         emit(format!("{}", "Effective settings:".yellow()));
-        emit(format!("  providers: {:?}", config.providers));
+        emit(format!("  providers ({} step(s)):", config.providers.len()));
+        for (i, step) in config.providers.iter().enumerate() {
+            let mut line = format!("    [{}] {}", i, step.provider);
+            if let Some(model) = &step.model {
+                line.push_str(&format!("  model={}", model));
+            }
+            if let Some(command) = &step.command {
+                line.push_str(&format!("  command={:?}", command));
+            }
+            if !step.env.is_empty() {
+                // env はアカウント切替の要。debug で「どの step に何の env を渡すか」を可視化する。
+                line.push_str(&format!("  env={:?}", step.env));
+            }
+            if let Some(name) = &step.name {
+                line.push_str(&format!("  name={}", name));
+            }
+            emit(line);
+        }
         emit(format!("  language: {}", config.language));
         emit(format!("  models.opencode: {}", config.models.opencode));
         // antigravity モデルは agy の `--model` に渡される。空文字列なら agy 既定に委ねる。

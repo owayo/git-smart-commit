@@ -65,10 +65,10 @@ AI module layout note:
 | Module | Responsibility |
 |--------|----------------|
 | `App` | Orchestrates workflow: verify env → load config → get diff → detect format → generate → commit |
-| `AiService` | Multi-provider AI with fallback (opencode → antigravity → codex → claude → apple-intelligence). `AiProvider::from_str("gemini")` resolves to `Antigravity` for backward compatibility. |
+| `AiService` | Multi-provider AI with fallback over a chain of `ProviderStep`s (provider + model + command + env). Each step resolves its provider via `AiProvider::from_str` (`gemini`/`agy` → `Antigravity`); the same provider may appear multiple times with different models/accounts. Default chain: opencode → antigravity → codex → claude → apple-intelligence. |
 | `GitService` | Git operations (diff, commit, amend, squash, reword) |
-| `Config` | Hierarchical config: global (~/.config/git-sc/config.toml) + project (.git-sc), via `PartialConfig` merge |
-| `ProviderState` | Tracks failed providers with 1-hour cooldown |
+| `Config` | Hierarchical config: global (~/.config/git-sc/config.toml) + project (.git-sc), via `PartialConfig` merge. `providers` is a `Vec<ProviderStep>` accepting either a string (provider name) or a `{provider, model, command, env, name}` table. |
+| `ProviderState` | Tracks failed steps with a composite cooldown key (provider + model + env + command, or an explicit `name`), so the same provider on a different model/account is demoted independently. Default 1-hour cooldown. |
 
 Recent-commit detection note:
 - `GitService::get_recent_commits()` checks whether `HEAD` exists before calling `git log`, so empty repositories work regardless of Git locale or localized stderr text.

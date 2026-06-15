@@ -4,7 +4,7 @@ use std::process::Command;
 use colored::Colorize;
 
 use super::process::TempFile;
-use crate::config::{Config, ModelsConfig};
+use crate::config::{Config, ModelsConfig, ProviderStep, canonical_provider_key};
 use crate::error::AppError;
 use crate::state::State;
 
@@ -74,7 +74,8 @@ impl AiProvider {
 
 /// フォールバック機能付きのAIサービス
 pub struct AiService {
-    providers: Vec<AiProvider>,
+    /// フォールバックチェーン。各ステップは provider/model/command/env を持つ。
+    steps: Vec<ProviderStep>,
     language: String,
     pub(super) models: ModelsConfig,
     pub(super) codex_reasoning_effort: String,
@@ -88,52 +89,53 @@ pub struct AiService {
 }
 
 impl AiService {
-    /// デフォルトのプロバイダーリストを返す
-    fn default_providers() -> Vec<AiProvider> {
-        let mut providers = vec![
-            AiProvider::Opencode,
-            AiProvider::Antigravity,
-            AiProvider::Codex,
-            AiProvider::Claude,
+    /// デフォルトのフォールバックチェーンを返す(プロバイダー名のみのステップ)。
+    fn default_steps() -> Vec<ProviderStep> {
+        let mut steps = vec![
+            ProviderStep::from_provider("opencode"),
+            ProviderStep::from_provider("antigravity"),
+            ProviderStep::from_provider("codex"),
+            ProviderStep::from_provider("claude"),
         ];
         if cfg!(all(target_os = "macos", feature = "apple-ai")) {
-            providers.push(AiProvider::AppleIntelligence);
+            steps.push(ProviderStep::from_provider("apple-intelligence"));
         }
-        providers
+        steps
     }
 
     /// 設定からAiServiceを作成
     pub fn from_config(config: &Config) -> Self {
-        let provider_strings: Vec<String> = config.providers.clone();
+        let steps: Vec<ProviderStep> = config.providers.clone();
 
         // providers に旧 "gemini" エイリアスが残っているかをチェック。
         // 互換のため受理するが、debug 出力時に「antigravity に正規化される」旨を伝える。
         // ([models] gemini は読み込み時に antigravity へ昇格済みで、ここでは区別できない)
-        let legacy_gemini_alias_detected = provider_strings
+        let legacy_gemini_alias_detected = steps
             .iter()
-            .any(|s| AiProvider::is_legacy_gemini_alias(s));
+            .any(|s| AiProvider::is_legacy_gemini_alias(&s.provider));
 
-        // 状態を読み込んで、クールダウン中のプロバイダーを降格
-        let reordered_strings = if let Ok(state) = State::load() {
-            state.reorder_providers(provider_strings, config.provider_cooldown_minutes)
+        // 状態を読み込んで、クールダウン中のステップを末尾へ降格する
+        let reordered = if let Ok(state) = State::load() {
+            state.reorder_steps(steps, config.provider_cooldown_minutes)
         } else {
-            provider_strings
+            steps
         };
 
-        let providers: Vec<AiProvider> = reordered_strings
-            .iter()
-            .filter_map(|s| AiProvider::from_str(s))
+        // provider が解決できるステップだけを残す(不明な provider 名は除外)。
+        let steps: Vec<ProviderStep> = reordered
+            .into_iter()
+            .filter(|s| AiProvider::from_str(&s.provider).is_some())
             .collect();
 
-        // 有効なプロバイダーがない場合はデフォルトにフォールバック
-        let providers = if providers.is_empty() {
-            Self::default_providers()
+        // 有効なステップがない場合はデフォルトにフォールバック
+        let steps = if steps.is_empty() {
+            Self::default_steps()
         } else {
-            providers
+            steps
         };
 
         Self {
-            providers,
+            steps,
             language: config.language.clone(),
             models: config.models.clone(),
             codex_reasoning_effort: config.codex_reasoning_effort.clone(),
@@ -148,7 +150,7 @@ impl AiService {
     /// デフォルトのフォールバック順序でAiServiceを作成
     pub fn new() -> Self {
         Self {
-            providers: Self::default_providers(),
+            steps: Self::default_steps(),
             language: "Japanese".to_string(),
             models: ModelsConfig::default(),
             codex_reasoning_effort: "low".to_string(),
@@ -179,15 +181,19 @@ impl AiService {
     }
 
     /// プロバイダーを手動指定で上書き（フォールバックなし、失敗記録スキップ）
+    ///
+    /// 単一ステップ・モデル/env 未指定で上書きする。provider 名は from_str が解決できる
+    /// 正規名(例: AppleIntelligence は "apple-intelligence")を使う。
     pub fn set_provider_override(&mut self, provider: AiProvider) {
-        self.providers = vec![provider];
+        let provider_name = canonical_provider_key(provider.config_key());
+        self.steps = vec![ProviderStep::from_provider(provider_name)];
         self.provider_override = true;
     }
 
-    /// プロバイダーの失敗を記録
-    fn record_provider_failure(&self, provider: &AiProvider) {
+    /// ステップの失敗を記録
+    fn record_provider_failure(&self, step: &ProviderStep) {
         if let Ok(mut state) = State::load() {
-            state.record_failure(provider.config_key());
+            state.record_failure(step);
             // 期限切れのエントリをクリーンアップ
             state.cleanup_expired(self.cooldown_minutes);
             // 保存（エラーは無視）
@@ -205,30 +211,75 @@ impl AiService {
         &self.language
     }
 
-    /// 少なくとも1つのAI CLIがインストールされていることを確認
+    /// 少なくとも1つのステップが実行可能であることを確認
     pub fn verify_installation(&self) -> Result<(), AppError> {
-        for provider in &self.providers {
-            if Self::is_installed(provider) {
+        for step in &self.steps {
+            if let Some(provider) = AiProvider::from_str(&step.provider)
+                && self.is_step_installed(step, &provider)
+            {
                 return Ok(());
             }
         }
         Err(AppError::NoAiProviderInstalled)
     }
 
-    /// プロバイダーがインストールされているかチェック
-    fn is_installed(provider: &AiProvider) -> bool {
+    /// ステップの実行バイナリがインストールされているかチェック。
+    /// command 指定があればその先頭バイナリを、なければ provider 既定コマンドを調べる。
+    fn is_step_installed(&self, step: &ProviderStep, provider: &AiProvider) -> bool {
         // Apple Intelligence: apple-ai feature 有効時のみ利用可能（ランタイムで可否判定）
         if matches!(provider, AiProvider::AppleIntelligence) {
             return cfg!(all(target_os = "macos", feature = "apple-ai"));
         }
+        let bin = step
+            .command
+            .as_ref()
+            .and_then(|c| c.first())
+            .map(|s| s.as_str())
+            .unwrap_or_else(|| provider.command());
+        Self::is_binary_available(bin)
+    }
 
+    /// 実行ファイルが PATH 上に存在するか(which/where)。絶対パスのラッパーも実在判定できる。
+    fn is_binary_available(bin: &str) -> bool {
         // Windows は "where"、Unix は "which" を使用
         let check_cmd = if cfg!(windows) { "where" } else { "which" };
         Command::new(check_cmd)
-            .arg(provider.command())
+            .arg(bin)
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false)
+    }
+
+    /// step に対して実際に使うモデルを解決する。
+    /// step.model(非空) > [models].<provider> > 空文字列(=各 CLI 既定に委ねる)。
+    pub(super) fn resolve_model(&self, provider: &AiProvider, step: &ProviderStep) -> String {
+        if let Some(m) = step.model.as_deref().filter(|m| !m.is_empty()) {
+            return m.to_string();
+        }
+        match provider {
+            AiProvider::Antigravity => self.models.antigravity.clone(),
+            AiProvider::Codex => self.models.codex.clone(),
+            AiProvider::Claude => self.models.claude.clone(),
+            AiProvider::Opencode => self.models.opencode.clone(),
+            AiProvider::AppleIntelligence => String::new(),
+        }
+    }
+
+    /// ログ表示用のステップラベル(プロバイダー名 + モデル + アカウント識別)。
+    fn step_label(provider: &AiProvider, step: &ProviderStep) -> String {
+        let mut label = provider.name().to_string();
+        let model = step.model.as_deref().filter(|m| !m.is_empty());
+        let account = step.account_hint();
+        let detail = match (model, account) {
+            (Some(m), Some(a)) => Some(format!("{m}, {a}")),
+            (Some(m), None) => Some(m.to_string()),
+            (None, Some(a)) => Some(a),
+            (None, None) => None,
+        };
+        if let Some(detail) = detail {
+            label.push_str(&format!(" ({detail})"));
+        }
+        label
     }
 
     /// フォールバック付きでAI CLIを使用してコミットメッセージを生成
@@ -282,13 +333,24 @@ impl AiService {
         );
         let mut last_error = None;
 
-        for provider in &self.providers {
-            if !Self::is_installed(provider) {
+        for step in &self.steps {
+            // provider が解決できないステップはスキップ(from_config で除外済みだが念のため)。
+            let provider = match AiProvider::from_str(&step.provider) {
+                Some(p) => p,
+                None => continue,
+            };
+            if !self.is_step_installed(step, &provider) {
                 continue;
             }
 
+            let model = self.resolve_model(&provider, step);
+
             if !silent {
-                println!("  {} {}...", "Using".dimmed(), provider.name().cyan());
+                println!(
+                    "  {} {}...",
+                    "Using".dimmed(),
+                    Self::step_label(&provider, step).cyan()
+                );
             }
 
             // Apple Intelligence: fm-rs feature 有効時はネイティブ呼び出し
@@ -301,10 +363,10 @@ impl AiService {
                     !recent_commits.is_empty(),
                 )
             } else {
-                self.call_provider(provider, &prompt, silent)
+                self.call_provider(&provider, step, &model, &prompt, silent)
             };
             #[cfg(not(all(target_os = "macos", feature = "apple-ai")))]
-            let result = self.call_provider(provider, &prompt, silent);
+            let result = self.call_provider(&provider, step, &model, &prompt, silent);
 
             match result {
                 Ok(message) => {
@@ -328,13 +390,13 @@ impl AiService {
                         eprintln!(
                             "  {} {} failed: {}",
                             "⚠".yellow(),
-                            provider.name(),
+                            Self::step_label(&provider, step),
                             e.to_string().red()
                         );
                     }
                     // 手動指定時は失敗記録をスキップ
                     if !self.provider_override {
-                        self.record_provider_failure(provider);
+                        self.record_provider_failure(step);
                     }
                     last_error = Some(e);
                 }
@@ -351,6 +413,8 @@ impl AiService {
     fn call_provider(
         &self,
         provider: &AiProvider,
+        step: &ProviderStep,
+        model: &str,
         prompt: &str,
         silent: bool,
     ) -> Result<String, AppError> {
@@ -373,6 +437,8 @@ impl AiService {
         // プロバイダー固有のコマンドを構築
         let (mut cmd, uses_stdin) = self.build_provider_command(
             provider,
+            step,
+            model,
             prompt,
             temp_file.as_ref(),
             codex_output_file.as_ref(),
@@ -385,7 +451,7 @@ impl AiService {
             } else {
                 temp_file.as_ref()
             };
-            self.print_debug_command(provider, prompt, debug_file, silent);
+            self.print_debug_command(provider, step, model, prompt, debug_file, silent);
         }
 
         // プロセスを起動
@@ -532,7 +598,7 @@ mod tests {
         } else {
             4
         };
-        assert_eq!(service.providers.len(), expected_len);
+        assert_eq!(service.steps.len(), expected_len);
     }
 
     #[test]
@@ -546,19 +612,19 @@ mod tests {
     fn test_set_provider_override() {
         let mut service = AiService::new();
         service.set_provider_override(AiProvider::Claude);
-        assert_eq!(service.providers.len(), 1);
-        assert!(matches!(service.providers[0], AiProvider::Claude));
+        assert_eq!(service.steps.len(), 1);
+        assert_eq!(service.steps[0].provider, "claude");
         assert!(service.provider_override);
     }
 
     #[test]
     fn test_set_provider_override_replaces_all() {
         let mut service = AiService::new();
-        let original_len = service.providers.len();
+        let original_len = service.steps.len();
         assert!(original_len > 1);
         service.set_provider_override(AiProvider::Antigravity);
-        assert_eq!(service.providers.len(), 1);
-        assert!(matches!(service.providers[0], AiProvider::Antigravity));
+        assert_eq!(service.steps.len(), 1);
+        assert_eq!(service.steps[0].provider, "antigravity");
     }
 
     #[rstest]
@@ -1083,7 +1149,7 @@ mod tests {
         } else {
             4
         };
-        assert_eq!(service.providers.len(), expected_len);
+        assert_eq!(service.steps.len(), expected_len);
         // antigravity のデフォルトは GPT-OSS 120B (Medium)
         assert_eq!(
             service.models.antigravity,
@@ -1099,23 +1165,31 @@ mod tests {
     fn test_ai_service_from_config_custom_providers() {
         // 設定ファイルに旧 "gemini" 文字列を書いた場合、from_str で Antigravity にマップされる。
         let config = Config {
-            providers: vec!["claude".to_string(), "gemini".to_string()],
+            providers: vec![
+                ProviderStep::from_provider("claude"),
+                ProviderStep::from_provider("gemini"),
+            ],
             ..Default::default()
         };
         let service = AiService::from_config(&config);
 
-        // reorder_providersで順序が変わる可能性があるため、含有のみ検証
-        assert_eq!(service.providers.len(), 2);
-        let names: Vec<&str> = service.providers.iter().map(|p| p.name()).collect();
-        assert!(names.contains(&"Claude Code"));
-        assert!(names.contains(&"Antigravity CLI"));
+        // reorder_stepsで順序が変わる可能性があるため、含有のみ検証
+        assert_eq!(service.steps.len(), 2);
+        let providers: Vec<&str> = service.steps.iter().map(|s| s.provider.as_str()).collect();
+        assert!(providers.contains(&"claude"));
+        // "gemini" は from_str では Antigravity 扱いだが、ProviderStep.provider 文字列は
+        // 入力のまま保持される (正規化はキー比較側で行う) ため "gemini" のまま残る。
+        assert!(providers.contains(&"gemini"));
     }
 
     #[test]
     fn test_ai_service_from_config_detects_legacy_gemini_alias_in_providers() {
         // providers に "gemini" を含む場合、legacy エイリアス検出フラグが立つ。
         let config = Config {
-            providers: vec!["gemini".to_string(), "claude".to_string()],
+            providers: vec![
+                ProviderStep::from_provider("gemini"),
+                ProviderStep::from_provider("claude"),
+            ],
             ..Default::default()
         };
         let service = AiService::from_config(&config);
@@ -1136,7 +1210,10 @@ mod tests {
     #[test]
     fn test_ai_service_from_config_invalid_providers_fallback() {
         let config = Config {
-            providers: vec!["invalid".to_string(), "unknown".to_string()],
+            providers: vec![
+                ProviderStep::from_provider("invalid"),
+                ProviderStep::from_provider("unknown"),
+            ],
             ..Default::default()
         };
         let service = AiService::from_config(&config);
@@ -1147,7 +1224,7 @@ mod tests {
         } else {
             4
         };
-        assert_eq!(service.providers.len(), expected_len);
+        assert_eq!(service.steps.len(), expected_len);
     }
 
     #[test]
@@ -1207,13 +1284,13 @@ mod tests {
         } else {
             4
         };
-        assert_eq!(service.providers.len(), expected_len);
-        assert_eq!(service.providers[0].name(), "opencode");
-        assert_eq!(service.providers[1].name(), "Antigravity CLI");
-        assert_eq!(service.providers[2].name(), "Codex CLI");
-        assert_eq!(service.providers[3].name(), "Claude Code");
+        assert_eq!(service.steps.len(), expected_len);
+        assert_eq!(service.steps[0].provider, "opencode");
+        assert_eq!(service.steps[1].provider, "antigravity");
+        assert_eq!(service.steps[2].provider, "codex");
+        assert_eq!(service.steps[3].provider, "claude");
         if cfg!(all(target_os = "macos", feature = "apple-ai")) {
-            assert_eq!(service.providers[4].name(), "Apple Intelligence");
+            assert_eq!(service.steps[4].provider, "apple-intelligence");
         }
     }
 
@@ -1225,7 +1302,13 @@ mod tests {
     fn test_format_command_for_debug_antigravity() {
         // Antigravity CLI (`agy`) はモデルや debug フラグを持たないので、`agy -p 'PROMPT'` のみ表示される。
         let service = AiService::new();
-        let cmd = service.format_command_for_debug(&AiProvider::Antigravity, "test prompt", None);
+        let cmd = service.format_command_for_debug(
+            &AiProvider::Antigravity,
+            &service.models.antigravity.clone(),
+            &ProviderStep::from_provider("antigravity"),
+            "test prompt",
+            None,
+        );
         assert!(
             cmd.starts_with("agy "),
             "expected `agy` invocation, got: {}",
@@ -1240,7 +1323,13 @@ mod tests {
     #[test]
     fn test_format_command_for_debug_codex() {
         let service = AiService::new();
-        let cmd = service.format_command_for_debug(&AiProvider::Codex, "test prompt", None);
+        let cmd = service.format_command_for_debug(
+            &AiProvider::Codex,
+            &service.models.codex.clone(),
+            &ProviderStep::from_provider("codex"),
+            "test prompt",
+            None,
+        );
         assert!(cmd.contains("codex --disable hooks -c model_reasoning_effort='low' exec"));
         assert!(cmd.contains("-o '<output_file>'"));
         assert!(cmd.contains("echo 'test prompt'"));
@@ -1249,7 +1338,13 @@ mod tests {
     #[test]
     fn test_format_command_for_debug_claude() {
         let service = AiService::new();
-        let cmd = service.format_command_for_debug(&AiProvider::Claude, "test prompt", None);
+        let cmd = service.format_command_for_debug(
+            &AiProvider::Claude,
+            &service.models.claude.clone(),
+            &ProviderStep::from_provider("claude"),
+            "test prompt",
+            None,
+        );
         assert!(cmd.contains("claude --model"));
         assert!(cmd.contains("-p"));
         assert!(cmd.contains("echo 'test prompt'"));
@@ -1260,8 +1355,13 @@ mod tests {
         // デフォルトは空モデルなので -m なし
         let service = AiService::new();
         let temp_path = std::path::Path::new("/tmp/git-sc-prompt-12345.txt");
-        let cmd =
-            service.format_command_for_debug(&AiProvider::Opencode, "test prompt", Some(temp_path));
+        let cmd = service.format_command_for_debug(
+            &AiProvider::Opencode,
+            &service.models.opencode.clone(),
+            &ProviderStep::from_provider("opencode"),
+            "test prompt",
+            Some(temp_path),
+        );
         assert!(cmd.contains("opencode run"));
         assert!(!cmd.contains("-m"));
         assert!(cmd.contains("-f '/tmp/git-sc-prompt-12345.txt'"));
@@ -1272,8 +1372,13 @@ mod tests {
         let mut service = AiService::new();
         service.models.opencode = "opencode/some-model".to_string();
         let temp_path = std::path::Path::new("/tmp/git-sc-prompt-12345.txt");
-        let cmd =
-            service.format_command_for_debug(&AiProvider::Opencode, "test prompt", Some(temp_path));
+        let cmd = service.format_command_for_debug(
+            &AiProvider::Opencode,
+            "opencode/some-model",
+            &ProviderStep::from_provider("opencode"),
+            "test prompt",
+            Some(temp_path),
+        );
         assert!(cmd.contains("opencode run"));
         assert!(cmd.contains("-m 'opencode/some-model'"));
         assert!(cmd.contains("-f '/tmp/git-sc-prompt-12345.txt'"));
@@ -1282,7 +1387,13 @@ mod tests {
     #[test]
     fn test_format_command_for_debug_opencode_no_path() {
         let service = AiService::new();
-        let cmd = service.format_command_for_debug(&AiProvider::Opencode, "test prompt", None);
+        let cmd = service.format_command_for_debug(
+            &AiProvider::Opencode,
+            &service.models.opencode.clone(),
+            &ProviderStep::from_provider("opencode"),
+            "test prompt",
+            None,
+        );
         assert!(cmd.contains("opencode run"));
         assert!(cmd.contains("-f '<temp_file>'"));
     }
@@ -1290,8 +1401,13 @@ mod tests {
     #[test]
     fn test_format_command_for_debug_apple_intelligence() {
         let service = AiService::new();
-        let cmd =
-            service.format_command_for_debug(&AiProvider::AppleIntelligence, "test prompt", None);
+        let cmd = service.format_command_for_debug(
+            &AiProvider::AppleIntelligence,
+            "",
+            &ProviderStep::from_provider("apple-intelligence"),
+            "test prompt",
+            None,
+        );
         assert!(cmd.contains("apple-ai"));
         assert!(cmd.contains("echo 'test prompt'"));
     }
@@ -1299,7 +1415,13 @@ mod tests {
     #[test]
     fn test_format_command_for_debug_prompt_with_single_quotes() {
         let service = AiService::new();
-        let cmd = service.format_command_for_debug(&AiProvider::Antigravity, "it's a test", None);
+        let cmd = service.format_command_for_debug(
+            &AiProvider::Antigravity,
+            &service.models.antigravity.clone(),
+            &ProviderStep::from_provider("antigravity"),
+            "it's a test",
+            None,
+        );
         assert!(cmd.contains("it'\\''s a test"));
     }
 
@@ -1308,7 +1430,13 @@ mod tests {
         // antigravity モデルを指定すると、デバッグ表示に `--model` が現れる。
         let mut service = AiService::new();
         service.models.antigravity = "GPT-OSS 120B (Medium)".to_string();
-        let cmd = service.format_command_for_debug(&AiProvider::Antigravity, "test", None);
+        let cmd = service.format_command_for_debug(
+            &AiProvider::Antigravity,
+            "GPT-OSS 120B (Medium)",
+            &ProviderStep::from_provider("antigravity"),
+            "test",
+            None,
+        );
         assert!(cmd.contains("agy --model 'GPT-OSS 120B (Medium)' -p 'test'"));
     }
 
@@ -1316,7 +1444,13 @@ mod tests {
     fn test_format_command_for_debug_codex_empty_model() {
         let mut service = AiService::new();
         service.models.codex = String::new();
-        let cmd = service.format_command_for_debug(&AiProvider::Codex, "test", None);
+        let cmd = service.format_command_for_debug(
+            &AiProvider::Codex,
+            "",
+            &ProviderStep::from_provider("codex"),
+            "test",
+            None,
+        );
         assert!(cmd.contains("codex --disable hooks -c model_reasoning_effort='low' exec"));
         assert!(!cmd.contains("--model"));
     }
@@ -1324,7 +1458,13 @@ mod tests {
     #[test]
     fn test_format_command_for_debug_codex_always_disables_hooks() {
         let service = AiService::new();
-        let cmd = service.format_command_for_debug(&AiProvider::Codex, "test", None);
+        let cmd = service.format_command_for_debug(
+            &AiProvider::Codex,
+            &service.models.codex.clone(),
+            &ProviderStep::from_provider("codex"),
+            "test",
+            None,
+        );
         assert!(
             cmd.contains("--disable hooks"),
             "Codex 呼び出しでは常に --disable hooks が付くべき: {}",
@@ -1336,7 +1476,13 @@ mod tests {
     fn test_format_command_for_debug_codex_custom_reasoning_effort() {
         let mut service = AiService::new();
         service.codex_reasoning_effort = "high".to_string();
-        let cmd = service.format_command_for_debug(&AiProvider::Codex, "test", None);
+        let cmd = service.format_command_for_debug(
+            &AiProvider::Codex,
+            &service.models.codex.clone(),
+            &ProviderStep::from_provider("codex"),
+            "test",
+            None,
+        );
         assert!(cmd.contains("-c model_reasoning_effort='high'"));
         assert!(!cmd.contains("model_reasoning_effort='low'"));
     }
@@ -1345,7 +1491,13 @@ mod tests {
     fn test_format_command_for_debug_codex_empty_reasoning_effort_omits_flag() {
         let mut service = AiService::new();
         service.codex_reasoning_effort = String::new();
-        let cmd = service.format_command_for_debug(&AiProvider::Codex, "test", None);
+        let cmd = service.format_command_for_debug(
+            &AiProvider::Codex,
+            &service.models.codex.clone(),
+            &ProviderStep::from_provider("codex"),
+            "test",
+            None,
+        );
         assert!(cmd.contains("codex --disable hooks exec"));
         assert!(!cmd.contains("model_reasoning_effort"));
     }
@@ -1356,7 +1508,14 @@ mod tests {
         let output_file = TempFile::create_with_content(b"").unwrap();
 
         let (cmd, uses_stdin) = service
-            .build_provider_command(&AiProvider::Codex, "test", None, Some(&output_file))
+            .build_provider_command(
+                &AiProvider::Codex,
+                &ProviderStep::from_provider("codex"),
+                "",
+                "test",
+                None,
+                Some(&output_file),
+            )
             .unwrap();
         let debug = format!("{:?}", cmd);
 
@@ -1373,8 +1532,14 @@ mod tests {
     fn test_build_provider_command_rejects_antigravity_on_windows() {
         let service = AiService::new();
 
-        let result =
-            service.build_provider_command(&AiProvider::Antigravity, "feat: test", None, None);
+        let result = service.build_provider_command(
+            &AiProvider::Antigravity,
+            &ProviderStep::from_provider("antigravity"),
+            "",
+            "feat: test",
+            None,
+            None,
+        );
 
         match result {
             Err(AppError::AiProviderError(msg)) => {
@@ -1391,7 +1556,14 @@ mod tests {
         let service = AiService::new();
 
         let (cmd, uses_stdin) = service
-            .build_provider_command(&AiProvider::Antigravity, "feat: test", None, None)
+            .build_provider_command(
+                &AiProvider::Antigravity,
+                &ProviderStep::from_provider("antigravity"),
+                "",
+                "feat: test",
+                None,
+                None,
+            )
             .unwrap();
         let debug = format!("{:?}", cmd);
 
@@ -1408,7 +1580,14 @@ mod tests {
         service.models.antigravity = "GPT-OSS 120B (Medium)".to_string();
 
         let (cmd, _) = service
-            .build_provider_command(&AiProvider::Antigravity, "feat: test", None, None)
+            .build_provider_command(
+                &AiProvider::Antigravity,
+                &ProviderStep::from_provider("antigravity"),
+                "GPT-OSS 120B (Medium)",
+                "feat: test",
+                None,
+                None,
+            )
             .unwrap();
         let debug = format!("{:?}", cmd);
 
@@ -1424,7 +1603,14 @@ mod tests {
         service.models.antigravity = String::new();
 
         let (cmd, _) = service
-            .build_provider_command(&AiProvider::Antigravity, "feat: test", None, None)
+            .build_provider_command(
+                &AiProvider::Antigravity,
+                &ProviderStep::from_provider("antigravity"),
+                "",
+                "feat: test",
+                None,
+                None,
+            )
             .unwrap();
         let debug = format!("{:?}", cmd);
 
@@ -1476,7 +1662,13 @@ mod tests {
     fn test_format_command_for_debug_claude_empty_model() {
         let mut service = AiService::new();
         service.models.claude = String::new();
-        let cmd = service.format_command_for_debug(&AiProvider::Claude, "test", None);
+        let cmd = service.format_command_for_debug(
+            &AiProvider::Claude,
+            "",
+            &ProviderStep::from_provider("claude"),
+            "test",
+            None,
+        );
         assert!(cmd.contains("claude"));
         assert!(cmd.contains("-p"));
         assert!(!cmd.contains("--model"));
@@ -1487,7 +1679,13 @@ mod tests {
         let mut service = AiService::new();
         service.models.opencode = String::new();
         let temp_path = std::path::Path::new("/tmp/test.txt");
-        let cmd = service.format_command_for_debug(&AiProvider::Opencode, "test", Some(temp_path));
+        let cmd = service.format_command_for_debug(
+            &AiProvider::Opencode,
+            "",
+            &ProviderStep::from_provider("opencode"),
+            "test",
+            Some(temp_path),
+        );
         assert!(cmd.contains("opencode run"));
         assert!(!cmd.contains("-m"));
         assert!(cmd.contains("-f '/tmp/test.txt'"));
@@ -2637,7 +2835,13 @@ mod tests {
         // 改行を含むプロンプトがエスケープされる
         let service = AiService::new();
         let prompt = "line 1\nline 2\nline 3";
-        let result = service.format_command_for_debug(&AiProvider::Antigravity, prompt, None);
+        let result = service.format_command_for_debug(
+            &AiProvider::Antigravity,
+            &service.models.antigravity.clone(),
+            &ProviderStep::from_provider("antigravity"),
+            prompt,
+            None,
+        );
         assert!(result.contains("line 1\nline 2"));
     }
 
@@ -2646,7 +2850,13 @@ mod tests {
         // Apple Intelligenceプロバイダーでの特殊文字処理
         let service = AiService::new();
         let prompt = "feat: add 'quotes' and \"doubles\"";
-        let result = service.format_command_for_debug(&AiProvider::AppleIntelligence, prompt, None);
+        let result = service.format_command_for_debug(
+            &AiProvider::AppleIntelligence,
+            "",
+            &ProviderStep::from_provider("apple-intelligence"),
+            prompt,
+            None,
+        );
         assert!(result.starts_with("echo '"));
         assert!(result.contains("apple-ai"));
     }
@@ -3174,7 +3384,7 @@ mod tests {
         // antigravity モデルが空なら、デバッグ表示には `-p PROMPT` だけが現れる
         // (`--model`/`--debug` は付かない)。
         let service = AiService {
-            providers: vec![AiProvider::Antigravity],
+            steps: vec![ProviderStep::from_provider("antigravity")],
             language: "Japanese".to_string(),
             models: ModelsConfig {
                 // モデル未指定(空)なら agy 既定に委ねるため `--model` を付けない
@@ -3188,7 +3398,13 @@ mod tests {
             provider_override: false,
             legacy_gemini_alias_detected: false,
         };
-        let cmd = service.format_command_for_debug(&AiProvider::Antigravity, "test prompt", None);
+        let cmd = service.format_command_for_debug(
+            &AiProvider::Antigravity,
+            "",
+            &ProviderStep::from_provider("antigravity"),
+            "test prompt",
+            None,
+        );
         assert!(
             cmd.starts_with("agy "),
             "expected `agy` invocation, got: {}",
@@ -3205,7 +3421,7 @@ mod tests {
     fn test_format_command_antigravity_with_model() {
         // antigravity モデルを指定すると、デバッグ表示に `--model` が現れる。
         let service = AiService {
-            providers: vec![AiProvider::Antigravity],
+            steps: vec![ProviderStep::from_provider("antigravity")],
             language: "Japanese".to_string(),
             models: ModelsConfig {
                 antigravity: "GPT-OSS 120B (Medium)".to_string(),
@@ -3218,7 +3434,13 @@ mod tests {
             provider_override: false,
             legacy_gemini_alias_detected: false,
         };
-        let cmd = service.format_command_for_debug(&AiProvider::Antigravity, "prompt", None);
+        let cmd = service.format_command_for_debug(
+            &AiProvider::Antigravity,
+            "GPT-OSS 120B (Medium)",
+            &ProviderStep::from_provider("antigravity"),
+            "prompt",
+            None,
+        );
         assert!(cmd.contains("--model 'GPT-OSS 120B (Medium)'"));
         assert!(cmd.contains("-p 'prompt'"));
         // agy には --debug フラグがない
@@ -3229,7 +3451,7 @@ mod tests {
     fn test_format_command_codex_always_disables_hooks() {
         // stop_hook_active = false でも常に --disable hooks が付く
         let service = AiService {
-            providers: vec![AiProvider::Codex],
+            steps: vec![ProviderStep::from_provider("codex")],
             language: "Japanese".to_string(),
             models: ModelsConfig::default(),
             codex_reasoning_effort: "low".to_string(),
@@ -3239,14 +3461,20 @@ mod tests {
             provider_override: false,
             legacy_gemini_alias_detected: false,
         };
-        let cmd = service.format_command_for_debug(&AiProvider::Codex, "prompt", None);
+        let cmd = service.format_command_for_debug(
+            &AiProvider::Codex,
+            &service.models.codex.clone(),
+            &ProviderStep::from_provider("codex"),
+            "prompt",
+            None,
+        );
         assert!(cmd.contains("--disable hooks"));
     }
 
     #[test]
     fn test_format_command_claude() {
         let service = AiService {
-            providers: vec![AiProvider::Claude],
+            steps: vec![ProviderStep::from_provider("claude")],
             language: "Japanese".to_string(),
             models: ModelsConfig {
                 claude: "haiku".to_string(),
@@ -3259,7 +3487,13 @@ mod tests {
             provider_override: false,
             legacy_gemini_alias_detected: false,
         };
-        let cmd = service.format_command_for_debug(&AiProvider::Claude, "prompt", None);
+        let cmd = service.format_command_for_debug(
+            &AiProvider::Claude,
+            "haiku",
+            &ProviderStep::from_provider("claude"),
+            "prompt",
+            None,
+        );
         assert!(cmd.contains("claude"));
         assert!(cmd.contains("--model 'haiku'"));
         assert!(cmd.contains("-p"));
@@ -3269,7 +3503,13 @@ mod tests {
     fn test_format_command_prompt_with_single_quotes() {
         // シングルクォートを含むプロンプトのエスケープ
         let service = AiService::new();
-        let cmd = service.format_command_for_debug(&AiProvider::Antigravity, "it's a test", None);
+        let cmd = service.format_command_for_debug(
+            &AiProvider::Antigravity,
+            &service.models.antigravity.clone(),
+            &ProviderStep::from_provider("antigravity"),
+            "it's a test",
+            None,
+        );
         assert!(cmd.contains("it'\\''s a test"));
     }
 
@@ -3282,7 +3522,7 @@ mod tests {
         let config = Config::default();
         let service = AiService::from_config(&config);
         assert_eq!(service.language, "Japanese");
-        assert!(!service.providers.is_empty());
+        assert!(!service.steps.is_empty());
     }
 
     #[test]
@@ -3303,18 +3543,21 @@ mod tests {
             ..Default::default()
         };
         let service = AiService::from_config(&config);
-        assert!(!service.providers.is_empty());
+        assert!(!service.steps.is_empty());
     }
 
     #[test]
     fn test_from_config_invalid_providers_fallback() {
         // 無効なプロバイダー名のみの場合もデフォルトにフォールバック
         let config = Config {
-            providers: vec!["invalid1".to_string(), "invalid2".to_string()],
+            providers: vec![
+                ProviderStep::from_provider("invalid1"),
+                ProviderStep::from_provider("invalid2"),
+            ],
             ..Default::default()
         };
         let service = AiService::from_config(&config);
-        assert!(!service.providers.is_empty());
+        assert!(!service.steps.is_empty());
     }
 
     #[test]

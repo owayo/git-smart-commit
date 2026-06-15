@@ -309,6 +309,37 @@ The default Antigravity (`agy`) model is `GPT-OSS 120B (Medium)`. `agy`'s print 
 
 Provider cooldown state normalizes legacy aliases before reordering providers, so `gemini`/`agy` cooldown entries still apply to `antigravity`, and legacy `apple-ai` / `apple_intelligence` entries still apply to `apple-intelligence`. Running with `--debug` also prints a one-time notice when a legacy `gemini` provider alias is found in your config, reminding you that it is normalized to `antigravity`.
 
+### Advanced: Provider Fallback Chain (model / account / command)
+
+Each entry in `providers` can be either a plain string (provider name only) **or** a table that also specifies `model`, `command`, and `env`. This lets you build a fallback chain where the *same* provider appears multiple times with different models or accounts — useful when one provider splits its quota per model family or per account/contract.
+
+```toml
+providers = [
+  # Same provider, different accounts (switch via env: CODEX_HOME / CLAUDE_CONFIG_DIR).
+  { provider = "codex", model = "gpt-5.4-mini", env = { CODEX_HOME = "~/.codex" } },       # account 1
+  { provider = "codex", model = "gpt-5.4-mini", env = { CODEX_HOME = "~/.codex-work" } },  # account 2
+  # Same provider, different model families (separate quotas).
+  { provider = "antigravity", model = "Gemini 3.5 Flash (Low)" },
+  { provider = "antigravity", model = "GPT-OSS 120B (Medium)" },
+  # A plain string is still accepted (provider name only).
+  "claude",
+]
+```
+
+Per-step fields:
+
+| Field | Description |
+|-------|-------------|
+| `provider` | Required. Provider type that decides the CLI argument convention (`codex`, `antigravity`, `claude`, `opencode`, `apple-intelligence`; `gemini`/`agy` accepted as aliases). |
+| `model` | Optional. Model for this step. If omitted, falls back to `[models].<provider>`, then the CLI's own default. |
+| `command` | Optional. Executable (and fixed args) to run instead of the provider's default binary — e.g. a wrapper script. `~` is expanded. The provider's standard arguments (`--disable hooks` etc. for codex) are still applied. |
+| `env` | Optional. Environment variables set explicitly via `Command::env()` when launching this step. `~` in values is expanded; the key must be a valid POSIX name. |
+| `name` | Optional. Identifier used for the cooldown key and log label. If omitted, it is derived deterministically from provider + model + env + command. |
+
+**Account switching (recommended: `env`).** Codex and Claude Code pick their account/credentials from `CODEX_HOME` / `CLAUDE_CONFIG_DIR`. Setting these per step via `env` lets you fall back across accounts, each with its own quota. git-sc applies them with an explicit `Command::env()` override, so the launched CLI is **not** affected by whatever `CODEX_HOME` / `CLAUDE_CONFIG_DIR` happens to be exported in the shell that runs git-sc. (A wrapper script via `command` works too, but `env` is preferred because it is explicit and shown in `--debug`.)
+
+**Independent cooldown.** The cooldown key includes provider + model + env (+ command, or an explicit `name`), so each step is demoted independently: if `codex` on account 1 hits a rate limit, `codex` on account 2 — and `antigravity` on a different model — stay available.
+
 ### prefix_type Values
 
 | Value | Example | Description |

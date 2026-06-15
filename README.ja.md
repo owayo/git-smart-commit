@@ -308,6 +308,37 @@ Antigravity (`agy`) の既定モデルは `GPT-OSS 120B (Medium)` です。`agy`
 
 プロバイダーのクールダウン状態は、並び替え前に旧エイリアスを正規化します。そのため `gemini`/`agy` のクールダウンは `antigravity` に、旧 `apple-ai` / `apple_intelligence` キーは `apple-intelligence` に引き続き適用されます。`--debug` 付きで実行すると、設定の providers に旧 `gemini` エイリアスが残っている場合に「`antigravity` に正規化される」旨の注意が一度だけ表示されます。
 
+### 応用: プロバイダーフォールバックチェーン（モデル / アカウント / コマンド）
+
+`providers` の各要素は、プロバイダー名のみの文字列に加えて、`model` / `command` / `env` を持つテーブルでも書けます。これにより、同じプロバイダーを異なるモデルやアカウントで複数回並べたフォールバックチェーンを構築できます。1つのプロバイダーがモデル系統ごと・アカウント/契約ごとにクォータを分けている場合に有用です。
+
+```toml
+providers = [
+  # 同じプロバイダー・別アカウント(env で CODEX_HOME / CLAUDE_CONFIG_DIR を切替)
+  { provider = "codex", model = "gpt-5.4-mini", env = { CODEX_HOME = "~/.codex" } },       # アカウント1
+  { provider = "codex", model = "gpt-5.4-mini", env = { CODEX_HOME = "~/.codex-work" } },  # アカウント2
+  # 同じプロバイダー・別モデル系統(クォータが別)
+  { provider = "antigravity", model = "Gemini 3.5 Flash (Low)" },
+  { provider = "antigravity", model = "GPT-OSS 120B (Medium)" },
+  # 従来どおり文字列(プロバイダー名のみ)も使えます
+  "claude",
+]
+```
+
+ステップごとのフィールド:
+
+| フィールド | 説明 |
+|------------|------|
+| `provider` | 必須。CLI の引数規約を決めるプロバイダー種別(`codex`/`antigravity`/`claude`/`opencode`/`apple-intelligence`、`gemini`/`agy` はエイリアス)。 |
+| `model` | 任意。このステップのモデル。省略時は `[models].<provider>`、さらに各 CLI 既定にフォールバック。 |
+| `command` | 任意。provider 既定バイナリの代わりに実行するバイナリ(と固定引数)。ラッパースクリプト等。`~` は展開される。codex の `--disable hooks` 等の標準引数は引き続き付与される。 |
+| `env` | 任意。このステップ起動時に `Command::env()` で明示的に設定する環境変数。値の `~` は展開され、キーは POSIX 名である必要がある。 |
+| `name` | 任意。クールダウンキーとログ表示に使う識別子。省略時は provider + model + env + command から決定的に導出。 |
+
+**アカウント切替(推奨: `env`)。** Codex と Claude Code は `CODEX_HOME` / `CLAUDE_CONFIG_DIR` からアカウント/認証を選びます。これらをステップごとに `env` で設定すると、それぞれ別クォータのアカウントをまたいでフォールバックできます。git-sc は `Command::env()` で明示的に上書きするため、git-sc を起動したシェルに `CODEX_HOME` / `CLAUDE_CONFIG_DIR` が export されていても、起動される CLI はその影響を受けません。(`command` でラッパースクリプトを使う方法もありますが、`env` の方が明示的で `--debug` にも表示されるため推奨です。)
+
+**独立したクールダウン。** クールダウンキーは provider + model + env(+ command、または明示 `name`)を含むため、各ステップは独立して降格されます。`codex` のアカウント1がレート制限に達しても、`codex` のアカウント2や、別モデルの `antigravity` は引き続き使えます。
+
 ### prefix_type の値
 
 | 値 | 例 | 説明 |

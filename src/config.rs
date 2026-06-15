@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -61,6 +62,193 @@ impl Default for ModelsConfig {
     }
 }
 
+/// フォールバックチェーンの1ステップ。
+///
+/// `provider` は「どう CLI を叩くか(引数規約)」、`command` は「何を叩くか(実行バイナリ)」、
+/// `env` は「どのアカウント/環境で叩くか(CODEX_HOME 等)」を表し、3 つは直交する軸。
+/// 設定では素の文字列(プロバイダー名のみ)とテーブルの両方を受理する(後方互換)。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProviderStep {
+    /// 引数規約を決めるプロバイダー種別。"codex"/"antigravity"/"claude"/"opencode"/
+    /// "apple-intelligence"、および後方互換エイリアス "gemini"/"agy" を受理する。
+    pub provider: String,
+    /// このステップで使うモデル名。None/空なら [models].<provider> → 各 CLI 既定。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// 実行バイナリと固定引数。先頭=バイナリ(ラッパースクリプトのパス可)、以降=常に渡す追加引数。
+    /// None なら provider 既定バイナリ(codex/agy/claude/opencode)を使う。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<Vec<String>>,
+    /// 起動時に `Command::env()` で明示的に上書きする環境変数(CODEX_HOME 等)。
+    /// 値は設定読み込み時に `~` 展開済み。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    /// クールダウン/ログ用の識別名(任意)。省略時は他フィールドから決定的に導出する。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+impl ProviderStep {
+    /// プロバイダー名のみのステップを作る(テスト・`-p` 上書き・後方互換用)。
+    pub fn from_provider(provider: impl Into<String>) -> Self {
+        Self {
+            provider: provider.into(),
+            model: None,
+            command: None,
+            env: BTreeMap::new(),
+            name: None,
+        }
+    }
+
+    /// クールダウン/降格判定の一意キー。
+    ///
+    /// `name` 明示時はそれを正規化して使う。未指定時は provider(エイリアス正規化)、
+    /// model、env、command から決定的に導出する。区切りは値に現れない US(0x1F)。
+    /// これにより「同一 provider でも model/アカウント(env)/バイナリが違えば別キー」になり、
+    /// 片方がクールダウン中でも他方は生き残る。
+    pub fn cooldown_key(&self) -> String {
+        if let Some(name) = self.name.as_deref().filter(|s| !s.trim().is_empty()) {
+            return name.trim().to_lowercase();
+        }
+        let provider = canonical_provider_key(&self.provider);
+        let model = self
+            .model
+            .as_deref()
+            .filter(|m| !m.is_empty())
+            .unwrap_or("");
+        // env は BTreeMap なのでキー昇順で順序が決定的(挿入順に依存しない)。
+        let env_fp = self
+            .env
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join("\u{1f}");
+        let cmd_fp = self
+            .command
+            .as_ref()
+            .map(|c| c.join("\u{1f}"))
+            .unwrap_or_default();
+        format!("{provider}\u{1f}{model}\u{1f}{env_fp}\u{1f}{cmd_fp}")
+    }
+
+    /// ログ表示用のアカウント識別ヒント。name 明示時はそれ、さもなくば
+    /// CODEX_HOME / CLAUDE_CONFIG_DIR 等の値の末尾要素(例: ".codex-work")を返す。
+    pub fn account_hint(&self) -> Option<String> {
+        if let Some(name) = self.name.as_deref().filter(|s| !s.trim().is_empty()) {
+            return Some(name.trim().to_string());
+        }
+        for key in ["CODEX_HOME", "CLAUDE_CONFIG_DIR"] {
+            if let Some(v) = self.env.get(key) {
+                let tail = std::path::Path::new(v)
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(v.as_str());
+                return Some(tail.to_string());
+            }
+        }
+        None
+    }
+}
+
+impl<'de> Deserialize<'de> for ProviderStep {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{self, MapAccess, Visitor};
+        use std::fmt;
+
+        // テーブル形式 { provider = "...", model = "...", ... } 用の内部表現。
+        // #[serde(untagged)] を使わないのは、TOML で不正入力時のエラーが
+        // "data did not match any variant" に潰れて原因が分からなくなるため。
+        // 手書き Visitor なら "missing field `provider`" まで具体的に出せる。
+        #[derive(Deserialize)]
+        struct Raw {
+            provider: String,
+            #[serde(default)]
+            model: Option<String>,
+            #[serde(default)]
+            command: Option<Vec<String>>,
+            #[serde(default)]
+            env: BTreeMap<String, String>,
+            #[serde(default)]
+            name: Option<String>,
+        }
+
+        struct StepVisitor;
+        impl<'de> Visitor<'de> for StepVisitor {
+            type Value = ProviderStep;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str(
+                    "a provider name string (e.g. \"codex\") or a table \
+                     { provider = \"...\", model = \"...\", command = [...], env = { ... } }",
+                )
+            }
+
+            fn visit_str<E: de::Error>(self, s: &str) -> Result<Self::Value, E> {
+                Ok(ProviderStep::from_provider(s))
+            }
+
+            fn visit_map<M: MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
+                let raw = Raw::deserialize(de::value::MapAccessDeserializer::new(map))?;
+                Ok(ProviderStep {
+                    provider: raw.provider,
+                    model: raw.model.filter(|m| !m.is_empty()),
+                    command: raw.command.filter(|c| !c.is_empty()),
+                    env: raw.env,
+                    name: raw.name.filter(|n| !n.trim().is_empty()),
+                })
+            }
+        }
+
+        deserializer.deserialize_any(StepVisitor)
+    }
+}
+
+/// 状態ファイルと設定ファイルのプロバイダー名を比較用の正規名にそろえる。
+///
+/// 後方互換エイリアス("gemini"/"agy" → "antigravity"、"apple-ai"/"apple_intelligence" →
+/// "apple-intelligence")を吸収し、クールダウンキーやプロバイダー解決で同一視できるようにする。
+pub(crate) fn canonical_provider_key(provider: &str) -> String {
+    let lower = provider.to_lowercase();
+    match lower.as_str() {
+        "agy" | "gemini" | "antigravity" => "antigravity".to_string(),
+        "apple-ai" | "apple_intelligence" | "apple-intelligence" => {
+            "apple-intelligence".to_string()
+        }
+        _ => lower,
+    }
+}
+
+/// 環境変数名が POSIX の `[A-Za-z_][A-Za-z0-9_]*` かを判定する。
+fn is_valid_env_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// env マップの key を検証し、値を `~` 展開する($VAR 展開や相対パス解決はしない)。
+/// 不正なキーがあれば設定エラーにする(沈黙して別アカウントで動く事故を防ぐ)。
+fn expand_step_env(
+    env: &BTreeMap<String, String>,
+    ctx: &str,
+) -> Result<BTreeMap<String, String>, AppError> {
+    let mut out = BTreeMap::new();
+    for (k, v) in env {
+        if !is_valid_env_key(k) {
+            return Err(AppError::ConfigError(format!(
+                "{ctx}: invalid environment variable name: {k:?}"
+            )));
+        }
+        out.insert(k.clone(), shellexpand::tilde(v).to_string());
+    }
+    Ok(out)
+}
+
 /// 設定ファイルからの部分読み込み用モデル設定
 ///
 /// `Option<T>` により「未指定」と「明示的にデフォルト値を指定」を区別する。
@@ -82,7 +270,7 @@ struct PartialModelsConfig {
 /// `merge_into()` で `Config` に明示的に指定されたフィールドのみ上書きする。
 #[derive(Debug, Default, Deserialize)]
 struct PartialConfig {
-    pub providers: Option<Vec<String>>,
+    pub providers: Option<Vec<ProviderStep>>,
     pub language: Option<String>,
     #[serde(default)]
     pub models: PartialModelsConfig,
@@ -206,9 +394,9 @@ pub struct PrefixRuleConfig {
 /// アプリケーション設定
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    /// AIプロバイダーの優先順序
+    /// AIプロバイダーのフォールバックチェーン(各ステップは provider/model/command/env を持つ)
     #[serde(default)]
-    pub providers: Vec<String>,
+    pub providers: Vec<ProviderStep>,
     /// コミットメッセージの言語
     #[serde(default = "default_language")]
     pub language: String,
@@ -265,13 +453,13 @@ fn default_codex_reasoning_effort() -> String {
 impl Default for Config {
     fn default() -> Self {
         let mut providers = vec![
-            "opencode".to_string(),
-            "antigravity".to_string(),
-            "codex".to_string(),
-            "claude".to_string(),
+            ProviderStep::from_provider("opencode"),
+            ProviderStep::from_provider("antigravity"),
+            ProviderStep::from_provider("codex"),
+            ProviderStep::from_provider("claude"),
         ];
         if cfg!(all(target_os = "macos", feature = "apple-ai")) {
-            providers.push("apple-intelligence".to_string());
+            providers.push(ProviderStep::from_provider("apple-intelligence"));
         }
         Self {
             providers,
@@ -389,7 +577,26 @@ impl Config {
             project_partial.merge_into(&mut config);
         }
 
+        // 3. 各ステップの env キーを検証し、env 値と command バイナリの `~` を展開する。
+        config.finalize_steps()?;
+
         Ok(config)
+    }
+
+    /// 読み込み後の正規化。各ステップの env キーを検証し、env 値と command の
+    /// 先頭バイナリの `~` を展開する。env キーが不正な場合はエラーにする
+    /// (沈黙してアカウント切替が効かず別アカウントで動く事故を防ぐ)。
+    fn finalize_steps(&mut self) -> Result<(), AppError> {
+        for (i, step) in self.providers.iter_mut().enumerate() {
+            let ctx = format!("providers[{}] (provider={:?})", i, step.provider);
+            step.env = expand_step_env(&step.env, &ctx)?;
+            if let Some(cmd) = step.command.as_mut()
+                && let Some(first) = cmd.first_mut()
+            {
+                *first = shellexpand::tilde(first).to_string();
+            }
+        }
+        Ok(())
     }
 
     /// 設定をファイルに保存
@@ -485,6 +692,23 @@ opencode = ""
 # [[prefix_rules]]
 # url_pattern = "github\\.com[:/]myorg/"
 # prefix_type = "conventional"
+
+# --- 高度な設定: フォールバックチェーン (provider + model + env/command) ---
+# providers の各要素は文字列の代わりにテーブルでも書ける。provider に加えて
+# model(このステップのモデル)、command(実行バイナリ/ラッパー差し替え)、
+# env(CODEX_HOME 等の環境変数)を指定できる。同じプロバイダを別モデル・別アカウントで
+# 複数回並べると、それぞれ独立にフォールバック & クールダウンされる。
+# providers = [
+#   {{ provider = "codex", model = "gpt-5.4-mini", env = {{ CODEX_HOME = "~/.codex" }} }},
+#   {{ provider = "codex", model = "gpt-5.4-mini", env = {{ CODEX_HOME = "~/.codex-work" }} }},
+#   {{ provider = "antigravity", model = "Gemini 3.5 Flash (Low)" }},
+#   {{ provider = "antigravity", model = "GPT-OSS 120B (Medium)" }},
+#   "claude",
+# ]
+# アカウント切替は env での CODEX_HOME / CLAUDE_CONFIG_DIR 明示を推奨。git-sc が
+# 起動時に明示上書きするため、親シェルのアカウント設定に引きずられない。
+# ラッパースクリプトを使う場合は command でも可:
+#   {{ provider = "codex", command = ["~/path/to/codex-wrapper.sh"] }}
 "#
         )
     }
@@ -571,13 +795,13 @@ mod tests {
         let config = Config::default();
 
         let mut expected_providers = vec![
-            "opencode".to_string(),
-            "antigravity".to_string(),
-            "codex".to_string(),
-            "claude".to_string(),
+            ProviderStep::from_provider("opencode"),
+            ProviderStep::from_provider("antigravity"),
+            ProviderStep::from_provider("codex"),
+            ProviderStep::from_provider("claude"),
         ];
         if cfg!(all(target_os = "macos", feature = "apple-ai")) {
-            expected_providers.push("apple-intelligence".to_string());
+            expected_providers.push(ProviderStep::from_provider("apple-intelligence"));
         }
         assert_eq!(config.providers, expected_providers);
         assert_eq!(config.language, "Japanese");
@@ -641,7 +865,10 @@ codex_reasoning_effort = "high"
 
         let config = Config::from_str(toml).unwrap();
 
-        assert_eq!(config.providers, vec!["gemini".to_string()]);
+        assert_eq!(
+            config.providers,
+            vec![ProviderStep::from_provider("gemini")]
+        );
         assert_eq!(config.language, "English");
         // antigravity モデルは未指定なのでデフォルト値
         assert_eq!(config.models.antigravity, default_antigravity_model());
@@ -771,9 +998,9 @@ prefix_type = "conventional"
         assert_eq!(
             config.providers,
             vec![
-                "claude".to_string(),
-                "gemini".to_string(),
-                "codex".to_string()
+                ProviderStep::from_provider("claude"),
+                ProviderStep::from_provider("gemini"),
+                ProviderStep::from_provider("codex"),
             ]
         );
         assert_eq!(config.language, "English");
@@ -860,7 +1087,10 @@ language = "Japanese"
     #[test]
     fn test_merge_with_empty_project_config() {
         let mut global = Config {
-            providers: vec!["gemini".to_string(), "claude".to_string()],
+            providers: vec![
+                ProviderStep::from_provider("gemini"),
+                ProviderStep::from_provider("claude"),
+            ],
             language: "English".to_string(),
             prefix_type: Some("conventional".to_string()),
             auto_push: Some(true),
@@ -879,7 +1109,10 @@ language = "Japanese"
         // プロジェクト設定の providers が空なので、グローバル設定が維持される
         assert_eq!(
             global.providers,
-            vec!["gemini".to_string(), "claude".to_string()]
+            vec![
+                ProviderStep::from_provider("gemini"),
+                ProviderStep::from_provider("claude"),
+            ]
         );
         assert_eq!(global.language, "English");
         // Option フィールドは None の場合維持される
@@ -890,19 +1123,22 @@ language = "Japanese"
     #[test]
     fn test_merge_with_project_overrides_providers() {
         let mut global = Config {
-            providers: vec!["gemini".to_string(), "claude".to_string()],
+            providers: vec![
+                ProviderStep::from_provider("gemini"),
+                ProviderStep::from_provider("claude"),
+            ],
             ..Default::default()
         };
 
         let project = Config {
-            providers: vec!["codex".to_string()],
+            providers: vec![ProviderStep::from_provider("codex")],
             ..Default::default()
         };
 
         global.merge_with(project);
 
         // プロジェクト設定の providers が完全に置換される
-        assert_eq!(global.providers, vec!["codex".to_string()]);
+        assert_eq!(global.providers, vec![ProviderStep::from_provider("codex")]);
     }
 
     #[test]
@@ -1110,7 +1346,7 @@ claude = "haiku"
         global.merge_with(project);
 
         // すべてのフィールドがプロジェクト設定で上書きされる
-        assert_eq!(global.providers, vec!["codex".to_string()]);
+        assert_eq!(global.providers, vec![ProviderStep::from_provider("codex")]);
         assert_eq!(global.language, "French");
         assert_eq!(global.prefix_type, Some("bracket".to_string()));
         assert_eq!(global.auto_push, Some(false));
@@ -1208,7 +1444,13 @@ providers = ["gemini", "claude"]
 language = "ja"
 "#;
         let config = Config::from_str(toml_str).unwrap();
-        assert_eq!(config.providers, vec!["gemini", "claude"]);
+        assert_eq!(
+            config.providers,
+            vec![
+                ProviderStep::from_provider("gemini"),
+                ProviderStep::from_provider("claude"),
+            ]
+        );
         assert_eq!(config.language, "ja");
     }
 
@@ -1364,12 +1606,15 @@ unknown_field = "some_value"
     fn test_merge_with_providers_override() {
         let mut global = Config::default();
         let project = Config {
-            providers: vec!["claude".to_string()],
+            providers: vec![ProviderStep::from_provider("claude")],
             ..Default::default()
         };
 
         global.merge_with(project);
-        assert_eq!(global.providers, vec!["claude".to_string()]);
+        assert_eq!(
+            global.providers,
+            vec![ProviderStep::from_provider("claude")]
+        );
     }
 
     #[test]
@@ -1679,7 +1924,7 @@ gemini = "gemini-2.5-pro"
     #[test]
     fn test_partial_merge_into_all_none_preserves_config() {
         let mut config = Config {
-            providers: vec!["claude".to_string()],
+            providers: vec![ProviderStep::from_provider("claude")],
             language: "English".to_string(),
             models: ModelsConfig {
                 antigravity: "pro".to_string(),
@@ -1708,7 +1953,10 @@ gemini = "gemini-2.5-pro"
         partial.merge_into(&mut config);
 
         // 全フィールドが元の値のまま保持される
-        assert_eq!(config.providers, vec!["claude".to_string()]);
+        assert_eq!(
+            config.providers,
+            vec![ProviderStep::from_provider("claude")]
+        );
         assert_eq!(config.language, "English");
         assert_eq!(config.models.antigravity, "pro");
         assert_eq!(config.models.codex, "gpt-5");
@@ -1760,7 +2008,10 @@ prefix_type = "conventional"
 
         assert_eq!(
             config.providers,
-            vec!["codex".to_string(), "claude".to_string()]
+            vec![
+                ProviderStep::from_provider("codex"),
+                ProviderStep::from_provider("claude"),
+            ]
         );
         assert_eq!(config.language, "English");
         assert_eq!(config.models.antigravity, "gemini-2.5-pro");
@@ -1782,7 +2033,10 @@ prefix_type = "conventional"
     #[test]
     fn test_partial_merge_into_empty_providers_not_overridden() {
         let mut config = Config {
-            providers: vec!["gemini".to_string(), "claude".to_string()],
+            providers: vec![
+                ProviderStep::from_provider("gemini"),
+                ProviderStep::from_provider("claude"),
+            ],
             ..Default::default()
         };
 
@@ -1793,7 +2047,10 @@ prefix_type = "conventional"
         // providers = [] は空なのでマージされず、元の値が保持される
         assert_eq!(
             config.providers,
-            vec!["gemini".to_string(), "claude".to_string()]
+            vec![
+                ProviderStep::from_provider("gemini"),
+                ProviderStep::from_provider("claude"),
+            ]
         );
     }
 
@@ -1981,7 +2238,10 @@ gemini = "gemini-2.5-pro"
     fn test_partial_merge_empty_providers_does_not_clear_global() {
         // providers = [] はグローバルのprovidersをクリアしない
         let mut config = Config {
-            providers: vec!["gemini".to_string(), "claude".to_string()],
+            providers: vec![
+                ProviderStep::from_provider("gemini"),
+                ProviderStep::from_provider("claude"),
+            ],
             ..Default::default()
         };
 
@@ -1991,7 +2251,10 @@ gemini = "gemini-2.5-pro"
 
         assert_eq!(
             config.providers,
-            vec!["gemini".to_string(), "claude".to_string()]
+            vec![
+                ProviderStep::from_provider("gemini"),
+                ProviderStep::from_provider("claude"),
+            ]
         );
     }
 

@@ -13,33 +13,61 @@ use crate::error::AppError;
 
 use super::process::TempFile;
 use super::service::{AiProvider, AiService};
+use crate::config::ProviderStep;
 
 impl AiService {
     /// デバッグ用にコマンド文字列をフォーマット
+    ///
+    /// `model` は解決済みモデル(空なら省略)、`step` は env と command(実行バイナリ)の
+    /// 表示に使う。env は `KEY='val' ` の形でコマンドの前に表示する。
     pub(super) fn format_command_for_debug(
         &self,
         provider: &AiProvider,
+        model: &str,
+        step: &ProviderStep,
         prompt: &str,
         temp_file_path: Option<&std::path::Path>,
     ) -> String {
         let escaped_prompt = prompt.replace('\'', "'\\''");
+        // 明示上書きされる env を `KEY='val' ` の形でコマンド前に表示する。
+        let env_prefix = step
+            .env
+            .iter()
+            .map(|(k, v)| format!("{k}='{}' ", v.replace('\'', "'\\''")))
+            .collect::<String>();
+        // 実行バイナリ(command 指定があれば優先)と、その固定引数。
+        let bin = step
+            .command
+            .as_ref()
+            .and_then(|c| c.first())
+            .map(|s| s.as_str())
+            .unwrap_or_else(|| provider.command());
+        let fixed_args = step
+            .command
+            .as_ref()
+            .map(|c| {
+                c.iter()
+                    .skip(1)
+                    .map(|a| format!(" '{}'", a.replace('\'', "'\\''")))
+                    .collect::<String>()
+            })
+            .unwrap_or_default();
+        // --model 用(antigravity/codex/claude)。opencode は -m を使うので別途組み立てる。
+        let model_arg = if model.is_empty() {
+            String::new()
+        } else {
+            format!(" --model '{}'", model)
+        };
         match provider {
             AiProvider::Antigravity => {
                 // Antigravity CLI (`agy`) は `--model` に対応。空でなければ付与する。
                 // プロンプトは `-p` で 1 引数として渡す(`--debug` フラグは無い)。
-                let model_arg = if self.models.antigravity.is_empty() {
-                    String::new()
-                } else {
-                    format!(" --model '{}'", self.models.antigravity)
-                };
-                format!("agy{} -p '{}'", model_arg, escaped_prompt)
+                format!(
+                    "{env_prefix}{bin}{fixed_args}{model_arg} -p '{}'",
+                    escaped_prompt
+                )
             }
             AiProvider::Codex => {
-                let model_arg = if self.models.codex.is_empty() {
-                    String::new()
-                } else {
-                    format!(" --model '{}'", self.models.codex)
-                };
                 let effort_arg = if self.codex_reasoning_effort.is_empty() {
                     String::new()
                 } else {
@@ -53,35 +81,33 @@ impl AiService {
                     .map(|s| s.replace('\\', "/"))
                     .unwrap_or_else(|| "<output_file>".to_string());
                 format!(
-                    "echo '{}' | codex --disable hooks{} exec{} -o '{}'",
+                    "echo '{}' | {env_prefix}{bin}{fixed_args} --disable hooks{} exec{} -o '{}'",
                     escaped_prompt, effort_arg, model_arg, output_arg
                 )
             }
             AiProvider::Claude => {
-                let model_arg = if self.models.claude.is_empty() {
-                    String::new()
-                } else {
-                    format!(" --model '{}'", self.models.claude)
-                };
-                format!("echo '{}' | claude{} -p", escaped_prompt, model_arg)
+                format!(
+                    "echo '{}' | {env_prefix}{bin}{fixed_args}{model_arg} -p",
+                    escaped_prompt
+                )
             }
             AiProvider::Opencode => {
                 let file_display = temp_file_path
                     .and_then(|p| p.to_str())
                     .map(|s| s.replace('\\', "/"))
                     .unwrap_or_else(|| "<temp_file>".to_string());
-                let model_arg = if self.models.opencode.is_empty() {
+                let opencode_model = if model.is_empty() {
                     String::new()
                 } else {
-                    format!(" -m '{}'", self.models.opencode)
+                    format!(" -m '{}'", model)
                 };
                 format!(
-                    "opencode run 'Follow the instructions in the attached file exactly. Output only the commit message.'{} -f '{}' --print-logs",
-                    model_arg, file_display
+                    "{env_prefix}{bin}{fixed_args} run 'Follow the instructions in the attached file exactly. Output only the commit message.'{} -f '{}' --print-logs",
+                    opencode_model, file_display
                 )
             }
             AiProvider::AppleIntelligence => {
-                format!("echo '{}' | apple-ai", escaped_prompt)
+                format!("echo '{}' | {env_prefix}{bin}", escaped_prompt)
             }
         }
     }
@@ -91,23 +117,45 @@ impl AiService {
     pub(super) fn build_provider_command(
         &self,
         provider: &AiProvider,
+        step: &ProviderStep,
+        model: &str,
         prompt: &str,
         temp_file: Option<&TempFile>,
         codex_output_file: Option<&TempFile>,
     ) -> Result<(Command, bool), AppError> {
+        // 実行バイナリ + 固定引数を解決する。command 指定があればそれを優先し、
+        // 無ければ provider 既定バイナリ(codex/agy/claude/opencode)を使う。
+        // command の先頭バイナリの `~` は Config::load 時に展開済み。
+        let argv: Vec<String> = match step.command.as_ref().filter(|c| !c.is_empty()) {
+            Some(c) => c.clone(),
+            None => vec![provider.command().to_string()],
+        };
+        let (bin, fixed_args) = argv
+            .split_first()
+            .ok_or_else(|| AppError::AiProviderError("empty command".to_string()))?;
+
         // Windows: cmd /C 経由で実行する（npm等でインストールされた .cmd ラッパーに対応するため）
         // Rust の Command::new() は .cmd/.bat ファイルを直接実行できないため、cmd /C が必要
         #[cfg(windows)]
         let mut cmd = {
             let mut c = Command::new("cmd");
-            c.args(["/C", provider.command()]);
+            c.arg("/C").arg(bin);
             c
         };
         #[cfg(not(windows))]
-        let mut cmd = Command::new(provider.command());
+        let mut cmd = Command::new(bin);
+
+        // command で指定された固定引数(ラッパーに渡す追加フラグ等)を先に積む。
+        cmd.args(fixed_args);
+
+        // アカウント切替等の env を明示的に上書きする(token-burn の継承バグ対策)。
+        // env_clear() はしない(PATH/HOME 継承が必要)。明示上書きは親シェルの値に勝つ。
+        for (key, value) in &step.env {
+            cmd.env(key, value);
+        }
 
         // プロバイダー固有の引数を追加
-        // 各プロバイダーの models が空文字列の場合、モデルパラメータを省略する
+        // model が空文字列の場合、モデルパラメータを省略する
         let uses_stdin = match provider {
             AiProvider::Antigravity => {
                 // Windows では全プロバイダーを `cmd /C` 経由で起動するが、cmd.exe は
@@ -132,8 +180,8 @@ impl AiService {
                 {
                     Self::check_arg_size_limit(prompt)?;
                     // モデル指定がある場合のみ `--model` を付与(空文字列なら agy 既定に委ねる)
-                    if !self.models.antigravity.is_empty() {
-                        cmd.args(["--model", &self.models.antigravity]);
+                    if !model.is_empty() {
+                        cmd.args(["--model", model]);
                     }
                     cmd.args(["-p", prompt]);
                     false
@@ -152,8 +200,8 @@ impl AiService {
                     ]);
                 }
                 cmd.arg("exec");
-                if !self.models.codex.is_empty() {
-                    cmd.args(["--model", &self.models.codex]);
+                if !model.is_empty() {
+                    cmd.args(["--model", model]);
                 }
                 if let Some(output_file) = codex_output_file {
                     cmd.arg("-o").arg(output_file.path());
@@ -161,8 +209,8 @@ impl AiService {
                 true
             }
             AiProvider::Claude => {
-                if !self.models.claude.is_empty() {
-                    cmd.args(["--model", &self.models.claude]);
+                if !model.is_empty() {
+                    cmd.args(["--model", model]);
                 }
                 cmd.arg("-p");
                 true
@@ -178,8 +226,8 @@ impl AiService {
                         "run",
                         "Follow the instructions in the attached file exactly. Output only the commit message.",
                     ]);
-                    if !self.models.opencode.is_empty() {
-                        cmd.args(["-m", self.models.opencode.as_str()]);
+                    if !model.is_empty() {
+                        cmd.args(["-m", model]);
                     }
                     cmd.args(["-f", &path_str]);
                     // デバッグモードの場合は --print-logs を追加
@@ -219,12 +267,19 @@ impl AiService {
     pub(super) fn print_debug_command(
         &self,
         provider: &AiProvider,
+        step: &ProviderStep,
+        model: &str,
         prompt: &str,
         temp_file: Option<&TempFile>,
         silent: bool,
     ) {
-        let cmd_str =
-            self.format_command_for_debug(provider, prompt, temp_file.map(|tf| tf.path()));
+        let cmd_str = self.format_command_for_debug(
+            provider,
+            model,
+            step,
+            prompt,
+            temp_file.map(|tf| tf.path()),
+        );
         Self::emit_debug_line(silent, "");
         Self::emit_debug_line(
             silent,
@@ -235,6 +290,19 @@ impl AiService {
         );
         Self::emit_debug_line(silent, &"─".repeat(50).dimmed().to_string());
         Self::emit_debug_line(silent, &cmd_str.cyan().to_string());
+        // env 明示上書きと cooldown_key を表示する(どの step に何を渡したか = バグ調査の起点)。
+        if !step.env.is_empty() {
+            Self::emit_debug_line(silent, &"  env (explicit override):".dimmed().to_string());
+            for (key, value) in &step.env {
+                Self::emit_debug_line(silent, &format!("    {key}={value}"));
+            }
+        }
+        Self::emit_debug_line(
+            silent,
+            &format!("  cooldown_key: {}", step.cooldown_key())
+                .dimmed()
+                .to_string(),
+        );
         // 一時ファイル使用時はファイル情報を表示
         if let Some(tf) = temp_file {
             match fs::metadata(tf.path()) {

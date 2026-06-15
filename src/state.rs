@@ -6,15 +6,22 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::{ProviderStep, canonical_provider_key};
 use crate::error::AppError;
 
 /// プロセス内で一意な一時ファイル接尾辞を生成するためのカウンタ。
 /// 並列スレッドが同じナノ秒タイムスタンプを取得した場合でも tmp パスが衝突しないことを保証する。
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// プロバイダーの失敗情報
+/// プロバイダーステップの失敗情報
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderFailure {
+    /// クールダウン主キー(`ProviderStep::cooldown_key` 由来。name 明示時はそれ、
+    /// 未指定時は provider+model+env+command から決定的に導出した値)。
+    pub key: String,
+    /// 表示・デバッグ用のプロバイダー名(任意)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
     /// 失敗した時刻（UNIXタイムスタンプ、秒）
     pub failed_at: u64,
 }
@@ -22,9 +29,32 @@ pub struct ProviderFailure {
 /// アプリケーション状態
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct State {
-    /// プロバイダーごとの失敗情報
+    /// 失敗したステップの一覧(複合キー単位)
     #[serde(default)]
-    pub provider_failures: HashMap<String, ProviderFailure>,
+    pub failures: Vec<ProviderFailure>,
+}
+
+/// 旧形式の失敗情報(provider名 → {failed_at})。読み込み時の移行にのみ使う。
+#[derive(Debug, Deserialize)]
+struct LegacyFailure {
+    failed_at: u64,
+}
+
+/// ディスク上の状態。新形式(`failures`)と旧形式(`provider_failures` HashMap)の
+/// 両方を読み取り、`State::load` で新形式へ正規化する。
+#[derive(Debug, Default, Deserialize)]
+struct StateOnDisk {
+    #[serde(default)]
+    failures: Vec<ProviderFailure>,
+    #[serde(default)]
+    provider_failures: HashMap<String, LegacyFailure>,
+}
+
+/// 旧 provider名キーが導出すべき新クールダウンキーへ変換する。
+/// 「provider のみ(model/env/command なし)」ステップの `cooldown_key` と一致させることで、
+/// 移行後も旧 cooldown が同じステップに効き続ける。
+fn legacy_key_to_new(provider: &str) -> String {
+    ProviderStep::from_provider(provider).cooldown_key()
 }
 
 impl State {
@@ -35,11 +65,11 @@ impl State {
             .ok_or_else(|| AppError::ConfigError("Could not find home directory".to_string()))
     }
 
-    /// ファイルから状態を読み込み、存在しない場合はデフォルトを返す
+    /// ファイルから状態を読み込み、存在しない場合はデフォルトを返す。
     ///
-    /// 旧 `gemini` キーは読み込み時にメモリ上で `antigravity` キーへ合流させる
-    /// (ファイル自体は書き換えない)。両方が共存する場合は新しい方の failed_at を採用し、
-    /// 短い実装で「移行直後の cooldown 状態」を保ったまま同一プロバイダーとして扱う。
+    /// 旧形式(provider名単位の HashMap)で保存されたファイルも読み取り、各エントリを
+    /// 「provider のみステップ」の複合キーへ移行する。旧 `gemini`/`apple-ai` キーは
+    /// `canonical_provider_key` 経由で `antigravity`/`apple-intelligence` のキーへ合流する。
     pub fn load() -> Result<Self, AppError> {
         let path = Self::state_path()?;
 
@@ -50,28 +80,28 @@ impl State {
         let content = fs::read_to_string(&path)
             .map_err(|e| AppError::ConfigError(format!("Failed to read state: {}", e)))?;
 
-        let mut state: State = toml::from_str(&content)
+        let disk: StateOnDisk = toml::from_str(&content)
             .map_err(|e| AppError::ConfigError(format!("Failed to parse state: {}", e)))?;
-        state.migrate_legacy_gemini_key();
-        Ok(state)
-    }
 
-    /// 旧 `gemini` キーを `antigravity` キーへメモリ上で合流させる。
-    ///
-    /// 2026-05 の Gemini CLI → Antigravity CLI 移行で、旧 git-sc が記録した `gemini`
-    /// cooldown が残っていると、`agy` を試したい場面でクールダウン降格されてしまう問題があった。
-    /// `from_str("gemini")` は `Antigravity` を返すので、状態側も同様に合流させる。
-    pub(crate) fn migrate_legacy_gemini_key(&mut self) {
-        if let Some(legacy) = self.provider_failures.remove("gemini") {
-            self.provider_failures
-                .entry("antigravity".to_string())
-                .and_modify(|existing| {
-                    if legacy.failed_at > existing.failed_at {
-                        existing.failed_at = legacy.failed_at;
-                    }
-                })
-                .or_insert(legacy);
+        let mut failures = disk.failures;
+        // 旧 HashMap 形式を新キーへ移行する。同じキーが両形式に存在する場合は
+        // 新しい failed_at を採用する。
+        for (provider, legacy) in disk.provider_failures {
+            let key = legacy_key_to_new(&provider);
+            if let Some(existing) = failures.iter_mut().find(|f| f.key == key) {
+                if legacy.failed_at > existing.failed_at {
+                    existing.failed_at = legacy.failed_at;
+                }
+            } else {
+                failures.push(ProviderFailure {
+                    key,
+                    provider: Some(canonical_provider_key(&provider)),
+                    failed_at: legacy.failed_at,
+                });
+            }
         }
+
+        Ok(State { failures })
     }
 
     /// 状態をファイルに保存
@@ -138,44 +168,29 @@ impl State {
         cooldown_minutes.saturating_mul(60)
     }
 
-    /// 状態ファイルと設定ファイルのプロバイダー名を比較用の正規名にそろえる。
-    ///
-    /// 設定ファイルには後方互換エイリアスが残ることがあるため、保存済みの失敗キーと
-    /// 現在の provider 配列を同じプロバイダーとして扱えるようにする。
-    fn canonical_provider_key(provider: &str) -> String {
-        let lower = provider.to_lowercase();
-        match lower.as_str() {
-            "agy" | "gemini" | "antigravity" => "antigravity".to_string(),
-            "apple-ai" | "apple_intelligence" | "apple-intelligence" => {
-                "apple-intelligence".to_string()
-            }
-            _ => lower,
+    /// ステップの失敗を記録する(複合キー単位)。同じキーが既にあれば時刻を更新する。
+    pub fn record_failure(&mut self, step: &ProviderStep) {
+        let key = step.cooldown_key();
+        let now = Self::now();
+        if let Some(f) = self.failures.iter_mut().find(|f| f.key == key) {
+            f.failed_at = now;
+        } else {
+            self.failures.push(ProviderFailure {
+                key,
+                provider: Some(canonical_provider_key(&step.provider)),
+                failed_at: now,
+            });
         }
     }
 
-    /// プロバイダーの失敗を記録
-    pub fn record_failure(&mut self, provider: &str) {
-        self.provider_failures.insert(
-            provider.to_lowercase(),
-            ProviderFailure {
-                failed_at: Self::now(),
-            },
-        );
-    }
-
-    /// クールダウン中のプロバイダーのリストを取得
-    pub fn get_demoted_providers(&self, cooldown_minutes: u64) -> Vec<String> {
+    /// 指定ステップが現在クールダウン中か。
+    pub fn is_demoted(&self, step: &ProviderStep, cooldown_minutes: u64) -> bool {
+        let key = step.cooldown_key();
         let now = Self::now();
         let cooldown_secs = Self::cooldown_secs(cooldown_minutes);
-
-        self.provider_failures
+        self.failures
             .iter()
-            .filter(|(_, failure)| {
-                let elapsed = now.saturating_sub(failure.failed_at);
-                elapsed < cooldown_secs
-            })
-            .map(|(provider, _)| provider.clone())
-            .collect()
+            .any(|f| f.key == key && now.saturating_sub(f.failed_at) < cooldown_secs)
     }
 
     /// 期限切れの失敗記録をクリーンアップ
@@ -183,79 +198,102 @@ impl State {
         let now = Self::now();
         let cooldown_secs = Self::cooldown_secs(cooldown_minutes);
 
-        self.provider_failures.retain(|_, failure| {
-            let elapsed = now.saturating_sub(failure.failed_at);
-            elapsed < cooldown_secs
-        });
+        self.failures
+            .retain(|failure| now.saturating_sub(failure.failed_at) < cooldown_secs);
     }
 
-    /// プロバイダーリストを降格状態に基づいて並び替え
-    /// 降格されたプロバイダーは末尾に移動
-    pub fn reorder_providers(&self, providers: Vec<String>, cooldown_minutes: u64) -> Vec<String> {
-        let demoted = self.get_demoted_providers(cooldown_minutes);
-        let demoted: Vec<String> = demoted
-            .iter()
-            .map(|p| Self::canonical_provider_key(p))
-            .collect();
-
-        let mut normal: Vec<String> = providers
-            .iter()
-            .filter(|p| !demoted.contains(&Self::canonical_provider_key(p)))
-            .cloned()
-            .collect();
-
-        let mut demoted_providers: Vec<String> = providers
-            .iter()
-            .filter(|p| demoted.contains(&Self::canonical_provider_key(p)))
-            .cloned()
-            .collect();
-
-        normal.append(&mut demoted_providers);
-        normal
+    /// ステップ列を降格状態に基づいて並び替える。降格中のステップは末尾へ移動する。
+    /// 並びは安定(同一区分内では元の順序を保つ)。
+    pub fn reorder_steps(
+        &self,
+        steps: Vec<ProviderStep>,
+        cooldown_minutes: u64,
+    ) -> Vec<ProviderStep> {
+        let (normal, demoted): (Vec<_>, Vec<_>) = steps
+            .into_iter()
+            .partition(|s| !self.is_demoted(s, cooldown_minutes));
+        normal.into_iter().chain(demoted).collect()
     }
 }
 
 #[cfg(test)]
 mod tests {
+    // `ProviderStep` と `canonical_provider_key` は親モジュールの
+    // `use crate::config::{...}`(ファイル冒頭)を `super::*` 経由で取り込む。
     use super::*;
+
+    /// provider 名のみの `ProviderStep` を作るヘルパー。
+    fn step(p: &str) -> ProviderStep {
+        ProviderStep::from_provider(p)
+    }
+
+    /// provider 名のみのステップが導出するクールダウンキー。
+    fn key_of(p: &str) -> String {
+        ProviderStep::from_provider(p).cooldown_key()
+    }
+
+    /// 指定キーの失敗が記録されているか。
+    fn has_failure(state: &State, p: &str) -> bool {
+        let key = key_of(p);
+        state.failures.iter().any(|f| f.key == key)
+    }
+
+    /// 指定キーの failed_at を取得（存在前提）。
+    fn failed_at_of(state: &State, p: &str) -> u64 {
+        let key = key_of(p);
+        state
+            .failures
+            .iter()
+            .find(|f| f.key == key)
+            .unwrap()
+            .failed_at
+    }
+
+    /// 指定 failed_at で失敗を直接ねじ込むヘルパー（時刻を制御したいテスト用）。
+    fn push_failure(state: &mut State, p: &str, failed_at: u64) {
+        state.failures.push(ProviderFailure {
+            key: key_of(p),
+            provider: Some(canonical_provider_key(p)),
+            failed_at,
+        });
+    }
 
     #[test]
     fn test_state_default() {
         let state = State::default();
-        assert!(state.provider_failures.is_empty());
+        assert!(state.failures.is_empty());
     }
 
     #[test]
     fn test_record_failure() {
         let mut state = State::default();
-        state.record_failure("gemini");
+        state.record_failure(&step("gemini"));
 
-        assert!(state.provider_failures.contains_key("gemini"));
-        assert!(state.provider_failures.get("gemini").unwrap().failed_at > 0);
+        assert!(has_failure(&state, "gemini"));
+        assert!(failed_at_of(&state, "gemini") > 0);
     }
 
     #[test]
     fn test_record_failure_case_insensitive() {
         let mut state = State::default();
-        state.record_failure("GEMINI");
+        state.record_failure(&step("GEMINI"));
 
-        assert!(state.provider_failures.contains_key("gemini"));
+        // cooldown_key は provider を小文字化・正規化するので "gemini" でヒットする
+        assert!(has_failure(&state, "gemini"));
     }
 
     #[test]
     fn test_get_demoted_providers_empty() {
         let state = State::default();
-        let demoted = state.get_demoted_providers(60);
-        assert!(demoted.is_empty());
+        assert!(!state.is_demoted(&step("gemini"), 60));
     }
 
     #[test]
     fn test_get_demoted_providers_with_recent_failure() {
         let mut state = State::default();
-        state.record_failure("gemini");
+        state.record_failure(&step("gemini"));
 
-        let demoted = state.get_demoted_providers(60);
-        assert!(demoted.contains(&"gemini".to_string()));
+        assert!(state.is_demoted(&step("gemini"), 60));
     }
 
     #[test]
@@ -263,134 +301,95 @@ mod tests {
         let mut state = State::default();
         // 2時間前の失敗を記録
         let two_hours_ago = State::now() - (2 * 60 * 60);
-        state.provider_failures.insert(
-            "gemini".to_string(),
-            ProviderFailure {
-                failed_at: two_hours_ago,
-            },
-        );
+        push_failure(&mut state, "gemini", two_hours_ago);
 
         // 1時間のクールダウンなので、期限切れ
-        let demoted = state.get_demoted_providers(60);
-        assert!(demoted.is_empty());
+        assert!(!state.is_demoted(&step("gemini"), 60));
     }
 
     #[test]
     fn test_reorder_providers_no_demoted() {
         let state = State::default();
-        let providers = vec![
-            "gemini".to_string(),
-            "codex".to_string(),
-            "claude".to_string(),
-        ];
+        let steps = vec![step("gemini"), step("codex"), step("claude")];
 
-        let reordered = state.reorder_providers(providers.clone(), 60);
-        assert_eq!(reordered, providers);
+        let reordered = state.reorder_steps(steps.clone(), 60);
+        assert_eq!(reordered, steps);
     }
 
     #[test]
     fn test_reorder_providers_with_demoted() {
         let mut state = State::default();
-        state.record_failure("gemini");
+        state.record_failure(&step("gemini"));
 
-        let providers = vec![
-            "gemini".to_string(),
-            "codex".to_string(),
-            "claude".to_string(),
-        ];
+        let steps = vec![step("gemini"), step("codex"), step("claude")];
 
-        let reordered = state.reorder_providers(providers, 60);
+        let reordered = state.reorder_steps(steps, 60);
         assert_eq!(
             reordered,
-            vec![
-                "codex".to_string(),
-                "claude".to_string(),
-                "gemini".to_string(),
-            ]
+            vec![step("codex"), step("claude"), step("gemini")]
         );
     }
 
     #[test]
     fn test_reorder_providers_demotes_antigravity_when_config_uses_gemini_alias() {
         let mut state = State::default();
-        state.record_failure("antigravity");
+        state.record_failure(&step("antigravity"));
 
-        let providers = vec![
-            "gemini".to_string(),
-            "codex".to_string(),
-            "claude".to_string(),
-        ];
+        let steps = vec![step("gemini"), step("codex"), step("claude")];
 
-        let reordered = state.reorder_providers(providers, 60);
+        // antigravity の失敗が gemini エイリアスのステップを降格させる
+        let reordered = state.reorder_steps(steps, 60);
         assert_eq!(
             reordered,
-            vec![
-                "codex".to_string(),
-                "claude".to_string(),
-                "gemini".to_string(),
-            ]
+            vec![step("codex"), step("claude"), step("gemini")]
         );
     }
 
     #[test]
     fn test_reorder_providers_demotes_apple_intelligence_from_legacy_state_key() {
         let mut state = State::default();
-        state.record_failure("apple-ai");
+        state.record_failure(&step("apple-ai"));
 
-        let providers = vec![
-            "opencode".to_string(),
-            "apple-intelligence".to_string(),
-            "codex".to_string(),
-        ];
+        let steps = vec![step("opencode"), step("apple-intelligence"), step("codex")];
 
-        let reordered = state.reorder_providers(providers, 60);
+        // 旧 apple-ai キーが apple-intelligence ステップを降格させる
+        let reordered = state.reorder_steps(steps, 60);
         assert_eq!(
             reordered,
-            vec![
-                "opencode".to_string(),
-                "codex".to_string(),
-                "apple-intelligence".to_string(),
-            ]
+            vec![step("opencode"), step("codex"), step("apple-intelligence"),]
         );
     }
 
     #[test]
     fn test_reorder_providers_demotes_apple_intelligence_via_config_key() {
-        // 本番フロー record_provider_failure → record_failure(provider.config_key()) を再現する。
-        // AppleIntelligence の config_key() は "apple-ai" を返す一方、設定や providers 配列では
-        // 正規名 "apple-intelligence" を使う。両者は canonical_provider_key が結びつけているため
-        // 降格が成立する。上の legacy テストはキーをハードコードしているので config_key() 側の
-        // 定義変更を検知できないが、このテストは config_key() の実値を使うことで
-        // ai::service と state の結合不変条件を固定する。
+        // 本番フロー record_provider_failure → record_failure(step) を再現する。
+        // AppleIntelligence の config_key() は "apple-ai" を返す一方、設定や steps では
+        // 正規名 "apple-intelligence" を使う。両者は cooldown_key() 内の canonical 化が
+        // 結びつけているため降格が成立する。上の legacy テストはキーを直接ハードコード
+        // しているので config_key() 側の定義変更を検知できないが、このテストは config_key()
+        // の実値からステップを作ることで ai::service と state の結合不変条件を固定する。
         use crate::ai::AiProvider;
 
         let mut state = State::default();
-        state.record_failure(AiProvider::AppleIntelligence.config_key());
+        state.record_failure(&step(AiProvider::AppleIntelligence.config_key()));
 
-        let providers = vec![
-            "opencode".to_string(),
-            "apple-intelligence".to_string(),
-            "codex".to_string(),
-        ];
+        let steps = vec![step("opencode"), step("apple-intelligence"), step("codex")];
 
-        let reordered = state.reorder_providers(providers, 60);
+        let reordered = state.reorder_steps(steps, 60);
         assert_eq!(
             reordered,
-            vec![
-                "opencode".to_string(),
-                "codex".to_string(),
-                "apple-intelligence".to_string(),
-            ]
+            vec![step("opencode"), step("codex"), step("apple-intelligence"),]
         );
     }
 
     #[test]
     fn test_all_provider_config_keys_canonicalize_to_configured_name() {
-        // すべての AiProvider について、record_failure に渡される config_key() が
-        // canonical_provider_key を通すと「設定 providers 配列で使う正規名」に解決されることを
-        // 保証する。これは record_failure(config_key()) で保存したキーと reorder_providers 内の
-        // canonical 比較が確実に一致するための不変条件であり、新しいプロバイダー追加時や
-        // config_key()/canonical_provider_key() のいずれかを変更した際の取りこぼしを防ぐ。
+        // すべての AiProvider について、record_failure に渡されるステップの config_key() を
+        // canonical_provider_key を通すと「設定 steps で使う正規名」に解決されることを保証する。
+        // これは record_failure(step) で保存したキー（cooldown_key 内で canonical 化）と
+        // reorder_steps 内の is_demoted 比較が確実に一致するための不変条件であり、新しい
+        // プロバイダー追加時や config_key()/canonical_provider_key() のいずれかを変更した際の
+        // 取りこぼしを防ぐ。
         use crate::ai::AiProvider;
 
         let cases = [
@@ -404,7 +403,7 @@ mod tests {
         for (provider, expected_canonical) in cases {
             let key = provider.config_key();
             assert_eq!(
-                State::canonical_provider_key(key).as_str(),
+                canonical_provider_key(key).as_str(),
                 expected_canonical,
                 "provider {:?} の config_key() {:?} が想定の正規キーに解決されません",
                 provider,
@@ -416,20 +415,16 @@ mod tests {
     #[test]
     fn test_reorder_providers_multiple_demoted() {
         let mut state = State::default();
-        state.record_failure("gemini");
-        state.record_failure("codex");
+        state.record_failure(&step("gemini"));
+        state.record_failure(&step("codex"));
 
-        let providers = vec![
-            "gemini".to_string(),
-            "codex".to_string(),
-            "claude".to_string(),
-        ];
+        let steps = vec![step("gemini"), step("codex"), step("claude")];
 
-        let reordered = state.reorder_providers(providers, 60);
+        let reordered = state.reorder_steps(steps, 60);
         // claudeが先頭、demotedは元の順序で末尾
-        assert_eq!(reordered[0], "claude".to_string());
-        assert!(reordered.contains(&"gemini".to_string()));
-        assert!(reordered.contains(&"codex".to_string()));
+        assert_eq!(reordered[0].provider, "claude");
+        assert!(reordered.iter().any(|s| s.provider == "gemini"));
+        assert!(reordered.iter().any(|s| s.provider == "codex"));
     }
 
     #[test]
@@ -437,94 +432,85 @@ mod tests {
         let mut state = State::default();
 
         // 現在の失敗
-        state.record_failure("gemini");
+        state.record_failure(&step("gemini"));
 
         // 2時間前の失敗
         let two_hours_ago = State::now() - (2 * 60 * 60);
-        state.provider_failures.insert(
-            "codex".to_string(),
-            ProviderFailure {
-                failed_at: two_hours_ago,
-            },
-        );
+        push_failure(&mut state, "codex", two_hours_ago);
 
         // 1時間のクールダウンでクリーンアップ
         state.cleanup_expired(60);
 
-        assert!(state.provider_failures.contains_key("gemini"));
-        assert!(!state.provider_failures.contains_key("codex"));
+        assert!(has_failure(&state, "gemini"));
+        assert!(!has_failure(&state, "codex"));
     }
 
     #[test]
     fn test_state_serialization() {
         let mut state = State::default();
-        state.record_failure("gemini");
+        state.record_failure(&step("gemini"));
 
         let serialized = toml::to_string_pretty(&state).unwrap();
         let deserialized: State = toml::from_str(&serialized).unwrap();
 
-        assert!(deserialized.provider_failures.contains_key("gemini"));
+        assert!(has_failure(&deserialized, "gemini"));
     }
 
     #[test]
     fn test_record_failure_overwrites_previous() {
         let mut state = State::default();
-        state.record_failure("gemini");
-        let first_time = state.provider_failures.get("gemini").unwrap().failed_at;
+        state.record_failure(&step("gemini"));
+        let first_time = failed_at_of(&state, "gemini");
 
         // 同じプロバイダーに再度失敗を記録
-        state.record_failure("gemini");
-        let second_time = state.provider_failures.get("gemini").unwrap().failed_at;
+        state.record_failure(&step("gemini"));
+        let second_time = failed_at_of(&state, "gemini");
 
         // 2回目のタイムスタンプは1回目以上
         assert!(second_time >= first_time);
         // エントリは1つのまま
-        assert_eq!(state.provider_failures.len(), 1);
+        assert_eq!(state.failures.len(), 1);
     }
 
     #[test]
     fn test_cleanup_expired_keeps_recent() {
         let mut state = State::default();
-        state.record_failure("gemini");
-        state.record_failure("codex");
+        state.record_failure(&step("gemini"));
+        state.record_failure(&step("codex"));
 
         // 両方とも直近の失敗なので、クリーンアップしても残る
         state.cleanup_expired(60);
-        assert_eq!(state.provider_failures.len(), 2);
+        assert_eq!(state.failures.len(), 2);
     }
 
     #[test]
     fn test_cleanup_expired_zero_cooldown() {
         let mut state = State::default();
-        state.record_failure("gemini");
+        state.record_failure(&step("gemini"));
 
         // クールダウン0分の場合、全エントリが期限切れ
         state.cleanup_expired(0);
-        assert!(state.provider_failures.is_empty());
+        assert!(state.failures.is_empty());
     }
 
     #[test]
     fn test_reorder_providers_empty_providers() {
         let state = State::default();
-        let providers: Vec<String> = vec![];
-        let reordered = state.reorder_providers(providers, 60);
+        let steps: Vec<ProviderStep> = vec![];
+        let reordered = state.reorder_steps(steps, 60);
         assert!(reordered.is_empty());
     }
 
     #[test]
     fn test_reorder_providers_all_demoted() {
         let mut state = State::default();
-        state.record_failure("gemini");
-        state.record_failure("codex");
-        state.record_failure("claude");
+        state.record_failure(&step("gemini"));
+        state.record_failure(&step("codex"));
+        state.record_failure(&step("claude"));
 
-        let providers = vec![
-            "gemini".to_string(),
-            "codex".to_string(),
-            "claude".to_string(),
-        ];
+        let steps = vec![step("gemini"), step("codex"), step("claude")];
 
-        let reordered = state.reorder_providers(providers, 60);
+        let reordered = state.reorder_steps(steps, 60);
         // 全プロバイダーが降格されても、リスト自体は残る
         assert_eq!(reordered.len(), 3);
     }
@@ -532,11 +518,10 @@ mod tests {
     #[test]
     fn test_get_demoted_providers_zero_cooldown() {
         let mut state = State::default();
-        state.record_failure("gemini");
+        state.record_failure(&step("gemini"));
 
         // クールダウン0の場合、全エントリが即座に期限切れ
-        let demoted = state.get_demoted_providers(0);
-        assert!(demoted.is_empty());
+        assert!(!state.is_demoted(&step("gemini"), 0));
     }
 
     #[test]
@@ -550,35 +535,29 @@ mod tests {
     #[test]
     fn test_reorder_providers_mixed_case() {
         let mut state = State::default();
-        state.record_failure("gemini"); // "gemini" として保存
+        state.record_failure(&step("gemini")); // "gemini" として保存
 
-        let providers = vec![
-            "Gemini".to_string(),
-            "Claude".to_string(),
-            "Codex".to_string(),
-        ];
+        let steps = vec![step("Gemini"), step("Claude"), step("Codex")];
 
-        let reordered = state.reorder_providers(providers, 60);
-        assert_eq!(reordered[0], "Claude");
-        assert_eq!(reordered[1], "Codex");
-        assert_eq!(reordered[2], "Gemini");
+        // 大文字の "Gemini" でも cooldown_key の小文字化で gemini の失敗と一致し降格される
+        let reordered = state.reorder_steps(steps, 60);
+        assert_eq!(reordered[0].provider, "Claude");
+        assert_eq!(reordered[1].provider, "Codex");
+        assert_eq!(reordered[2].provider, "Gemini");
     }
 
     #[test]
     fn test_state_roundtrip_serialization() {
         let mut state = State::default();
-        state.record_failure("gemini");
-        state.record_failure("claude");
+        state.record_failure(&step("gemini"));
+        state.record_failure(&step("claude"));
 
         let serialized = toml::to_string_pretty(&state).unwrap();
         let deserialized: State = toml::from_str(&serialized).unwrap();
 
-        assert_eq!(
-            state.provider_failures.len(),
-            deserialized.provider_failures.len()
-        );
-        assert!(deserialized.provider_failures.contains_key("gemini"));
-        assert!(deserialized.provider_failures.contains_key("claude"));
+        assert_eq!(state.failures.len(), deserialized.failures.len());
+        assert!(has_failure(&deserialized, "gemini"));
+        assert!(has_failure(&deserialized, "claude"));
     }
 
     #[test]
@@ -586,19 +565,21 @@ mod tests {
         let state = State::default();
         let serialized = toml::to_string_pretty(&state).unwrap();
         let deserialized: State = toml::from_str(&serialized).unwrap();
-        assert!(deserialized.provider_failures.is_empty());
+        assert!(deserialized.failures.is_empty());
     }
 
     #[test]
     fn test_record_failure_multiple_providers() {
         let mut state = State::default();
-        state.record_failure("gemini");
-        state.record_failure("claude");
-        state.record_failure("codex");
+        state.record_failure(&step("gemini"));
+        state.record_failure(&step("claude"));
+        state.record_failure(&step("codex"));
 
-        assert_eq!(state.provider_failures.len(), 3);
-        let demoted = state.get_demoted_providers(60);
-        assert_eq!(demoted.len(), 3);
+        assert_eq!(state.failures.len(), 3);
+        // 3つとも直近の失敗なので全て降格中
+        assert!(state.is_demoted(&step("gemini"), 60));
+        assert!(state.is_demoted(&step("claude"), 60));
+        assert!(state.is_demoted(&step("codex"), 60));
     }
 
     #[test]
@@ -606,16 +587,10 @@ mod tests {
         // クールダウン境界値: ちょうど60分前の失敗は期限切れ
         let mut state = State::default();
         let exactly_60_min_ago = State::now() - (60 * 60);
-        state.provider_failures.insert(
-            "gemini".to_string(),
-            ProviderFailure {
-                failed_at: exactly_60_min_ago,
-            },
-        );
+        push_failure(&mut state, "gemini", exactly_60_min_ago);
 
-        let demoted = state.get_demoted_providers(60);
         // elapsed == cooldown_secs なので期限切れ
-        assert!(demoted.is_empty());
+        assert!(!state.is_demoted(&step("gemini"), 60));
     }
 
     #[test]
@@ -623,15 +598,9 @@ mod tests {
         // クールダウン境界値: 59分59秒前の失敗はまだクールダウン中
         let mut state = State::default();
         let just_before = State::now() - (60 * 60 - 1);
-        state.provider_failures.insert(
-            "gemini".to_string(),
-            ProviderFailure {
-                failed_at: just_before,
-            },
-        );
+        push_failure(&mut state, "gemini", just_before);
 
-        let demoted = state.get_demoted_providers(60);
-        assert!(demoted.contains(&"gemini".to_string()));
+        assert!(state.is_demoted(&step("gemini"), 60));
     }
 
     #[test]
@@ -645,7 +614,7 @@ mod tests {
     fn test_state_deserialize_empty_toml() {
         // 空のTOMLからデシリアライズするとデフォルト状態
         let state: State = toml::from_str("").unwrap();
-        assert!(state.provider_failures.is_empty());
+        assert!(state.failures.is_empty());
     }
 
     #[test]
@@ -653,28 +622,23 @@ mod tests {
         // クールダウンちょうどの境界でクリーンアップされる
         let mut state = State::default();
         let exactly_at_boundary = State::now() - (30 * 60);
-        state.provider_failures.insert(
-            "gemini".to_string(),
-            ProviderFailure {
-                failed_at: exactly_at_boundary,
-            },
-        );
+        push_failure(&mut state, "gemini", exactly_at_boundary);
 
         // 30分のクールダウンでちょうど30分前 → elapsed == cooldown_secs → 期限切れ
         state.cleanup_expired(30);
-        assert!(state.provider_failures.is_empty());
+        assert!(state.failures.is_empty());
     }
 
     #[test]
     fn test_reorder_providers_demoted_not_in_list() {
         // 降格されたプロバイダーがリストに含まれない場合、リストは変更なし
         let mut state = State::default();
-        state.record_failure("unknown_provider");
+        state.record_failure(&step("unknown_provider"));
 
-        let providers = vec!["gemini".to_string(), "claude".to_string()];
+        let steps = vec![step("gemini"), step("claude")];
 
-        let reordered = state.reorder_providers(providers.clone(), 60);
-        assert_eq!(reordered, providers);
+        let reordered = state.reorder_steps(steps.clone(), 60);
+        assert_eq!(reordered, steps);
     }
 
     #[test]
@@ -687,15 +651,19 @@ mod tests {
     fn test_provider_failure_serialization() {
         // ProviderFailure 単体のシリアライズ・デシリアライズ
         let failure = ProviderFailure {
+            key: key_of("gemini"),
+            provider: Some(canonical_provider_key("gemini")),
             failed_at: 1234567890,
         };
         let serialized = toml::to_string(&failure).unwrap();
         let deserialized: ProviderFailure = toml::from_str(&serialized).unwrap();
         assert_eq!(deserialized.failed_at, 1234567890);
+        assert_eq!(deserialized.key, key_of("gemini"));
+        assert_eq!(deserialized.provider.as_deref(), Some("antigravity"));
     }
 
     // ============================================================
-    // reorder_providers: 期限切れエントリとの組み合わせ
+    // reorder_steps: 期限切れエントリとの組み合わせ
     // ============================================================
 
     #[test]
@@ -705,27 +673,18 @@ mod tests {
 
         // 2時間前の失敗（期限切れ）
         let two_hours_ago = State::now() - (2 * 60 * 60);
-        state.provider_failures.insert(
-            "gemini".to_string(),
-            ProviderFailure {
-                failed_at: two_hours_ago,
-            },
-        );
+        push_failure(&mut state, "gemini", two_hours_ago);
 
         // 直近の失敗（アクティブ）
-        state.record_failure("codex");
+        state.record_failure(&step("codex"));
 
-        let providers = vec![
-            "gemini".to_string(),
-            "codex".to_string(),
-            "claude".to_string(),
-        ];
+        let steps = vec![step("gemini"), step("codex"), step("claude")];
 
-        let reordered = state.reorder_providers(providers, 60);
+        let reordered = state.reorder_steps(steps, 60);
         // geminiは期限切れなので通常位置、codexは末尾に移動
-        assert_eq!(reordered[0], "gemini");
-        assert_eq!(reordered[1], "claude");
-        assert_eq!(reordered[2], "codex");
+        assert_eq!(reordered[0].provider, "gemini");
+        assert_eq!(reordered[1].provider, "claude");
+        assert_eq!(reordered[2].provider, "codex");
     }
 
     #[test]
@@ -733,31 +692,23 @@ mod tests {
         // 非常に大きなクールダウン値: 全エントリが保持される
         let mut state = State::default();
         let old_failure = State::now() - (24 * 60 * 60); // 24時間前
-        state.provider_failures.insert(
-            "gemini".to_string(),
-            ProviderFailure {
-                failed_at: old_failure,
-            },
-        );
+        push_failure(&mut state, "gemini", old_failure);
 
         // 1週間のクールダウン
         state.cleanup_expired(7 * 24 * 60);
-        assert!(state.provider_failures.contains_key("gemini"));
+        assert!(has_failure(&state, "gemini"));
     }
 
     #[test]
     fn test_max_cooldown_does_not_overflow() {
         // 設定値が u64::MAX でも秒変換でパニックや桁あふれを起こさない
         let mut state = State::default();
-        state
-            .provider_failures
-            .insert("gemini".to_string(), ProviderFailure { failed_at: 0 });
+        push_failure(&mut state, "gemini", 0);
 
-        let demoted = state.get_demoted_providers(u64::MAX);
-        assert_eq!(demoted, vec!["gemini".to_string()]);
+        assert!(state.is_demoted(&step("gemini"), u64::MAX));
 
         state.cleanup_expired(u64::MAX);
-        assert!(state.provider_failures.contains_key("gemini"));
+        assert!(has_failure(&state, "gemini"));
     }
 
     #[test]
@@ -766,34 +717,30 @@ mod tests {
         let mut state = State::default();
 
         // アクティブ
-        state.record_failure("gemini");
+        state.record_failure(&step("gemini"));
 
         // 期限切れ
         let old = State::now() - (2 * 60 * 60);
-        state
-            .provider_failures
-            .insert("codex".to_string(), ProviderFailure { failed_at: old });
+        push_failure(&mut state, "codex", old);
 
         // アクティブ
-        state.record_failure("claude");
+        state.record_failure(&step("claude"));
 
-        let demoted = state.get_demoted_providers(60);
-        assert_eq!(demoted.len(), 2);
-        assert!(demoted.contains(&"gemini".to_string()));
-        assert!(demoted.contains(&"claude".to_string()));
-        assert!(!demoted.contains(&"codex".to_string()));
+        assert!(state.is_demoted(&step("gemini"), 60));
+        assert!(state.is_demoted(&step("claude"), 60));
+        assert!(!state.is_demoted(&step("codex"), 60));
     }
 
     #[test]
     fn test_reorder_providers_single_provider() {
         // プロバイダーが1つだけの場合
         let mut state = State::default();
-        state.record_failure("gemini");
+        state.record_failure(&step("gemini"));
 
-        let providers = vec!["gemini".to_string()];
-        let reordered = state.reorder_providers(providers, 60);
+        let steps = vec![step("gemini")];
+        let reordered = state.reorder_steps(steps, 60);
         // 降格されても1つしかないのでそのまま
-        assert_eq!(reordered, vec!["gemini".to_string()]);
+        assert_eq!(reordered, vec![step("gemini")]);
     }
 
     #[test]
@@ -803,7 +750,7 @@ mod tests {
         let target = dir.path().join("state.toml");
 
         let mut state = State::default();
-        state.record_failure("gemini");
+        state.record_failure(&step("gemini"));
         state.save_to_path(&target).unwrap();
 
         // 書き込み後は対象ファイルだけが残り、一時ファイルは残らない
@@ -818,7 +765,7 @@ mod tests {
         // 内容が正しくデシリアライズできることを確認
         let content = fs::read_to_string(&target).unwrap();
         let parsed: State = toml::from_str(&content).unwrap();
-        assert!(parsed.provider_failures.contains_key("gemini"));
+        assert!(has_failure(&parsed, "gemini"));
     }
 
     #[test]
@@ -840,17 +787,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("state.toml");
 
-        // 旧データを先に書き込む
+        // 旧データ（旧 HashMap 形式）を先に書き込む。load() ではなく save_to_path の
+        // 上書き挙動を確認するためのダミーなので、内容自体は読まれない。
         fs::write(&target, "provider_failures = { old = { failed_at = 0 } }\n").unwrap();
 
         let mut state = State::default();
-        state.record_failure("codex");
+        state.record_failure(&step("codex"));
         state.save_to_path(&target).unwrap();
 
         let content = fs::read_to_string(&target).unwrap();
         let parsed: State = toml::from_str(&content).unwrap();
-        assert!(parsed.provider_failures.contains_key("codex"));
-        assert!(!parsed.provider_failures.contains_key("old"));
+        assert!(has_failure(&parsed, "codex"));
+        // 新形式 State は failures(Vec) のみを読むので、旧 provider_failures の "old" は載らない
+        assert!(!has_failure(&parsed, "old"));
     }
 
     #[test]
@@ -869,7 +818,7 @@ mod tests {
             let _dir_alive = Arc::clone(&dir);
             handles.push(thread::spawn(move || {
                 let mut state = State::default();
-                state.record_failure(&format!("provider-{}", i));
+                state.record_failure(&step(&format!("provider-{}", i)));
                 state.save_to_path(&target)
             }));
         }
@@ -884,7 +833,7 @@ mod tests {
         let content = fs::read_to_string(target.as_path()).unwrap();
         let parsed: State = toml::from_str(&content).unwrap();
         // 並列なので最後に勝った1つの provider のみが残る想定。空ではない。
-        assert!(!parsed.provider_failures.is_empty());
+        assert!(!parsed.failures.is_empty());
 
         // 一時ファイル (target.tmp.* など) が残っていない
         let entries: Vec<_> = fs::read_dir(dir.path())
@@ -901,90 +850,41 @@ mod tests {
     }
 
     // ============================================================
-    // migrate_legacy_gemini_key のテスト
-    // 旧 "gemini" キーを "antigravity" キーへメモリ上で合流させる
+    // 旧 gemini エイリアスの合流テスト
+    // 旧 "gemini" 系キーが "antigravity" の cooldown_key に合流することを確認する。
+    // 旧 migrate_legacy_gemini_key 関数は廃止され、両形式の解釈は load() の責務に
+    // 移ったため、ここでは cooldown_key の合流（同一視）という不変条件のみを固定する。
     // ============================================================
 
     #[test]
-    fn test_migrate_legacy_gemini_key_renames_when_only_legacy() {
-        // 旧 gemini キーのみが存在する場合、antigravity キーへリネームされる
-        let mut state = State::default();
-        state.record_failure("gemini");
-        let original_ts = state.provider_failures["gemini"].failed_at;
-
-        state.migrate_legacy_gemini_key();
-
-        assert!(!state.provider_failures.contains_key("gemini"));
-        assert!(state.provider_failures.contains_key("antigravity"));
-        assert_eq!(
-            state.provider_failures["antigravity"].failed_at,
-            original_ts
-        );
+    fn test_legacy_gemini_alias_merges_into_antigravity() {
+        // 旧 provider 名 "gemini" / "agy" は antigravity と同じ cooldown_key を導出する。
+        // これにより旧 gemini の失敗記録が antigravity ステップへ確実に効く。
+        assert_eq!(key_of("gemini"), key_of("antigravity"));
+        assert_eq!(key_of("agy"), key_of("antigravity"));
     }
 
     #[test]
-    fn test_migrate_legacy_gemini_key_keeps_newer_timestamp_when_both_exist() {
-        // 両方共存する場合、より新しい failed_at を保持し、gemini キーは消える
+    fn test_legacy_gemini_failure_demotes_antigravity_step() {
+        // record_failure(step("gemini")) で記録した失敗が antigravity ステップを降格させる。
+        // 旧 migrate_legacy_gemini_key が担っていた「gemini → antigravity 合流」の意図を、
+        // 降格判定レベルで保証する。
         let mut state = State::default();
-        let now = State::now();
-        state.provider_failures.insert(
-            "gemini".to_string(),
-            ProviderFailure {
-                failed_at: now - 10,
-            },
-        );
-        state.provider_failures.insert(
-            "antigravity".to_string(),
-            ProviderFailure {
-                failed_at: now - 100,
-            },
-        );
+        state.record_failure(&step("gemini"));
 
-        state.migrate_legacy_gemini_key();
-
-        assert!(!state.provider_failures.contains_key("gemini"));
-        // gemini の方が新しいので採用される
-        assert_eq!(state.provider_failures["antigravity"].failed_at, now - 10);
+        assert!(state.is_demoted(&step("antigravity"), 60));
+        assert!(state.is_demoted(&step("agy"), 60));
+        // 逆方向（antigravity 記録 → gemini ステップ降格）も成立する
+        let mut state2 = State::default();
+        state2.record_failure(&step("antigravity"));
+        assert!(state2.is_demoted(&step("gemini"), 60));
     }
 
     #[test]
-    fn test_migrate_legacy_gemini_key_preserves_newer_antigravity() {
-        // antigravity の方が新しい場合、antigravity のタイムスタンプを維持
-        let mut state = State::default();
-        let now = State::now();
-        state.provider_failures.insert(
-            "gemini".to_string(),
-            ProviderFailure {
-                failed_at: now - 100,
-            },
-        );
-        state.provider_failures.insert(
-            "antigravity".to_string(),
-            ProviderFailure {
-                failed_at: now - 10,
-            },
-        );
-
-        state.migrate_legacy_gemini_key();
-
-        assert!(!state.provider_failures.contains_key("gemini"));
-        assert_eq!(state.provider_failures["antigravity"].failed_at, now - 10);
-    }
-
-    #[test]
-    fn test_migrate_legacy_gemini_key_noop_when_no_legacy() {
-        // gemini キーがなければ何もしない
-        let mut state = State::default();
-        state.record_failure("antigravity");
-        let original_ts = state.provider_failures["antigravity"].failed_at;
-
-        state.migrate_legacy_gemini_key();
-
-        assert_eq!(state.provider_failures.len(), 1);
-        assert_eq!(
-            state.provider_failures["antigravity"].failed_at,
-            original_ts
-        );
+    fn test_legacy_apple_aliases_merge_into_apple_intelligence() {
+        // 旧 apple-ai / apple_intelligence キーが apple-intelligence の cooldown_key に合流する。
+        assert_eq!(key_of("apple-ai"), key_of("apple-intelligence"));
+        assert_eq!(key_of("apple_intelligence"), key_of("apple-intelligence"));
     }
 
     #[test]
@@ -997,7 +897,7 @@ mod tests {
         // 連続して何度も保存しても成功する（固定 tmp パスを共有するとここで失敗する可能性がある）
         for i in 0..32 {
             let mut state = State::default();
-            state.record_failure(&format!("provider-{}", i));
+            state.record_failure(&step(&format!("provider-{}", i)));
             state.save_to_path(&target).unwrap();
         }
 
