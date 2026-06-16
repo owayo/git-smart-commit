@@ -29,11 +29,10 @@ pub struct ModelsConfig {
 
 /// Antigravity CLI (`agy`) のデフォルトモデル。
 ///
-/// agy の print mode にはトークン使用量(input_tokens)を機械的に出力する公式手段が
-/// 無い(2026-06 時点。公式フォーラムで `--json`/`--output` が未実装の機能要望段階)ため、
-/// Codex のような実測比較はできない。そこで公式の料金情報で、agy が提供するモデル中
-/// もっともトークン単価が安い OpenAI の GPT-OSS 120B(オープンウェイト、公称 input
-/// $0.039-0.15 / output $0.18-0.60 per 1M tokens)を既定とする。2026-06-15 (JST) 選定。
+/// agy 1.0.8 の print mode にはトークン使用量(input_tokens)を機械的に出力する
+/// `--json`/`--output` 等の公式オプションが無いため、Codex のような実測比較はできない。
+/// 公式 Antigravity の料金情報では Individual plan に GPT-OSS-120b が unlimited で含まれるため、
+/// agy が提供するモデル中の最低限界コスト候補として 2026-06-16 (JST) に再確認した。
 /// `agy models` の表示名をそのまま使う。空文字列にすれば agy 自身の既定に委ねられる。
 fn default_antigravity_model() -> String {
     "GPT-OSS 120B (Medium)".to_string()
@@ -2197,6 +2196,7 @@ gemini = "gemini-2.5-pro"
 
         assert_eq!(config.models.antigravity, default_antigravity_model());
         assert_eq!(config.models.codex, default_codex_model());
+        assert!(content.contains(r#"antigravity = "GPT-OSS 120B (Medium)""#));
         assert!(content.contains(r#"codex = "gpt-5.4-mini""#));
         assert_eq!(config.models.claude, default_claude_model());
         assert_eq!(config.models.opencode, default_opencode_model());
@@ -2212,9 +2212,29 @@ gemini = "gemini-2.5-pro"
     }
 
     #[test]
+    fn test_readme_examples_use_current_antigravity_default_model() {
+        // README の設定例も Antigravity の既定モデルと同期させる。
+        let expected = format!(r#"antigravity = "{}""#, default_antigravity_model());
+
+        assert!(include_str!("../README.md").contains(&expected));
+        assert!(include_str!("../README.ja.md").contains(&expected));
+    }
+
+    #[test]
     fn test_agents_notes_use_current_codex_default_model() {
         // 運用メモの Codex 既定モデル説明もコード上の既定値と同期する。
         let expected = format!("The default Codex model is `{}`", default_codex_model());
+
+        assert!(include_str!("../AGENTS.md").contains(&expected));
+    }
+
+    #[test]
+    fn test_agents_notes_use_current_antigravity_default_model() {
+        // 運用メモの Antigravity 既定モデル説明もコード上の既定値と同期する。
+        let expected = format!(
+            "The default Antigravity model is `{}`",
+            default_antigravity_model()
+        );
 
         assert!(include_str!("../AGENTS.md").contains(&expected));
     }

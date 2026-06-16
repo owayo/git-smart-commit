@@ -302,9 +302,9 @@ provider_timeout_seconds = 60
 | `prefix_rules` | URLベースのプレフィックス形式 | `[]` |
 | `prefix_scripts` | 外部プレフィックススクリプト | `[]` |
 
-既存のグローバル設定ファイルは自動では書き換えられません。現在の Codex 既定モデルは `gpt-5.4-mini` です。既存設定で使うには、`~/.config/git-sc/config.toml` の `models.codex` を更新してください。この既定値は、API で利用可能・一覧表示対象・`medium` reasoning 対応の Codex モデルについて `input_tokens` を比較し、2026年6月9日 (JST) に再選定し、2026年6月15日 (JST) に再確認したものです。
+既存のグローバル設定ファイルは自動では書き換えられません。現在の Codex 既定モデルは `gpt-5.4-mini` です。既存設定で使うには、`~/.config/git-sc/config.toml` の `models.codex` を更新してください。この既定値は、API で利用可能・一覧表示対象・`medium` reasoning 対応の Codex モデルについて `input_tokens` を比較し、2026年6月9日 (JST) に再選定し、2026年6月16日 (JST) に再確認したものです。最新計測は空ディレクトリで `Reply ok.` を使い、`--ignore-user-config --ignore-rules --ephemeral --sandbox read-only` と `model_reasoning_effort='medium'` を指定しました: `gpt-5.5` = 17653、`gpt-5.4` = 16274、`gpt-5.4-mini` = 15918。採用した試行はいずれも最終出力が `ok` で、ツール呼び出しはありません。
 
-Antigravity (`agy`) の既定モデルは `GPT-OSS 120B (Medium)` です。`agy` の print mode には現状、1リクエストのトークン使用量を出力する公式手段がない（2026年6月時点、`--json` / `--output` は upstream で機能要望段階）ため、Codex のような `input_tokens` 実測比較はできません。そこで公式の料金情報に従い、`agy` が提供するモデル中もっともトークン単価が安い OpenAI の GPT-OSS 120B（オープンウェイト、公称 input $0.039-0.15 / output $0.18-0.60 per 1M tokens）を既定としています。2026年6月15日 (JST) 選定。既存設定で使うには `~/.config/git-sc/config.toml` の `models.antigravity` を追加・更新するか、`""` を指定して agy 自身の既定に委ねてください。
+Antigravity (`agy`) の既定モデルは `GPT-OSS 120B (Medium)` です。`agy` 1.0.8 の print mode には現状、1リクエストのトークン使用量を出力する公式の `--json` / `--output` オプションがないため、Codex のような `input_tokens` 実測比較はできません。公式 Antigravity の料金ページでは Individual plan に `gpt-oss-120b` が unlimited で含まれ、現在の `agy models` でも `GPT-OSS 120B (Medium)` が表示されるため、限界コストが最も低い既定値として維持します。2026年6月16日 (JST) 再確認。既存設定で使うには `~/.config/git-sc/config.toml` の `models.antigravity` を追加・更新するか、`""` を指定して agy 自身の既定に委ねてください。
 
 プロバイダーのクールダウン状態は、並び替え前に旧エイリアスを正規化します。そのため `gemini`/`agy` のクールダウンは `antigravity` に、旧 `apple-ai` / `apple_intelligence` キーは `apple-intelligence` に引き続き適用されます。`--debug` 付きで実行すると、設定の providers に旧 `gemini` エイリアスが残っている場合に「`antigravity` に正規化される」旨の注意が一度だけ表示されます。
 
