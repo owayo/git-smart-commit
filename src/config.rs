@@ -2427,6 +2427,42 @@ providers = [
     }
 
     #[test]
+    fn test_cooldown_key_canonicalizes_apple_alias() {
+        // apple-ai / apple_intelligence と apple-intelligence は同じクールダウンキー(後方互換)。
+        // state.rs 側の key_of でも同一視されるが、ProviderStep 直接の呼び出しでも保証する。
+        assert_eq!(
+            ProviderStep::from_provider("apple-ai").cooldown_key(),
+            ProviderStep::from_provider("apple-intelligence").cooldown_key()
+        );
+        assert_eq!(
+            ProviderStep::from_provider("apple_intelligence").cooldown_key(),
+            ProviderStep::from_provider("apple-intelligence").cooldown_key()
+        );
+    }
+
+    #[test]
+    fn test_canonical_provider_key_aliases() {
+        // canonical_provider_key 自体が後方互換エイリアスを吸収していることを確認する。
+        assert_eq!(canonical_provider_key("antigravity"), "antigravity");
+        assert_eq!(canonical_provider_key("gemini"), "antigravity");
+        assert_eq!(canonical_provider_key("agy"), "antigravity");
+        assert_eq!(canonical_provider_key("AGY"), "antigravity"); // 大文字小文字を問わない
+        assert_eq!(
+            canonical_provider_key("apple-intelligence"),
+            "apple-intelligence"
+        );
+        assert_eq!(canonical_provider_key("apple-ai"), "apple-intelligence");
+        assert_eq!(
+            canonical_provider_key("apple_intelligence"),
+            "apple-intelligence"
+        );
+        // 関係ないプロバイダーはそのまま小文字化のみ
+        assert_eq!(canonical_provider_key("CODEX"), "codex");
+        assert_eq!(canonical_provider_key("claude"), "claude");
+        assert_eq!(canonical_provider_key("opencode"), "opencode");
+    }
+
+    #[test]
     fn test_cooldown_key_name_takes_precedence() {
         let mut a = ProviderStep::from_provider("codex");
         a.name = Some("MyAcct".to_string());
@@ -2474,6 +2510,24 @@ providers = [
         assert!(!is_valid_env_key("A-B"));
         assert!(!is_valid_env_key(""));
         assert!(!is_valid_env_key("A B"));
+    }
+
+    #[test]
+    fn test_is_valid_env_key_rejects_non_ascii() {
+        // is_ascii_alphabetic は ASCII 範囲外の Unicode 文字を拒否する。
+        // 環境変数キーは POSIX 仕様で ASCII の英数字・_ のみ許容されるので非 ASCII は受け付けてはならない。
+        assert!(!is_valid_env_key("日本語"));
+        assert!(!is_valid_env_key("CODEX_日本"));
+        assert!(!is_valid_env_key("Ä"));
+    }
+
+    #[test]
+    fn test_is_valid_env_key_single_char_allowed() {
+        // 単独の英字 / _ は POSIX で有効な env キー。
+        // chars.all() は空イテレータで true を返すため正しく通る。
+        assert!(is_valid_env_key("A"));
+        assert!(is_valid_env_key("_"));
+        assert!(is_valid_env_key("z"));
     }
 
     #[test]
