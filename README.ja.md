@@ -332,7 +332,7 @@ providers = [
 | `provider` | 必須。CLI の引数規約を決めるプロバイダー種別(`codex`/`antigravity`/`claude`/`opencode`/`apple-intelligence`、`gemini`/`agy` はエイリアス)。 |
 | `model` | 任意。このステップのモデル。省略時は `[models].<provider>`、さらに各 CLI 既定にフォールバック。 |
 | `command` | 任意。provider 既定バイナリの代わりに実行するバイナリ(と固定引数)。ラッパースクリプト等。`~` は展開される。codex の `--disable hooks` 等の標準引数は引き続き付与される。 |
-| `env` | 任意。このステップ起動時に `Command::env()` で明示的に設定する環境変数。値の `~` は展開され、キーは POSIX 名である必要がある。 |
+| `env` | 任意。このステップ起動時に `Command::env()` で明示的に設定する環境変数。値の `~` は展開され、キーは POSIX 名である必要がある。動的ローダー / インタプリタの事前ロード系キー (`LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, `NODE_OPTIONS`, `PYTHONPATH` 等) は、project 側 `.git-sc` 経由のコード注入を防ぐため設定エラーとして拒否されます。 |
 | `name` | 任意。クールダウンキーとログ表示に使う識別子。省略時は provider + model + env + command から決定的に導出。 |
 
 **アカウント切替(推奨: `env`)。** Codex と Claude Code は `CODEX_HOME` / `CLAUDE_CONFIG_DIR` からアカウント/認証を選びます。これらをステップごとに `env` で設定すると、それぞれ別クォータのアカウントをまたいでフォールバックできます。git-sc は `Command::env()` で明示的に上書きするため、git-sc を起動したシェルに `CODEX_HOME` / `CLAUDE_CONFIG_DIR` が export されていても、起動される CLI はその影響を受けません。(`command` でラッパースクリプトを使う方法もありますが、`env` の方が明示的で `--debug` にも表示されるため推奨です。)

@@ -32,7 +32,7 @@ pub struct ModelsConfig {
 /// agy 1.0.8 の print mode にはトークン使用量(input_tokens)を機械的に出力する
 /// `--json`/`--output` 等の公式オプションが無いため、Codex のような実測比較はできない。
 /// 公式 Antigravity の料金情報では Individual plan に GPT-OSS-120b が unlimited で含まれるため、
-/// agy が提供するモデル中の最低限界コスト候補として 2026-06-16 (JST) に再確認した。
+/// agy が提供するモデル中の最低限界コスト候補として 2026-06-18 (JST) に再確認した。
 /// `agy models` の表示名をそのまま使う。空文字列にすれば agy 自身の既定に委ねられる。
 fn default_antigravity_model() -> String {
     "GPT-OSS 120B (Medium)".to_string()
@@ -230,8 +230,40 @@ fn is_valid_env_key(key: &str) -> bool {
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+/// 動的ローダーや任意コード実行に直結する危険な環境変数キーを拒否する。
+///
+/// 想定脅威: 悪意あるリポジトリが project 側 `.git-sc` に
+/// `env = { DYLD_INSERT_LIBRARIES = "/tmp/evil.dylib" }` のようなエントリを仕込み、
+/// git-sc 経由で実行される子プロセス(codex/claude/agy)へ共有ライブラリを注入する経路。
+/// アカウント切り替え (`CODEX_HOME` / `CLAUDE_CONFIG_DIR` 等) の正当用途は影響を受けない。
+fn is_dangerous_env_key(key: &str) -> bool {
+    // 大文字比較する: 一部 OS は大文字小文字を区別しないが、Unix dynamic loader はそのまま参照する。
+    // ここでは Linux/macOS の動的ローダーキーと、Node/Python/Perl の事前ロード経路をブロックする。
+    matches!(
+        key,
+        "LD_PRELOAD"
+            | "LD_LIBRARY_PATH"
+            | "LD_AUDIT"
+            | "DYLD_INSERT_LIBRARIES"
+            | "DYLD_LIBRARY_PATH"
+            | "DYLD_FALLBACK_LIBRARY_PATH"
+            | "DYLD_FRAMEWORK_PATH"
+            | "DYLD_FALLBACK_FRAMEWORK_PATH"
+            | "DYLD_FORCE_FLAT_NAMESPACE"
+            | "DYLD_IMAGE_SUFFIX"
+            | "DYLD_PRINT_LIBRARIES"
+            | "NODE_OPTIONS"
+            | "PYTHONPATH"
+            | "PYTHONSTARTUP"
+            | "PERL5OPT"
+            | "PERL5LIB"
+            | "RUBYOPT"
+            | "RUBYLIB"
+    )
+}
+
 /// env マップの key を検証し、値を `~` 展開する($VAR 展開や相対パス解決はしない)。
-/// 不正なキーがあれば設定エラーにする(沈黙して別アカウントで動く事故を防ぐ)。
+/// 不正なキーや危険なキーがあれば設定エラーにする(沈黙して別アカウントで動く事故を防ぐ)。
 fn expand_step_env(
     env: &BTreeMap<String, String>,
     ctx: &str,
@@ -241,6 +273,12 @@ fn expand_step_env(
         if !is_valid_env_key(k) {
             return Err(AppError::ConfigError(format!(
                 "{ctx}: invalid environment variable name: {k:?}"
+            )));
+        }
+        if is_dangerous_env_key(k) {
+            return Err(AppError::ConfigError(format!(
+                "{ctx}: refusing to set dangerous environment variable {k:?} \
+                 (dynamic loader / interpreter pre-load keys are blocked to prevent code injection)"
             )));
         }
         out.insert(k.clone(), shellexpand::tilde(v).to_string());
@@ -2550,5 +2588,57 @@ providers = [
                 .contains("invalid environment variable name"),
             "不正な env キーは設定エラーになるべき"
         );
+    }
+
+    #[test]
+    fn test_expand_step_env_rejects_dynamic_loader_keys() {
+        // 動的ローダー注入経路(LD_PRELOAD/DYLD_INSERT_LIBRARIES 等)は
+        // 悪意あるリポジトリの project `.git-sc` から仕込まれた場合に
+        // 子プロセス(codex/claude/agy)で任意コード実行に至る。
+        // POSIX 識別子としては妥当なキーでも、これらは拒否する必要がある。
+        for key in [
+            "LD_PRELOAD",
+            "LD_LIBRARY_PATH",
+            "LD_AUDIT",
+            "DYLD_INSERT_LIBRARIES",
+            "DYLD_LIBRARY_PATH",
+            "DYLD_FALLBACK_LIBRARY_PATH",
+            "DYLD_FRAMEWORK_PATH",
+            "DYLD_FALLBACK_FRAMEWORK_PATH",
+            "DYLD_FORCE_FLAT_NAMESPACE",
+            "DYLD_IMAGE_SUFFIX",
+            "DYLD_PRINT_LIBRARIES",
+            "NODE_OPTIONS",
+            "PYTHONPATH",
+            "PYTHONSTARTUP",
+            "PERL5OPT",
+            "PERL5LIB",
+            "RUBYOPT",
+            "RUBYLIB",
+        ] {
+            let mut env = BTreeMap::new();
+            env.insert(key.to_string(), "/tmp/evil".to_string());
+            let err = expand_step_env(&env, "test").unwrap_err().to_string();
+            assert!(
+                err.contains("dangerous environment variable"),
+                "{key} は危険な env キーとして拒否すべき (実エラー: {err})"
+            );
+        }
+    }
+
+    #[test]
+    fn test_expand_step_env_allows_legitimate_account_keys() {
+        // 正当なアカウント切り替え系のキーは引き続き許容される必要がある。
+        let mut env = BTreeMap::new();
+        env.insert("CODEX_HOME".to_string(), "~/.codex".to_string());
+        env.insert("CLAUDE_CONFIG_DIR".to_string(), "~/.claude".to_string());
+        env.insert("HOME".to_string(), "~/work-home".to_string());
+        env.insert("PATH".to_string(), "/opt/bin:/usr/bin".to_string());
+        let out = expand_step_env(&env, "test").unwrap();
+        assert_eq!(out.len(), 4);
+        assert!(out.contains_key("CODEX_HOME"));
+        assert!(out.contains_key("CLAUDE_CONFIG_DIR"));
+        assert!(out.contains_key("HOME"));
+        assert!(out.contains_key("PATH"));
     }
 }
