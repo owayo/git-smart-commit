@@ -998,4 +998,137 @@ mod tests {
         assert!(state.is_demoted(&a, 60));
         assert!(!state.is_demoted(&b, 60));
     }
+
+    // ============================================================
+    // 旧 HashMap 形式 (`provider_failures`) → 新 Vec 形式 (`failures`) への移行
+    // AGENTS.md に記載の不変条件:
+    //   "State::load マイグレーションが旧 provider 名キーを正規 cooldown_key に
+    //    変換し、gemini/apple-ai 系の legacy 値は antigravity/apple-intelligence に合流する"
+    // ============================================================
+
+    /// `legacy_key_to_new` が旧 provider 名を新 cooldown_key に変換する。
+    /// 旧 `gemini` / `agy` → `antigravity` の cooldown_key、
+    /// 旧 `apple-ai` / `apple_intelligence` → `apple-intelligence` の cooldown_key に合流する。
+    #[test]
+    fn test_legacy_key_to_new_canonicalizes_provider_aliases() {
+        // antigravity 系
+        assert_eq!(
+            legacy_key_to_new("gemini"),
+            ProviderStep::from_provider("antigravity").cooldown_key()
+        );
+        assert_eq!(
+            legacy_key_to_new("agy"),
+            ProviderStep::from_provider("antigravity").cooldown_key()
+        );
+        // apple 系
+        assert_eq!(
+            legacy_key_to_new("apple-ai"),
+            ProviderStep::from_provider("apple-intelligence").cooldown_key()
+        );
+        assert_eq!(
+            legacy_key_to_new("apple_intelligence"),
+            ProviderStep::from_provider("apple-intelligence").cooldown_key()
+        );
+        // 通常 provider
+        assert_eq!(
+            legacy_key_to_new("codex"),
+            ProviderStep::from_provider("codex").cooldown_key()
+        );
+    }
+
+    /// 旧 HashMap 形式 (`provider_failures`) のみを含む TOML を `StateOnDisk` として
+    /// パースできる。新形式の `failures` Vec とは独立してデシリアライズされる。
+    #[test]
+    fn test_state_on_disk_parses_legacy_provider_failures() {
+        let toml_content = r#"
+[provider_failures.gemini]
+failed_at = 1700000000
+
+[provider_failures.codex]
+failed_at = 1700000001
+"#;
+        let disk: StateOnDisk = toml::from_str(toml_content).unwrap();
+        assert_eq!(disk.provider_failures.len(), 2);
+        assert!(disk.failures.is_empty());
+        assert_eq!(disk.provider_failures["gemini"].failed_at, 1700000000);
+        assert_eq!(disk.provider_failures["codex"].failed_at, 1700000001);
+    }
+
+    /// 旧 HashMap 形式と新 Vec 形式が両方含まれる TOML をパースし、
+    /// 両方が独立してデシリアライズされる。
+    #[test]
+    fn test_state_on_disk_parses_mixed_legacy_and_new_format() {
+        let toml_content = r#"
+[[failures]]
+key = "codex"
+failed_at = 1800000000
+
+[provider_failures.gemini]
+failed_at = 1700000000
+"#;
+        let disk: StateOnDisk = toml::from_str(toml_content).unwrap();
+        // 新形式の failures Vec は1件
+        assert_eq!(disk.failures.len(), 1);
+        assert_eq!(disk.failures[0].failed_at, 1800000000);
+        // 旧形式の HashMap も1件残っている (load 内で移行される)
+        assert_eq!(disk.provider_failures.len(), 1);
+        assert_eq!(disk.provider_failures["gemini"].failed_at, 1700000000);
+    }
+
+    /// 旧 HashMap 形式の TOML から `State::load` 経由でロードした際、
+    /// 旧 provider 名キーが新 cooldown_key に変換され、新 Vec 形式の `failures` に
+    /// 移行されることを確認する。HOME 環境変数を操作するため、init.rs と同じ
+    /// `Mutex` 排他制御パターンを使う。
+    #[test]
+    fn test_load_migrates_legacy_provider_failures_hashmap_to_failures_vec() {
+        use std::sync::{Mutex, OnceLock};
+        static HOME_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _lock = HOME_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+
+        let temp = tempfile::tempdir().unwrap();
+        let original_home = std::env::var_os("HOME");
+        unsafe {
+            std::env::set_var("HOME", temp.path());
+        }
+
+        // 旧 HashMap 形式の状態ファイルを直接書き込む
+        let path = State::state_path().unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            r#"
+[provider_failures.gemini]
+failed_at = 1700000000
+
+[provider_failures.codex]
+failed_at = 1700000001
+
+[provider_failures.apple-ai]
+failed_at = 1700000002
+"#,
+        )
+        .unwrap();
+
+        let state = State::load().unwrap();
+
+        // 旧 HashMap が新 Vec 形式の failures に移行される
+        assert_eq!(state.failures.len(), 3);
+        // 旧 `gemini` キーは `antigravity` の cooldown_key に合流する
+        let antigravity_key = ProviderStep::from_provider("antigravity").cooldown_key();
+        assert!(state.failures.iter().any(|f| f.key == antigravity_key));
+        // 旧 `apple-ai` キーは `apple-intelligence` の cooldown_key に合流する
+        let apple_key = ProviderStep::from_provider("apple-intelligence").cooldown_key();
+        assert!(state.failures.iter().any(|f| f.key == apple_key));
+        // `codex` はそのまま codex の cooldown_key として残る
+        let codex_key = ProviderStep::from_provider("codex").cooldown_key();
+        assert!(state.failures.iter().any(|f| f.key == codex_key));
+
+        // HOME 環境変数を元に戻す
+        unsafe {
+            match original_home {
+                Some(prev) => std::env::set_var("HOME", prev),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+    }
 }

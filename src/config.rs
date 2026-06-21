@@ -2141,6 +2141,33 @@ gemini = "gemini-2.5-pro"
         assert_eq!(config.models.opencode, "old-opencode");
     }
 
+    /// `[models] antigravity` と legacy `gemini` が両方指定された場合、
+    /// 明示的な `antigravity` 値が勝つ(不変条件: 新キーは旧エイリアスに優先する)。
+    #[test]
+    fn test_partial_merge_into_explicit_antigravity_wins_over_legacy_gemini() {
+        let mut config = Config {
+            models: ModelsConfig {
+                antigravity: "old-antigravity".to_string(),
+                codex: "old-codex".to_string(),
+                claude: "old-claude".to_string(),
+                opencode: "old-opencode".to_string(),
+            },
+            ..Default::default()
+        };
+
+        // 両方のキーが存在するプロジェクト設定
+        let toml = r#"
+[models]
+antigravity = "new-antigravity-explicit"
+gemini = "legacy-gemini-value"
+"#;
+        let partial: PartialConfig = toml::from_str(toml).unwrap();
+        partial.merge_into(&mut config);
+
+        // 明示的な antigravity 値が勝ち、legacy gemini は無視される
+        assert_eq!(config.models.antigravity, "new-antigravity-explicit");
+    }
+
     /// nano_buddy の true → false 上書き: Some(false) で上書きできることの確認
     #[test]
     fn test_partial_merge_into_nano_buddy_true_to_false() {
