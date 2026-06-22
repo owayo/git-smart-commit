@@ -29,10 +29,10 @@ pub struct ModelsConfig {
 
 /// Antigravity CLI (`agy`) のデフォルトモデル。
 ///
-/// agy 1.0.8 の print mode にはトークン使用量(input_tokens)を機械的に出力する
+/// agy 1.0.x の print mode にはトークン使用量(input_tokens)を機械的に出力する
 /// `--json`/`--output` 等の公式オプションが無いため、Codex のような実測比較はできない。
-/// 公式 Antigravity の料金情報では Individual plan に GPT-OSS-120b が unlimited で含まれるため、
-/// agy が提供するモデル中の最低限界コスト候補として 2026-06-18 (JST) に再確認した。
+/// `agy` には usage/token の機械可読出力がないため、公式の Agent Platform 価格で比較する。
+/// agy が提供するモデル中では GPT-OSS-120b の入力単価が最小だったため、2026-06-23 (JST) に維持した。
 /// `agy models` の表示名をそのまま使う。空文字列にすれば agy 自身の既定に委ねられる。
 fn default_antigravity_model() -> String {
     "GPT-OSS 120B (Medium)".to_string()
@@ -237,10 +237,11 @@ fn is_valid_env_key(key: &str) -> bool {
 /// git-sc 経由で実行される子プロセス(codex/claude/agy)へ共有ライブラリを注入する経路。
 /// アカウント切り替え (`CODEX_HOME` / `CLAUDE_CONFIG_DIR` 等) の正当用途は影響を受けない。
 fn is_dangerous_env_key(key: &str) -> bool {
+    let key = key.to_ascii_uppercase();
     // 大文字比較する: 一部 OS は大文字小文字を区別しないが、Unix dynamic loader はそのまま参照する。
     // ここでは Linux/macOS の動的ローダーキーと、Node/Python/Perl の事前ロード経路をブロックする。
     matches!(
-        key,
+        key.as_str(),
         "LD_PRELOAD"
             | "LD_LIBRARY_PATH"
             | "LD_AUDIT"
@@ -2649,6 +2650,21 @@ providers = [
             assert!(
                 err.contains("dangerous environment variable"),
                 "{key} は危険な env キーとして拒否すべき (実エラー: {err})"
+            );
+        }
+    }
+
+    #[test]
+    fn test_expand_step_env_rejects_dangerous_keys_case_insensitively() {
+        // Windows の環境変数名は大小文字を区別しないため、小文字や混在ケースでも
+        // NODE_OPTIONS 等の事前ロード経路を拒否しないと denylist を回避できる。
+        for key in ["node_options", "PyThOnPaTh", "dyld_insert_libraries"] {
+            let mut env = BTreeMap::new();
+            env.insert(key.to_string(), "/tmp/evil".to_string());
+            let err = expand_step_env(&env, "test").unwrap_err().to_string();
+            assert!(
+                err.contains("dangerous environment variable"),
+                "{key} は大小文字に関係なく危険な env キーとして拒否すべき (実エラー: {err})"
             );
         }
     }

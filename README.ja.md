@@ -302,9 +302,9 @@ provider_timeout_seconds = 60
 | `prefix_rules` | URLベースのプレフィックス形式 | `[]` |
 | `prefix_scripts` | 外部プレフィックススクリプト | `[]` |
 
-既存のグローバル設定ファイルは自動では書き換えられません。現在の Codex 既定モデルは `gpt-5.4-mini` です。既存設定で使うには、`~/.config/git-sc/config.toml` の `models.codex` を更新してください。この既定値は、API で利用可能・一覧表示対象・`medium` reasoning 対応の Codex モデルについて `input_tokens` を比較し、2026年6月9日 (JST) に再選定し、2026年6月21日 (JST) に再確認したものです。最新計測は空ディレクトリで `Reply ok.` を使い、`--ignore-user-config --ignore-rules --ephemeral --sandbox read-only` と `model_reasoning_effort='medium'` を指定しました: `gpt-5.5` = 31033、`gpt-5.4` = 29648、`gpt-5.4-mini` = 29296。採用した試行はいずれも最終出力が `ok` で、ツール呼び出しはありません。絶対値が過去より大きく上昇しているのは、Codex 自身が `Skill descriptions were shortened` という system 通知を入力に追加するようになったためで（`--ignore-user-config` でも除外できない）、ランキングは安定しているため既定値は変更ありません。
+既存のグローバル設定ファイルは自動では書き換えられません。現在の Codex 既定モデルは `gpt-5.4-mini` です。既存設定で使うには、`~/.config/git-sc/config.toml` の `models.codex` を更新してください。この既定値は、API で利用可能・一覧表示対象・`medium` reasoning 対応の Codex モデルについて `input_tokens` を比較し、2026年6月9日 (JST) に再選定し、2026年6月23日 (JST) に再確認したものです。最新計測は空ディレクトリで `Reply ok.` を使い、`--ignore-user-config --ignore-rules --ephemeral --sandbox read-only` と `model_reasoning_effort='medium'` を指定しました: `gpt-5.5` = 18445、`gpt-5.4` = 17060、`gpt-5.4-mini` = 16708。採用した試行はいずれも最終出力が `ok` で、ツール呼び出しはありません。ランキングは安定しているため既定値は変更ありません。
 
-Antigravity (`agy`) の既定モデルは `GPT-OSS 120B (Medium)` です。`agy` 1.0.8 の print mode には現状、1リクエストのトークン使用量を出力する公式の `--json` / `--output` オプションがないため、Codex のような `input_tokens` 実測比較はできません。公式 Antigravity の料金ページでは Individual plan に `gpt-oss-120b` が unlimited で含まれ、現在の `agy models` でも `GPT-OSS 120B (Medium)` が表示されるため、限界コストが最も低い既定値として維持します。2026年6月21日 (JST) 再確認。既存設定で使うには `~/.config/git-sc/config.toml` の `models.antigravity` を追加・更新するか、`""` を指定して agy 自身の既定に委ねてください。
+Antigravity (`agy`) の既定モデルは `GPT-OSS 120B (Medium)` です。`agy` 1.0.x の print mode には現状、1リクエストのトークン使用量を出力する公式の `--json` / `--output` オプションがないため、Codex のような `input_tokens` 実測比較はできません。2026年6月23日 (JST) に再確認した `agy models` は `Gemini 3.5 Flash (Medium/High/Low)`、`Gemini 3.1 Pro (Low/High)`、`Claude Sonnet 4.6 (Thinking)`、`Claude Opus 4.6 (Thinking)`、`GPT-OSS 120B (Medium)` でした。Google Cloud Agent Platform 価格では `gpt-oss-120b` が入力 $0.09 / 100万トークンで、表示されている Gemini / Claude 系の代替より低いため、入力単価が最も低い既定値として維持します。既存設定で使うには `~/.config/git-sc/config.toml` の `models.antigravity` を追加・更新するか、`""` を指定して agy 自身の既定に委ねてください。
 
 プロバイダーのクールダウン状態は、並び替え前に旧エイリアスを正規化します。そのため `gemini`/`agy` のクールダウンは `antigravity` に、旧 `apple-ai` / `apple_intelligence` キーは `apple-intelligence` に引き続き適用されます。`--debug` 付きで実行すると、設定の providers に旧 `gemini` エイリアスが残っている場合に「`antigravity` に正規化される」旨の注意が一度だけ表示されます。
 
@@ -332,7 +332,7 @@ providers = [
 | `provider` | 必須。CLI の引数規約を決めるプロバイダー種別(`codex`/`antigravity`/`claude`/`opencode`/`apple-intelligence`、`gemini`/`agy` はエイリアス)。 |
 | `model` | 任意。このステップのモデル。省略時は `[models].<provider>`、さらに各 CLI 既定にフォールバック。 |
 | `command` | 任意。provider 既定バイナリの代わりに実行するバイナリ(と固定引数)。ラッパースクリプト等。`~` は展開される。codex の `--disable hooks` 等の標準引数は引き続き付与される。 |
-| `env` | 任意。このステップ起動時に `Command::env()` で明示的に設定する環境変数。値の `~` は展開され、キーは POSIX 名である必要がある。動的ローダー / インタプリタの事前ロード系キー (`LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, `NODE_OPTIONS`, `PYTHONPATH` 等) は、project 側 `.git-sc` 経由のコード注入を防ぐため設定エラーとして拒否されます。 |
+| `env` | 任意。このステップ起動時に `Command::env()` で明示的に設定する環境変数。値の `~` は展開され、キーは POSIX 名である必要がある。動的ローダー / インタプリタの事前ロード系キー (`LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, `NODE_OPTIONS`, `PYTHONPATH` 等) は、project 側 `.git-sc` 経由のコード注入を防ぐため大小文字を区別せず設定エラーとして拒否されます。 |
 | `name` | 任意。クールダウンキーとログ表示に使う識別子。省略時は provider + model + env + command から決定的に導出。 |
 
 **アカウント切替(推奨: `env`)。** Codex と Claude Code は `CODEX_HOME` / `CLAUDE_CONFIG_DIR` からアカウント/認証を選びます。これらをステップごとに `env` で設定すると、それぞれ別クォータのアカウントをまたいでフォールバックできます。git-sc は `Command::env()` で明示的に上書きするため、git-sc を起動したシェルに `CODEX_HOME` / `CLAUDE_CONFIG_DIR` が export されていても、起動される CLI はその影響を受けません。(`command` でラッパースクリプトを使う方法もありますが、`env` の方が明示的で `--debug` にも表示されるため推奨です。)
