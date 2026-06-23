@@ -1074,6 +1074,30 @@ mod tests {
         assert_eq!(error, "Actual error here");
     }
 
+    /// "reconnecting" と "error" が同じ行に同居する場合は再接続ログとして扱い、
+    /// その後ろにある本物のエラー行を採用する。
+    /// 例: `Reconnecting after error: connection reset` のような再接続ログを
+    /// API エラー本体と誤検出しないための不変条件を固定する。
+    #[test]
+    fn test_extract_error_codex_skips_reconnecting_line_even_when_it_contains_error_keyword() {
+        let stderr = "Reconnecting after error: connection reset\nERROR: rate limit exceeded";
+        let error = AiService::extract_error(stderr, &AiProvider::Codex);
+        // 先頭行に "error" は含むが "reconnecting" を含むためスキップされ、
+        // 後続の "ERROR:" 行が選ばれる。
+        assert_eq!(error, "ERROR: rate limit exceeded");
+    }
+
+    /// `Reconnecting` のような再接続ログだけが流れて、本物のエラー行が無いケースでも
+    /// "Codex API request failed" のジェネリックフォールバックに落ちることを保証する。
+    /// `lines().rev().find(...)` で `Reconnecting`/`Reading prompt` が除外されるため、
+    /// 全ての行が除外対象だと唯一 unwrap_or 経路に到達する。
+    #[test]
+    fn test_extract_error_codex_only_reconnecting_lines_falls_back_to_generic() {
+        let stderr = "Reconnecting to server...\nReading prompt from stdin...\n";
+        let error = AiService::extract_error(stderr, &AiProvider::Codex);
+        assert_eq!(error, "Codex API request failed");
+    }
+
     #[test]
     fn test_extract_error_opencode_empty() {
         let stderr = "";
