@@ -1,5 +1,5 @@
 use std::fs;
-use std::process::Command;
+use std::path::Path;
 
 use colored::Colorize;
 
@@ -236,18 +236,99 @@ impl AiService {
             .and_then(|c| c.first())
             .map(|s| s.as_str())
             .unwrap_or_else(|| provider.command());
-        Self::is_binary_available(bin)
+        Self::is_binary_available(bin, &step.env)
     }
 
-    /// 実行ファイルが PATH 上に存在するか(which/where)。絶対パスのラッパーも実在判定できる。
-    fn is_binary_available(bin: &str) -> bool {
-        // Windows は "where"、Unix は "which" を使用
-        let check_cmd = if cfg!(windows) { "where" } else { "which" };
-        Command::new(check_cmd)
-            .arg(bin)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+    /// 実行ファイルが PATH 上に存在するか。絶対/相対パスのラッパーも実在判定できる。
+    fn is_binary_available(bin: &str, env: &std::collections::BTreeMap<String, String>) -> bool {
+        let bin_path = Path::new(bin);
+        if bin_path.is_absolute() || Self::has_path_separator(bin) {
+            return Self::is_executable_file(bin_path);
+        }
+
+        let path_value = env
+            .get("PATH")
+            .map(std::ffi::OsString::from)
+            .or_else(|| std::env::var_os("PATH"));
+        let Some(path_value) = path_value else {
+            return false;
+        };
+
+        std::env::split_paths(&path_value).any(|dir| {
+            Self::binary_candidates(&dir, bin, env)
+                .iter()
+                .any(|candidate| Self::is_executable_file(candidate))
+        })
+    }
+
+    fn has_path_separator(bin: &str) -> bool {
+        bin.contains(std::path::MAIN_SEPARATOR) || (cfg!(windows) && bin.contains('/'))
+    }
+
+    fn is_executable_file(path: &Path) -> bool {
+        let Ok(meta) = fs::metadata(path) else {
+            return false;
+        };
+        if !meta.is_file() {
+            return false;
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            meta.permissions().mode() & 0o111 != 0
+        }
+        #[cfg(not(unix))]
+        {
+            true
+        }
+    }
+
+    fn binary_candidates(
+        dir: &Path,
+        bin: &str,
+        env: &std::collections::BTreeMap<String, String>,
+    ) -> Vec<std::path::PathBuf> {
+        #[cfg(not(windows))]
+        let _ = env;
+
+        #[cfg(windows)]
+        {
+            let direct = dir.join(bin);
+            if Path::new(bin).extension().is_some() {
+                return vec![direct];
+            }
+            let pathext = env
+                .get("PATHEXT")
+                .map(std::ffi::OsString::from)
+                .or_else(|| std::env::var_os("PATHEXT"))
+                .map(|v| {
+                    v.to_string_lossy()
+                        .split(';')
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|| {
+                    vec![
+                        ".COM".to_string(),
+                        ".EXE".to_string(),
+                        ".BAT".to_string(),
+                        ".CMD".to_string(),
+                    ]
+                });
+            std::iter::once(direct)
+                .chain(
+                    pathext
+                        .into_iter()
+                        .map(|ext| dir.join(format!("{bin}{ext}"))),
+                )
+                .collect()
+        }
+        #[cfg(not(windows))]
+        {
+            vec![dir.join(bin)]
+        }
     }
 
     /// step に対して実際に使うモデルを解決する。
@@ -492,7 +573,7 @@ impl Default for AiService {
 
 #[cfg(test)]
 mod tests {
-    use std::process::{ExitStatus, Stdio};
+    use std::process::{Command, ExitStatus, Stdio};
 
     use super::*;
     use pretty_assertions::assert_eq;
@@ -3810,6 +3891,30 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cmd.get_program().to_string_lossy(), "codex");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn test_is_step_installed_respects_path_env_override() {
+        // 実行時と同じ env override で探索しないと、PATH で指定したラッパーを見落とす。
+        let service = AiService::new();
+        let dir = tempfile::tempdir().unwrap();
+        let bin_path = dir.path().join("git-sc-test-provider");
+        std::fs::write(&bin_path, "#!/bin/sh\nexit 0\n").unwrap();
+
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&bin_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&bin_path, perms).unwrap();
+
+        let mut step = ProviderStep::from_provider("codex");
+        step.command = Some(vec!["git-sc-test-provider".to_string()]);
+        step.env.insert(
+            "PATH".to_string(),
+            dir.path().to_string_lossy().into_owned(),
+        );
+
+        assert!(service.is_step_installed(&step, &AiProvider::Codex));
     }
 
     #[test]
