@@ -32,7 +32,7 @@ pub struct ModelsConfig {
 /// agy 1.0.x の print mode にはトークン使用量(input_tokens)を機械的に出力する
 /// `--json`/`--output` 等の公式オプションが無いため、Codex のような実測比較はできない。
 /// `agy` には usage/token の機械可読出力がないため、公式の Agent Platform 価格で比較する。
-/// agy が提供するモデル中では GPT-OSS-120b の入力単価が最小だったため、2026-06-25 (JST) に維持した。
+/// agy が提供するモデル中では GPT-OSS-120b の入力単価が最小だったため、2026-06-26 (JST) に維持した。
 /// `agy models` の表示名をそのまま使う。空文字列にすれば agy 自身の既定に委ねられる。
 fn default_antigravity_model() -> String {
     "GPT-OSS 120B (Medium)".to_string()

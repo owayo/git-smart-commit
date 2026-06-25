@@ -134,6 +134,34 @@ impl AiService {
             .split_first()
             .ok_or_else(|| AppError::AiProviderError("empty command".to_string()))?;
 
+        // Windows: cmd /C 経由で渡すトークンに cmd.exe メタ文字が含まれると任意コマンド実行に
+        // 繋がる(後述 build 時の cmd /C 起動と Rust の引数クォート仕様による。詳細は
+        // windows_cmd_arg_has_metachar を参照)。設定由来の bin / 固定引数 / model /
+        // codex の reasoning_effort を事前検証し、危険なら明示エラーで次プロバイダーへ
+        // フォールバックさせる(Antigravity の Windows ブロックと同じ fail-safe 方針)。
+        #[cfg(windows)]
+        {
+            let mut tokens: Vec<&str> = vec![bin.as_str()];
+            tokens.extend(fixed_args.iter().map(String::as_str));
+            if !model.is_empty() {
+                tokens.push(model);
+            }
+            if matches!(provider, AiProvider::Codex) && !self.codex_reasoning_effort.is_empty() {
+                tokens.push(self.codex_reasoning_effort.as_str());
+            }
+            if let Some(bad) = tokens
+                .into_iter()
+                .find(|&t| Self::windows_cmd_arg_has_metachar(t))
+            {
+                return Err(AppError::AiProviderError(format!(
+                    "refusing to launch {} via cmd.exe: argument {:?} contains a cmd.exe \
+                     metacharacter (&, |, <, >, ^, %, !, \", newline) that cannot be passed safely",
+                    provider.name(),
+                    bad
+                )));
+            }
+        }
+
         // Windows: cmd /C 経由で実行する（npm等でインストールされた .cmd ラッパーに対応するため）
         // Rust の Command::new() は .cmd/.bat ファイルを直接実行できないため、cmd /C が必要
         #[cfg(windows)]
@@ -341,5 +369,27 @@ impl AiService {
             )));
         }
         Ok(())
+    }
+
+    /// Windows の `cmd /C` 経由起動で危険な cmd.exe メタ文字を含むかを判定する。
+    ///
+    /// Windows では全プロバイダーを `cmd /C <bin> <args...>` で起動する。Rust 標準の
+    /// 引数クォートは「空白・タブ・空文字」のときだけ引用し、`&`/`|`/`<`/`>`/`^` などの
+    /// cmd.exe メタ文字は素通しする。そのため空白を含まない細工値(例: `model = "x&calc"`)は
+    /// 引用されず `cmd /C codex --model x&calc ...` となり、cmd.exe が `&` をコマンド区切りと
+    /// 解釈して任意コマンドを実行してしまう(CVE-2024-24576 と同クラス)。安全に渡せる確実な
+    /// 手段が無いため、これらのメタ文字を含むトークンは拒否してフォールバックさせる。
+    /// 空白や括弧を含む正規のモデル名(例: "GPT-OSS 120B (Medium)")は Rust が引用するため対象外。
+    ///
+    /// この純粋関数はプラットフォーム非依存でテスト可能だが、呼び出すガードは Windows 限定の
+    /// ため、非テストの非 Windows ビルドでは未使用 dead_code にならないよう cfg を絞る。
+    #[cfg(any(windows, test))]
+    pub(super) fn windows_cmd_arg_has_metachar(arg: &str) -> bool {
+        arg.chars().any(|c| {
+            matches!(
+                c,
+                '&' | '|' | '<' | '>' | '^' | '%' | '!' | '"' | '\r' | '\n'
+            )
+        })
     }
 }

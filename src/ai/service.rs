@@ -3917,6 +3917,99 @@ mod tests {
         assert!(service.is_step_installed(&step, &AiProvider::Codex));
     }
 
+    #[cfg(not(windows))]
+    #[test]
+    fn test_is_binary_available_absolute_path() {
+        use std::collections::BTreeMap;
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let bin_path = dir.path().join("wrapper.sh");
+        std::fs::write(&bin_path, "#!/bin/sh\nexit 0\n").unwrap();
+        let mut perms = std::fs::metadata(&bin_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&bin_path, perms).unwrap();
+
+        let env = BTreeMap::new();
+        // 絶対パスの実行可能ファイルは PATH に依存せず検出できる
+        let bin = bin_path.to_string_lossy();
+        assert!(AiService::is_binary_available(&bin, &env));
+
+        // 存在しない絶対パスは検出されない
+        let missing = dir.path().join("does-not-exist");
+        let missing = missing.to_string_lossy();
+        assert!(!AiService::is_binary_available(&missing, &env));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn test_is_binary_available_rejects_non_executable_file() {
+        use std::collections::BTreeMap;
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let bin_path = dir.path().join("not-exec");
+        std::fs::write(&bin_path, "data").unwrap();
+        // 実行ビットの無い(0o644)ファイルはバイナリとして扱わない
+        let mut perms = std::fs::metadata(&bin_path).unwrap().permissions();
+        perms.set_mode(0o644);
+        std::fs::set_permissions(&bin_path, perms).unwrap();
+
+        let env = BTreeMap::new();
+        let bin = bin_path.to_string_lossy();
+        assert!(!AiService::is_binary_available(&bin, &env));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn test_is_binary_available_missing_from_path() {
+        use std::collections::BTreeMap;
+
+        // PATH を空ディレクトリのみへ制限すれば、存在しないバイナリ名は見つからない
+        let dir = tempfile::tempdir().unwrap();
+        let mut env = BTreeMap::new();
+        env.insert(
+            "PATH".to_string(),
+            dir.path().to_string_lossy().into_owned(),
+        );
+        assert!(!AiService::is_binary_available(
+            "git-sc-definitely-missing-binary",
+            &env
+        ));
+    }
+
+    #[test]
+    fn test_windows_cmd_arg_has_metachar_flags_dangerous_tokens() {
+        // cmd.exe メタ文字を含むトークンは危険と判定する(Windows の cmd /C 注入対策)
+        for bad in [
+            "x&calc", "a|b", "a>f", "a<f", "a^b", "%PATH%", "!x!", "a\"b", "a\rb", "a\nb",
+        ] {
+            assert!(
+                AiService::windows_cmd_arg_has_metachar(bad),
+                "メタ文字を含む {bad:?} は危険と判定すべき"
+            );
+        }
+    }
+
+    #[test]
+    fn test_windows_cmd_arg_has_metachar_allows_legitimate_tokens() {
+        // 通常のモデル名・パス(空白・括弧・ハイフン・コロン・バックスラッシュ)は安全と判定する
+        for ok in [
+            "gpt-5.4-mini",
+            "GPT-OSS 120B (Medium)",
+            "Gemini 3.5 Flash (Low)",
+            "claude",
+            r"C:\tools\codex.cmd",
+            "provider:model-name",
+            "",
+        ] {
+            assert!(
+                !AiService::windows_cmd_arg_has_metachar(ok),
+                "正規トークン {ok:?} は安全と判定すべき"
+            );
+        }
+    }
+
     #[test]
     fn test_resolve_model_prefers_step_then_config() {
         // step.model(非空) > [models].<provider> の優先順位

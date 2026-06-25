@@ -1077,13 +1077,14 @@ failed_at = 1700000000
 
     /// 旧 HashMap 形式の TOML から `State::load` 経由でロードした際、
     /// 旧 provider 名キーが新 cooldown_key に変換され、新 Vec 形式の `failures` に
-    /// 移行されることを確認する。HOME 環境変数を操作するため、init.rs と同じ
-    /// `Mutex` 排他制御パターンを使う。
+    /// 移行されることを確認する。HOME 環境変数を操作するため、init.rs 等の
+    /// HOME 操作テストと共有する `crate::test_support::lock_env()` で直列化する。
     #[test]
     fn test_load_migrates_legacy_provider_failures_hashmap_to_failures_vec() {
-        use std::sync::{Mutex, OnceLock};
-        static HOME_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        let _lock = HOME_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        // HOME を書き換えるため、他ファイル(init.rs 等)の HOME 操作テストと
+        // 同一のプロセス共有ロックで直列化する。各ファイルがローカルに Mutex を
+        // 持つと排他が効かず、HOME の取り違えで間欠的に失敗する。
+        let _lock = crate::test_support::lock_env();
 
         let temp = tempfile::tempdir().unwrap();
         let original_home = std::env::var_os("HOME");

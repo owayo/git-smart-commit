@@ -902,8 +902,20 @@ impl GitService {
         // まずコミットハッシュが有効か確認
         self.verify_commit_hash(hash)?;
 
-        // git show でそのコミットの差分を取得
-        let raw = self.run_git(&["show", hash, "--format=", "--no-color", "-w", "-U0"])?;
+        // git show でそのコミットの差分を取得。
+        // hash は検証済みだが、`--output=<path>` のような名前の ref が存在すると
+        // verify_commit_hash を通過しうる。hash をオプション位置に置くと git が
+        // それをオプションとして解釈し、`git show --output=<path>` で任意ファイルを
+        // 上書きできてしまうため、必ず `--end-of-options` の後ろに revision として渡す。
+        let raw = self.run_git(&[
+            "show",
+            "--format=",
+            "--no-color",
+            "-w",
+            "-U0",
+            "--end-of-options",
+            hash,
+        ])?;
         Ok(self.apply_all_filters(&raw))
     }
 
@@ -912,7 +924,9 @@ impl GitService {
         // まずコミットハッシュが有効か確認
         self.verify_commit_hash(hash)?;
 
-        self.run_git(&["log", "-1", "--format=%s", hash])
+        // hash をオプション位置に置くと `git log --output=<path>` で任意ファイルを
+        // 上書きできてしまうため、`--end-of-options` の後ろに revision として渡す。
+        self.run_git(&["log", "-1", "--format=%s", "--end-of-options", hash])
     }
 
     /// reword対象として有効なコミットか確認（現在のHEAD履歴上に存在するか）
@@ -920,9 +934,17 @@ impl GitService {
         // まずコミットハッシュが有効か確認
         self.verify_commit_hash(hash)?;
 
-        // 履歴外のコミットをreword対象にすると誤ったコミット位置が算出されるため、祖先関係を厳密に確認
+        // 履歴外のコミットをreword対象にすると誤ったコミット位置が算出されるため、祖先関係を厳密に確認。
+        // hash をオプション位置に置かないよう `--end-of-options` の後ろに渡す（オプション注入による
+        // 祖先判定の撹乱・他コマンドとの一貫性のため）。
         let ancestor_output = Command::new("git")
-            .args(["merge-base", "--is-ancestor", hash, "HEAD"])
+            .args([
+                "merge-base",
+                "--is-ancestor",
+                "--end-of-options",
+                hash,
+                "HEAD",
+            ])
             .current_dir(&self.repo_path)
             .output()
             .map_err(|e| AppError::GitError(e.to_string()))?;
@@ -954,10 +976,13 @@ impl GitService {
         // だと、マージで取り込まれた側ブランチのコミットが余分に加算されて n が過大になり、
         // `HEAD~n` が無効化して不可解な git エラー（fatal: ambiguous argument 'HEAD~n..HEAD'）
         // を招く。first-parent 経路で hash..HEAD のコミット数を数え、+1 で対象自身の位置にする。
+        // hash 由来の `<hash>..HEAD` をオプション位置に置かないよう `--end-of-options` の後ろに渡す
+        // （他のハッシュ受け取り経路とそろえてオプション注入を一律で防ぐ）。
         let count_str = self.run_git(&[
             "rev-list",
             "--count",
             "--first-parent",
+            "--end-of-options",
             &format!("{}..HEAD", hash),
         ])?;
         let count: usize = count_str
@@ -1621,6 +1646,40 @@ index 1234567..abcdefg 100644
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err, AppError::InvalidCommitHash(_)));
+    }
+
+    #[test]
+    fn test_commit_by_hash_blocks_git_option_injection() {
+        // `--output=<path>` という名前の ref が存在すると verify_commit_hash を通過しうるが、
+        // hash を git show / git log のオプション位置へ渡さないため、任意ファイルを書き込まない。
+        let temp_dir = setup_temp_git_repo();
+        let repo = temp_dir.path();
+        std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+        run_git_in(repo, &["add", "a.txt"]);
+        run_git_in(repo, &["commit", "-m", "init"]);
+
+        // 攻撃用 ref を HEAD に向けて作成する。`--output=PWNED` は git の cwd(=repo)相対で
+        // 書き込まれるため、注入が成立するとマーカーファイルが生成される。
+        run_git_in(repo, &["update-ref", "refs/heads/--output=PWNED", "HEAD"]);
+
+        let service = GitService {
+            repo_path: repo.to_path_buf(),
+        };
+        let malicious = "--output=PWNED";
+        let marker = repo.join("PWNED");
+
+        // diff 取得・メッセージ取得のいずれもマーカーを書き込まない（注入が無効化されている）
+        let _ = service.get_commit_diff_by_hash(malicious);
+        assert!(
+            !marker.exists(),
+            "get_commit_diff_by_hash がオプション注入で任意ファイルを書き込んだ"
+        );
+
+        let _ = service.get_commit_message_by_hash(malicious);
+        assert!(
+            !marker.exists(),
+            "get_commit_message_by_hash がオプション注入で任意ファイルを書き込んだ"
+        );
     }
 
     // ============================================================

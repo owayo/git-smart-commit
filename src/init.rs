@@ -84,14 +84,8 @@ mod tests {
     use std::ffi::OsString;
     use std::fs;
     use std::path::Path;
-    use std::sync::{Mutex, OnceLock};
 
     use super::*;
-
-    fn home_env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
 
     struct HomeEnvGuard {
         original_home: Option<OsString>,
@@ -130,7 +124,7 @@ mod tests {
 
     #[test]
     fn test_execute_force_creates_config_file_with_current_defaults() {
-        let _lock = home_env_lock().lock().unwrap();
+        let _lock = crate::test_support::lock_env();
         let temp_home = tempfile::tempdir().unwrap();
         let _home_guard = HomeEnvGuard::set(temp_home.path());
 

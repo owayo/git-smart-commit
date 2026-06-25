@@ -7,6 +7,8 @@ mod git;
 mod init;
 mod notify;
 mod state;
+#[cfg(test)]
+mod test_support;
 
 use clap::Parser;
 use colored::Colorize;
