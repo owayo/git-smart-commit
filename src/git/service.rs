@@ -794,18 +794,24 @@ impl GitService {
 
     /// ブランチが存在するか確認
     pub fn branch_exists(&self, branch: &str) -> bool {
-        self.try_run_git(&["rev-parse", "--verify", branch])
+        // branch はユーザー入力(`--squash <branch>`)。`-` 始まりの値がオプションとして
+        // 解釈されないよう `--end-of-options` の後ろに revision として渡す
+        // (ハッシュ受け取り経路と同じオプション注入対策をそろえる)。
+        self.try_run_git(&["rev-parse", "--verify", "--end-of-options", branch])
             .is_some()
     }
 
     /// 2つのブランチのmerge-baseを取得
     pub fn get_merge_base(&self, base: &str, head: &str) -> Result<String, AppError> {
-        self.run_git(&["merge-base", base, head]).map_err(|_| {
-            AppError::GitError(format!(
-                "Failed to find merge-base between {} and {}",
-                base, head
-            ))
-        })
+        // base はユーザー入力(`--squash <branch>`)。オプション注入を防ぐため
+        // `--end-of-options` の後ろに revision として渡す(ハッシュ経路と防御をそろえる)。
+        self.run_git(&["merge-base", "--end-of-options", base, head])
+            .map_err(|_| {
+                AppError::GitError(format!(
+                    "Failed to find merge-base between {} and {}",
+                    base, head
+                ))
+            })
     }
 
     /// ベースからHEADまでのコミット数を取得
@@ -1679,6 +1685,50 @@ index 1234567..abcdefg 100644
         assert!(
             !marker.exists(),
             "get_commit_message_by_hash がオプション注入で任意ファイルを書き込んだ"
+        );
+    }
+
+    #[test]
+    fn test_squash_base_branch_blocks_git_option_injection() {
+        // squash の base_branch(`--squash <branch>` のユーザー入力)も、ハッシュ経路と同様に
+        // git のオプション位置へ渡さない。`--end-of-options` により `-` 始まりの値は
+        // revision として解決され、オプション注入(任意ファイル書き込み等)を防ぐ。
+        let temp_dir = setup_temp_git_repo();
+        let repo = temp_dir.path();
+        std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+        run_git_in(repo, &["add", "a.txt"]);
+        run_git_in(repo, &["commit", "-m", "init"]);
+
+        // オプション風の名前のブランチを HEAD に向けて実在させる。
+        run_git_in(repo, &["update-ref", "refs/heads/--output=PWNED", "HEAD"]);
+
+        let service = GitService {
+            repo_path: repo.to_path_buf(),
+        };
+        let malicious = "--output=PWNED";
+        let marker = repo.join("PWNED");
+
+        // branch_exists: `--end-of-options` により revision として解決されるため、
+        // 実在するブランチは true を返し、かつマーカーは書き込まれない。
+        // (修正前は `--output=PWNED` がオプション扱いされて false になっていた)
+        assert!(
+            service.branch_exists(malicious),
+            "--end-of-options 後なら実在ブランチとして解決されるべき"
+        );
+        assert!(
+            !marker.exists(),
+            "branch_exists がオプション注入で任意ファイルを書き込んだ"
+        );
+
+        // get_merge_base: revision として解決され、HEAD との merge-base(=HEAD 自身)を返す。
+        let mb = service.get_merge_base(malicious, "HEAD");
+        assert!(
+            mb.is_ok(),
+            "--end-of-options 後なら revision として merge-base が解決されるべき"
+        );
+        assert!(
+            !marker.exists(),
+            "get_merge_base がオプション注入で任意ファイルを書き込んだ"
         );
     }
 
