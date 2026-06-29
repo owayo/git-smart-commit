@@ -388,6 +388,17 @@ impl App {
             if let Ok(re) = Regex::new(&rule_config.url_pattern)
                 && re.is_match(remote_url)
             {
+                if !is_valid_prefix_type(&rule_config.prefix_type) {
+                    eprintln!(
+                        "{}",
+                        format!(
+                            "警告: prefix_rule '{}' の prefix_type '{}' は無効です。有効な値: {:?}",
+                            rule_config.url_pattern, rule_config.prefix_type, VALID_PREFIX_TYPES
+                        )
+                        .yellow()
+                    );
+                    continue;
+                }
                 if !silent {
                     println!(
                         "{}",
@@ -2204,6 +2215,52 @@ mod tests {
             _ => panic!(
                 "マッチしない rule は素通りして PrefixMode::Config(\"bracket\") に到達すべき"
             ),
+        }
+    }
+
+    #[test]
+    fn test_get_prefix_mode_invalid_matching_rule_falls_through_to_config() {
+        // prefix_rules の prefix_type はトップレベル prefix_type と同じ値集合を使う。
+        // 無効値をそのまま AiService に渡すと「任意の prefix 形式」として解釈され、
+        // 設定タイポが意図しない出力形式になるため、マッチしても無効な rule は無視する。
+        let dir = init_repo_with_remote("https://github.com/myorg/myrepo.git");
+        let git = GitService::with_repo_path(dir.path().to_path_buf());
+
+        let rules = vec![PrefixRuleConfig {
+            url_pattern: r"github\.com[:/]myorg/".to_string(),
+            prefix_type: "typo".to_string(),
+        }];
+        let app = app_with_rules(git, rules, Some("bracket"));
+
+        match app.get_prefix_mode(true) {
+            PrefixMode::Config(pt) => assert_eq!(pt, "bracket"),
+            _ => panic!(
+                "無効な matching rule は素通りして PrefixMode::Config(\"bracket\") に到達すべき"
+            ),
+        }
+    }
+
+    #[test]
+    fn test_get_prefix_mode_invalid_rule_continues_to_next_matching_rule() {
+        // 先にマッチした rule が無効でも、後続の有効な matching rule まで評価を続ける。
+        let dir = init_repo_with_remote("https://github.com/myorg/myrepo.git");
+        let git = GitService::with_repo_path(dir.path().to_path_buf());
+
+        let rules = vec![
+            PrefixRuleConfig {
+                url_pattern: r"github\.com[:/]myorg/".to_string(),
+                prefix_type: "typo".to_string(),
+            },
+            PrefixRuleConfig {
+                url_pattern: r"github\.com[:/]myorg/".to_string(),
+                prefix_type: "conventional".to_string(),
+            },
+        ];
+        let app = app_with_rules(git, rules, Some("bracket"));
+
+        match app.get_prefix_mode(true) {
+            PrefixMode::Rule(pt) => assert_eq!(pt, "conventional"),
+            _ => panic!("後続の有効な matching rule を PrefixMode::Rule として採用すべき"),
         }
     }
 }
