@@ -85,6 +85,13 @@ pub struct ProviderStep {
     /// クールダウン/ログ用の識別名(任意)。省略時は他フィールドから決定的に導出する。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// ai-usage --json 連携時に (profile, provider) 照合に使う Chrome プロファイル名(任意)。
+    /// `[ai_usage] enabled = true` のときのみ意味を持ち、この step の provider と組み合わせて
+    /// 該当 account の残量を検索する。None なら「同一 provider の中で残量が最も多い account」を
+    /// 自動採用する(auto-select)。cooldown_key には含めない(cooldown は失敗経路の管理、
+    /// ai-usage は残量経路の管理で独立して機能させるため)。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_usage_profile: Option<String>,
 }
 
 impl ProviderStep {
@@ -96,6 +103,7 @@ impl ProviderStep {
             command: None,
             env: BTreeMap::new(),
             name: None,
+            ai_usage_profile: None,
         }
     }
 
@@ -172,6 +180,8 @@ impl<'de> Deserialize<'de> for ProviderStep {
             env: BTreeMap<String, String>,
             #[serde(default)]
             name: Option<String>,
+            #[serde(default)]
+            ai_usage_profile: Option<String>,
         }
 
         struct StepVisitor;
@@ -197,6 +207,7 @@ impl<'de> Deserialize<'de> for ProviderStep {
                     command: raw.command.filter(|c| !c.is_empty()),
                     env: raw.env,
                     name: raw.name.filter(|n| !n.trim().is_empty()),
+                    ai_usage_profile: raw.ai_usage_profile.filter(|p| !p.trim().is_empty()),
                 })
             }
         }
@@ -320,6 +331,7 @@ struct PartialConfig {
     pub provider_timeout_seconds: Option<u64>,
     pub nano_buddy: Option<bool>,
     pub codex_reasoning_effort: Option<String>,
+    pub ai_usage: Option<AiUsageConfig>,
 }
 
 impl PartialConfig {
@@ -354,6 +366,7 @@ impl PartialConfig {
             codex_reasoning_effort: self
                 .codex_reasoning_effort
                 .unwrap_or(defaults.codex_reasoning_effort),
+            ai_usage: self.ai_usage.or(defaults.ai_usage),
         }
     }
 
@@ -408,7 +421,72 @@ impl PartialConfig {
         if let Some(effort) = self.codex_reasoning_effort {
             config.codex_reasoning_effort = effort;
         }
+        if let Some(ai_usage) = self.ai_usage {
+            config.ai_usage = Some(ai_usage);
+        }
     }
+}
+
+/// ai-usage --json 連携設定
+///
+/// `enabled = true` かつ `command` の実行に成功したとき、`AiService::from_config` は
+/// fallback chain の各 step について残量を評価し、`threshold_percent` を超えている
+/// step を chain から除外する。取得に失敗しても既存のフォールバックが動く fail-open。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiUsageConfig {
+    /// 連携を有効化する。false なら snapshot 取得も filter も行わない(既定 = false)。
+    #[serde(default)]
+    pub enabled: bool,
+    /// ai-usage を起動するコマンド(既定: `["ai-usage", "--json"]`)。
+    #[serde(default = "default_ai_usage_command")]
+    pub command: Vec<String>,
+    /// この使用率(%)以上の step は chain から除外する(既定: 95)。
+    #[serde(default = "default_ai_usage_threshold_percent")]
+    pub threshold_percent: f64,
+    /// 判定に使う枠(weekly / five_hour / nearest。既定: nearest = 両方のうち最大値)。
+    #[serde(default)]
+    pub window: AiUsageWindow,
+    /// ai-usage --json の実行タイムアウト(秒。既定: 10)。
+    #[serde(default = "default_ai_usage_timeout_seconds")]
+    pub timeout_seconds: u64,
+}
+
+impl Default for AiUsageConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            command: default_ai_usage_command(),
+            threshold_percent: default_ai_usage_threshold_percent(),
+            window: AiUsageWindow::default(),
+            timeout_seconds: default_ai_usage_timeout_seconds(),
+        }
+    }
+}
+
+/// 使用率判定に使う枠。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AiUsageWindow {
+    /// 週次のみ。
+    Weekly,
+    /// 5 時間枠のみ。
+    FiveHour,
+    /// weekly と five_hour のうち **使用率が高い方**(=安全側)を採用する(既定)。
+    #[default]
+    Nearest,
+}
+
+/// `[ai_usage]` の既定コマンド(`ai-usage --json`)。
+fn default_ai_usage_command() -> Vec<String> {
+    vec!["ai-usage".to_string(), "--json".to_string()]
+}
+
+fn default_ai_usage_threshold_percent() -> f64 {
+    95.0
+}
+
+fn default_ai_usage_timeout_seconds() -> u64 {
+    10
 }
 
 /// プレフィックススクリプト設定
@@ -466,6 +544,9 @@ pub struct Config {
     /// 空文字列の場合は `-c` 指定を省略し codex の既定値を使用
     #[serde(default = "default_codex_reasoning_effort")]
     pub codex_reasoning_effort: String,
+    /// ai-usage --json 連携設定(省略時は連携無効)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_usage: Option<AiUsageConfig>,
 }
 
 /// デフォルトのクールダウン時間（60分 = 1時間）
@@ -511,6 +592,7 @@ impl Default for Config {
             provider_timeout_seconds: default_provider_timeout_seconds(),
             nano_buddy: false,
             codex_reasoning_effort: default_codex_reasoning_effort(),
+            ai_usage: None,
         }
     }
 }
@@ -747,6 +829,32 @@ opencode = ""
 # 起動時に明示上書きするため、親シェルのアカウント設定に引きずられない。
 # ラッパースクリプトを使う場合は command でも可:
 #   {{ provider = "codex", command = ["~/path/to/codex-wrapper.sh"] }}
+
+# --- ai-usage 連携 (5h / weekly 残量からエージェントを自動判定) ---
+# `ai-usage --json` (https://github.com/owayo/ai-usage) を起動時に 1 回だけ叩き、
+# 5 時間枠 / 週次の使用率が閾値(threshold_percent, 既定 95)以上のプロバイダーを
+# fallback chain から除外する。取得失敗・アカウント不一致は fail-open で連携無効
+# (fallback chain は元のまま) になるため、ai-usage 側が壊れても commit は動く。
+# 各 step で `ai_usage_profile = "Work"` を指定すると (profile, provider) で
+# 一意に照合される。省略時は「同一 provider の中で残量が最も多い account」を
+# 自動採用する。
+#
+# [ai_usage]
+# enabled = true                          # false または省略で連携無効
+# command = ["ai-usage", "--json"]        # 起動コマンド。ラッパー可
+# threshold_percent = 95                  # この使用率以上の step は chain から除外
+# window = "nearest"                      # weekly | five_hour | nearest (既定 nearest = 高い方を採用)
+# timeout_seconds = 10                    # ai-usage 実行のタイムアウト(秒)
+#
+# providers = [
+#   {{ provider = "codex", ai_usage_profile = "Work",
+#      env = {{ CODEX_HOME = "~/.codex" }} }},
+#   {{ provider = "codex", ai_usage_profile = "Home",
+#      env = {{ CODEX_HOME = "~/.codex-home" }} }},
+#   {{ provider = "claude", ai_usage_profile = "Work",
+#      env = {{ CLAUDE_CONFIG_DIR = "~/.claude" }} }},
+#   "antigravity",  # profile 未指定は auto-select (最も残量が多い account を採用)
+# ]
 "#
         )
     }
@@ -818,6 +926,11 @@ impl Config {
         // provider_timeout_seconds: デフォルトでなければ上書き
         if other.provider_timeout_seconds != default_provider_timeout_seconds() {
             self.provider_timeout_seconds = other.provider_timeout_seconds;
+        }
+
+        // ai_usage: Some で上書き
+        if other.ai_usage.is_some() {
+            self.ai_usage = other.ai_usage;
         }
     }
 }
@@ -1984,6 +2097,7 @@ gemini = "gemini-2.5-pro"
             provider_timeout_seconds: 120,
             nano_buddy: true,
             codex_reasoning_effort: "high".to_string(),
+            ai_usage: None,
         };
 
         // 空の TOML → 全フィールドが None の PartialConfig

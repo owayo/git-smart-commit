@@ -61,6 +61,10 @@ pub enum AppError {
 
     #[error("無効な引数: {0}")]
     InvalidArgument(String),
+
+    /// ai-usage --json 連携の失敗。fatal ではなく fail-open で扱う想定。
+    #[error("ai-usage 連携エラー: {0}")]
+    AiUsageError(String),
 }
 
 #[cfg(test)]

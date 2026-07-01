@@ -1,4 +1,5 @@
 mod ai;
+mod ai_usage;
 mod app;
 mod cli;
 mod config;

@@ -86,6 +86,10 @@ pub struct AiService {
     /// 設定ファイル中に旧 `gemini` エイリアス、または `[models] gemini` の指定が
     /// 残っていた場合に立つフラグ。debug 出力時に注意を促す。
     legacy_gemini_alias_detected: bool,
+    /// ai-usage 連携時に fallback chain を絞り込んだ判定ログ(debug 出力用)。
+    /// snapshot 取得の可否と、各 step の keep/skip 理由を 1 行ずつ保持する。
+    /// `set_debug(true)` 呼び出し時に一度だけ出力してクリアする。
+    ai_usage_notes: Vec<String>,
 }
 
 impl AiService {
@@ -127,6 +131,12 @@ impl AiService {
             .filter(|s| AiProvider::from_str(&s.provider).is_some())
             .collect();
 
+        // ai-usage 連携: `[ai_usage] enabled = true` のとき、5h/weekly 残量が閾値超過の
+        // step を chain から除外する。snapshot 取得失敗や account 不一致は fail-open
+        // (chain は元のまま + debug 用のログを残す)なので、連携が壊れても commit は
+        // 従来どおり動く。
+        let (steps, ai_usage_notes) = Self::apply_ai_usage_filter(steps, config.ai_usage.as_ref());
+
         // 有効なステップがない場合はデフォルトにフォールバック
         let steps = if steps.is_empty() {
             Self::default_steps()
@@ -144,7 +154,78 @@ impl AiService {
             debug: false,
             provider_override: false,
             legacy_gemini_alias_detected,
+            ai_usage_notes,
         }
+    }
+
+    /// `[ai_usage]` 設定にもとづき step 列をフィルタする。
+    ///
+    /// 返り値の 2 番目は debug 用のメッセージ(空でなければ set_debug(true) 時に
+    /// eprintln! される)。fail-open (snapshot 取得失敗、account 不一致) では
+    /// step は削らず、理由だけを残す。
+    fn apply_ai_usage_filter(
+        steps: Vec<ProviderStep>,
+        usage_cfg: Option<&crate::config::AiUsageConfig>,
+    ) -> (Vec<ProviderStep>, Vec<String>) {
+        let Some(cfg) = usage_cfg else {
+            return (steps, Vec::new());
+        };
+        if !cfg.enabled {
+            return (steps, Vec::new());
+        }
+
+        let mut notes: Vec<String> = Vec::new();
+        let snapshot = match crate::ai_usage::fetch_snapshot(cfg) {
+            Ok(s) => s,
+            Err(e) => {
+                notes.push(format!(
+                    "ai-usage snapshot unavailable: {e} (fallback chain unchanged)"
+                ));
+                return (steps, notes);
+            }
+        };
+
+        notes.push(format!(
+            "ai-usage snapshot loaded ({} accounts, window={:?}, threshold={}%)",
+            snapshot.accounts().len(),
+            cfg.window,
+            cfg.threshold_percent
+        ));
+
+        let mut kept = Vec::with_capacity(steps.len());
+        for step in steps {
+            let decision = snapshot.evaluate(&step, cfg.window, cfg.threshold_percent);
+            let label = Self::step_debug_label(&step);
+            let (verb, extra) = match &decision {
+                crate::ai_usage::UsageDecision::Usable { .. } => ("keep", ""),
+                crate::ai_usage::UsageDecision::NoAccount { .. } => {
+                    ("keep", " (no ai-usage match)")
+                }
+                crate::ai_usage::UsageDecision::OverThreshold { .. } => ("skip", ""),
+            };
+            notes.push(format!("{verb} {label}{extra}: {}", decision.reason()));
+            if decision.is_usable() {
+                kept.push(step);
+            }
+        }
+
+        if kept.is_empty() {
+            notes.push(
+                "all steps filtered out by ai-usage; falling back to default chain".to_string(),
+            );
+        }
+        (kept, notes)
+    }
+
+    /// ai-usage debug 表示用の 1 行ラベル(provider + profile 明示 + account hint)。
+    fn step_debug_label(step: &ProviderStep) -> String {
+        let mut label = step.provider.clone();
+        if let Some(profile) = step.ai_usage_profile.as_deref() {
+            label.push_str(&format!("(profile={profile})"));
+        } else if let Some(hint) = step.account_hint() {
+            label.push_str(&format!("(env={hint})"));
+        }
+        label
     }
 
     /// デフォルトのフォールバック順序でAiServiceを作成
@@ -159,13 +240,15 @@ impl AiService {
             debug: false,
             provider_override: false,
             legacy_gemini_alias_detected: false,
+            ai_usage_notes: Vec::new(),
         }
     }
 
     /// デバッグモードを設定。
     ///
-    /// 旧 `gemini` エイリアスや `[models] gemini` が残っている設定を検出していた場合は、
-    /// この呼び出しのタイミングで一度だけ注意メッセージを表示する。
+    /// 旧 `gemini` エイリアスや `[models] gemini` が残っている設定を検出していた場合、
+    /// または ai-usage 連携で fallback chain の絞り込み結果があれば、この呼び出しの
+    /// タイミングで一度だけ eprintln! で表示する。
     pub fn set_debug(&mut self, debug: bool) {
         self.debug = debug;
         if debug && self.legacy_gemini_alias_detected {
@@ -177,6 +260,13 @@ impl AiService {
             );
             // 通知は一度だけで十分
             self.legacy_gemini_alias_detected = false;
+        }
+        if debug && !self.ai_usage_notes.is_empty() {
+            eprintln!("{}", "[git-sc] ai-usage filter:".dimmed());
+            for note in &self.ai_usage_notes {
+                eprintln!("  {}", note.dimmed());
+            }
+            self.ai_usage_notes.clear();
         }
     }
 
@@ -3502,6 +3592,7 @@ mod tests {
             debug: false,
             provider_override: false,
             legacy_gemini_alias_detected: false,
+            ai_usage_notes: Vec::new(),
         };
         let cmd = service.format_command_for_debug(
             &AiProvider::Antigravity,
@@ -3538,6 +3629,7 @@ mod tests {
             debug: true,
             provider_override: false,
             legacy_gemini_alias_detected: false,
+            ai_usage_notes: Vec::new(),
         };
         let cmd = service.format_command_for_debug(
             &AiProvider::Antigravity,
@@ -3565,6 +3657,7 @@ mod tests {
             debug: false,
             provider_override: false,
             legacy_gemini_alias_detected: false,
+            ai_usage_notes: Vec::new(),
         };
         let cmd = service.format_command_for_debug(
             &AiProvider::Codex,
@@ -3591,6 +3684,7 @@ mod tests {
             debug: false,
             provider_override: false,
             legacy_gemini_alias_detected: false,
+            ai_usage_notes: Vec::new(),
         };
         let cmd = service.format_command_for_debug(
             &AiProvider::Claude,

@@ -345,6 +345,7 @@ dependencies = [
  "regex",
  "rstest",
  "serde",
+ "serde_json",
  "shellexpand",
  "tempfile",
  "thiserror",
