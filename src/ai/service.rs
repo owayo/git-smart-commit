@@ -90,6 +90,11 @@ pub struct AiService {
     /// snapshot 取得の可否と、各 step の keep/skip 理由を 1 行ずつ保持する。
     /// `set_debug(true)` 呼び出し時に一度だけ出力してクリアする。
     ai_usage_notes: Vec<String>,
+    /// ai-usage フィルタが「実行成功」かつ「全 step を OverThreshold で除外」した場合に
+    /// 立つフラグ。true のときは default_steps() へのフォールバックを行わず、
+    /// `verify_installation` で `AppError::AiUsageError` として上位に伝える。
+    /// snapshot 取得失敗(fail-open)や、そもそも入力 step が 0 件のケースは含まない。
+    ai_usage_gate_blocked: bool,
 }
 
 impl AiService {
@@ -134,11 +139,17 @@ impl AiService {
         // ai-usage 連携: `[ai_usage] enabled = true` のとき、5h/weekly 残量が閾値超過の
         // step を chain から除外する。snapshot 取得失敗や account 不一致は fail-open
         // (chain は元のまま + debug 用のログを残す)なので、連携が壊れても commit は
-        // 従来どおり動く。
-        let (steps, ai_usage_notes) = Self::apply_ai_usage_filter(steps, config.ai_usage.as_ref());
+        // 従来どおり動く。ただし snapshot 取得成功後、全 step が OverThreshold で
+        // 除外された場合は `gate_blocked = true` を立て、`default_steps()` に戻さず、
+        // `verify_installation` で明示エラーにする(fallback すると閾値超過の step が
+        // 結果的に呼ばれ、ai-usage gate の意味が消えるため)。
+        let (steps, ai_usage_notes, ai_usage_gate_blocked) =
+            Self::apply_ai_usage_filter(steps, config.ai_usage.as_ref());
 
-        // 有効なステップがない場合はデフォルトにフォールバック
-        let steps = if steps.is_empty() {
+        // ai-usage が積極的に空にした場合はフォールバックしない。それ以外(config に
+        // provider が無い、全て unknown、fail-open で snapshot 取得失敗など)は
+        // 従来どおりデフォルト chain へフォールバックする。
+        let steps = if steps.is_empty() && !ai_usage_gate_blocked {
             Self::default_steps()
         } else {
             steps
@@ -155,23 +166,27 @@ impl AiService {
             provider_override: false,
             legacy_gemini_alias_detected,
             ai_usage_notes,
+            ai_usage_gate_blocked,
         }
     }
 
     /// `[ai_usage]` 設定にもとづき step 列をフィルタする。
     ///
-    /// 返り値の 2 番目は debug 用のメッセージ(空でなければ set_debug(true) 時に
-    /// eprintln! される)。fail-open (snapshot 取得失敗、account 不一致) では
-    /// step は削らず、理由だけを残す。
+    /// 返り値:
+    /// - 1: フィルタ後の step 列
+    /// - 2: debug 用のメッセージ(空でなければ set_debug(true) 時に eprintln! される)
+    /// - 3: `gate_blocked` — 「snapshot 取得成功 & 入力 step は 1 件以上 & 全て
+    ///   OverThreshold で除外」のときだけ true。fail-open (snapshot 取得失敗、
+    ///   config 未設定、無効) や 入力 step が空のケースは false。
     fn apply_ai_usage_filter(
         steps: Vec<ProviderStep>,
         usage_cfg: Option<&crate::config::AiUsageConfig>,
-    ) -> (Vec<ProviderStep>, Vec<String>) {
+    ) -> (Vec<ProviderStep>, Vec<String>, bool) {
         let Some(cfg) = usage_cfg else {
-            return (steps, Vec::new());
+            return (steps, Vec::new(), false);
         };
         if !cfg.enabled {
-            return (steps, Vec::new());
+            return (steps, Vec::new(), false);
         }
 
         let mut notes: Vec<String> = Vec::new();
@@ -181,10 +196,19 @@ impl AiService {
                 notes.push(format!(
                     "ai-usage snapshot unavailable: {e} (fallback chain unchanged)"
                 ));
-                return (steps, notes);
+                return (steps, notes, false);
             }
         };
+        Self::apply_ai_usage_filter_with_snapshot(steps, cfg, &snapshot, notes)
+    }
 
+    /// snapshot 取得後の評価ロジックを外出しした部分(テストから直接呼ぶ用)。
+    fn apply_ai_usage_filter_with_snapshot(
+        steps: Vec<ProviderStep>,
+        cfg: &crate::config::AiUsageConfig,
+        snapshot: &crate::ai_usage::AiUsageSnapshot,
+        mut notes: Vec<String>,
+    ) -> (Vec<ProviderStep>, Vec<String>, bool) {
         notes.push(format!(
             "ai-usage snapshot loaded ({} accounts, window={:?}, threshold={}%)",
             snapshot.accounts().len(),
@@ -192,7 +216,8 @@ impl AiService {
             cfg.threshold_percent
         ));
 
-        let mut kept = Vec::with_capacity(steps.len());
+        let input_len = steps.len();
+        let mut kept = Vec::with_capacity(input_len);
         for step in steps {
             let decision = snapshot.evaluate(&step, cfg.window, cfg.threshold_percent);
             let label = Self::step_debug_label(&step);
@@ -209,12 +234,15 @@ impl AiService {
             }
         }
 
-        if kept.is_empty() {
+        let gate_blocked = input_len > 0 && kept.is_empty();
+        if gate_blocked {
             notes.push(
-                "all steps filtered out by ai-usage; falling back to default chain".to_string(),
+                "all configured steps filtered out by ai-usage; aborting instead of falling back \
+                 to default chain (gate would otherwise be bypassed)"
+                    .to_string(),
             );
         }
-        (kept, notes)
+        (kept, notes, gate_blocked)
     }
 
     /// ai-usage debug 表示用の 1 行ラベル(provider + profile 明示 + account hint)。
@@ -241,6 +269,7 @@ impl AiService {
             provider_override: false,
             legacy_gemini_alias_detected: false,
             ai_usage_notes: Vec::new(),
+            ai_usage_gate_blocked: false,
         }
     }
 
@@ -303,6 +332,18 @@ impl AiService {
 
     /// 少なくとも1つのステップが実行可能であることを確認
     pub fn verify_installation(&self) -> Result<(), AppError> {
+        // ai-usage フィルタが全 step を除外したときは、default chain へ戻さない代わりに
+        // ここで明示エラーを返す(default に戻すと閾値超過の provider が結局呼ばれて
+        // gate の意味が消えるため)。config 未設定や snapshot 取得失敗 (fail-open) では
+        // このフラグは立たない。
+        if self.ai_usage_gate_blocked {
+            return Err(AppError::AiUsageError(
+                "設定した全 provider が ai-usage の閾値(threshold_percent)を超えているため、\
+                 実行できるアカウントがありません。しばらく待ってから再実行するか、\
+                 [ai_usage].threshold_percent を見直してください。詳細は --debug で確認できます。"
+                    .to_string(),
+            ));
+        }
         for step in &self.steps {
             if let Some(provider) = AiProvider::from_str(&step.provider)
                 && self.is_step_installed(step, &provider)
@@ -666,6 +707,8 @@ mod tests {
     use std::process::{Command, ExitStatus, Stdio};
 
     use super::*;
+    use crate::ai_usage::{AiUsageAccount, AiUsageSnapshot, UsageWindowData};
+    use crate::config::AiUsageConfig;
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
@@ -3593,6 +3636,7 @@ mod tests {
             provider_override: false,
             legacy_gemini_alias_detected: false,
             ai_usage_notes: Vec::new(),
+            ai_usage_gate_blocked: false,
         };
         let cmd = service.format_command_for_debug(
             &AiProvider::Antigravity,
@@ -3630,6 +3674,7 @@ mod tests {
             provider_override: false,
             legacy_gemini_alias_detected: false,
             ai_usage_notes: Vec::new(),
+            ai_usage_gate_blocked: false,
         };
         let cmd = service.format_command_for_debug(
             &AiProvider::Antigravity,
@@ -3658,6 +3703,7 @@ mod tests {
             provider_override: false,
             legacy_gemini_alias_detected: false,
             ai_usage_notes: Vec::new(),
+            ai_usage_gate_blocked: false,
         };
         let cmd = service.format_command_for_debug(
             &AiProvider::Codex,
@@ -3685,6 +3731,7 @@ mod tests {
             provider_override: false,
             legacy_gemini_alias_detected: false,
             ai_usage_notes: Vec::new(),
+            ai_usage_gate_blocked: false,
         };
         let cmd = service.format_command_for_debug(
             &AiProvider::Claude,
@@ -4133,5 +4180,144 @@ mod tests {
         let label = AiService::step_label(&AiProvider::Codex, &step);
         assert!(label.contains("gpt-5.4-mini"), "label: {label}");
         assert!(label.contains(".codex-work"), "label: {label}");
+    }
+
+    // ============================================================
+    // ai-usage 全 step 除外時の gate 挙動テスト
+    // ============================================================
+
+    /// used_percent を weekly に載せた擬似アカウントを作る。
+    fn make_over_threshold_account(profile: &str, provider: &str, used: f64) -> AiUsageAccount {
+        AiUsageAccount {
+            profile: profile.to_string(),
+            provider: provider.to_string(),
+            ok: true,
+            weekly: Some(UsageWindowData {
+                used_percent: Some(used),
+            }),
+            five_hour: Some(UsageWindowData {
+                used_percent: Some(used),
+            }),
+            error: None,
+        }
+    }
+
+    #[test]
+    fn test_filter_all_over_threshold_sets_gate_blocked() {
+        // snapshot 上、全 provider が閾値超過。gate_blocked = true が立つ。
+        let steps = vec![
+            ProviderStep::from_provider("codex"),
+            ProviderStep::from_provider("claude"),
+        ];
+        let snapshot = AiUsageSnapshot::from_accounts(vec![
+            make_over_threshold_account("Work", "codex", 99.0),
+            make_over_threshold_account("Work", "claude", 99.0),
+        ]);
+        let cfg = AiUsageConfig {
+            enabled: true,
+            threshold_percent: 95.0,
+            ..AiUsageConfig::default()
+        };
+        let (kept, notes, gate_blocked) =
+            AiService::apply_ai_usage_filter_with_snapshot(steps, &cfg, &snapshot, Vec::new());
+        assert!(kept.is_empty(), "全 step が除外されるはず");
+        assert!(gate_blocked, "gate_blocked が立つはず");
+        assert!(
+            notes.iter().any(|n| n.contains("aborting")),
+            "abort 通知が notes に含まれるはず: {notes:?}"
+        );
+    }
+
+    #[test]
+    fn test_filter_partial_over_threshold_keeps_survivors() {
+        // 一部だけ閾値超過。残った step があれば gate_blocked は立たない。
+        let steps = vec![
+            ProviderStep::from_provider("codex"),
+            ProviderStep::from_provider("claude"),
+        ];
+        let snapshot = AiUsageSnapshot::from_accounts(vec![
+            make_over_threshold_account("Work", "codex", 99.0),
+            make_over_threshold_account("Work", "claude", 10.0),
+        ]);
+        let cfg = AiUsageConfig {
+            enabled: true,
+            threshold_percent: 95.0,
+            ..AiUsageConfig::default()
+        };
+        let (kept, _notes, gate_blocked) =
+            AiService::apply_ai_usage_filter_with_snapshot(steps, &cfg, &snapshot, Vec::new());
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].provider, "claude");
+        assert!(
+            !gate_blocked,
+            "残った step があるなら gate_blocked は false"
+        );
+    }
+
+    #[test]
+    fn test_filter_empty_input_does_not_set_gate_blocked() {
+        // 入力 step が 0 件 → ai-usage は何も除外していないので gate_blocked は false。
+        // (from_config はここでデフォルト chain にフォールバックできるようにする)
+        let snapshot = AiUsageSnapshot::from_accounts(vec![]);
+        let cfg = AiUsageConfig {
+            enabled: true,
+            ..AiUsageConfig::default()
+        };
+        let (kept, _notes, gate_blocked) =
+            AiService::apply_ai_usage_filter_with_snapshot(Vec::new(), &cfg, &snapshot, Vec::new());
+        assert!(kept.is_empty());
+        assert!(!gate_blocked, "入力が空 → gate_blocked は立たない");
+    }
+
+    #[test]
+    fn test_verify_installation_returns_ai_usage_error_when_gate_blocked() {
+        // gate_blocked = true の AiService は verify_installation で AiUsageError を返す。
+        let mut service = AiService::new();
+        service.ai_usage_gate_blocked = true;
+        service.steps = Vec::new();
+        let err = service
+            .verify_installation()
+            .expect_err("gate_blocked のとき Err を返すはず");
+        assert!(
+            matches!(err, AppError::AiUsageError(_)),
+            "AiUsageError を返すはず: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_from_config_all_over_threshold_does_not_fallback_to_default_chain() {
+        // ai-usage フィルタが全 step を除外したときに default_steps へ戻さないことを
+        // apply_ai_usage_filter_with_snapshot 経由で疑似的に検証する。
+        // (from_config は外部プロセスを叩くため直接テストしない)
+        let steps = vec![
+            ProviderStep::from_provider("codex"),
+            ProviderStep::from_provider("claude"),
+        ];
+        let snapshot = AiUsageSnapshot::from_accounts(vec![
+            make_over_threshold_account("Work", "codex", 100.0),
+            make_over_threshold_account("Work", "claude", 100.0),
+        ]);
+        let cfg = AiUsageConfig {
+            enabled: true,
+            threshold_percent: 95.0,
+            ..AiUsageConfig::default()
+        };
+        let (kept, _notes, gate_blocked) =
+            AiService::apply_ai_usage_filter_with_snapshot(steps, &cfg, &snapshot, Vec::new());
+
+        // from_config のフォールバック判定を再現する
+        let final_steps = if kept.is_empty() && !gate_blocked {
+            AiService::default_steps()
+        } else {
+            kept
+        };
+        assert!(
+            gate_blocked,
+            "全 OverThreshold なので gate_blocked が立つはず"
+        );
+        assert!(
+            final_steps.is_empty(),
+            "gate_blocked=true のときフォールバックせず空のまま(default_steps に戻さない)"
+        );
     }
 }
