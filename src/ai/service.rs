@@ -16,6 +16,8 @@ pub enum AiProvider {
     Codex,
     Claude,
     Opencode,
+    /// Grok Build TUI (`grok`). X.AI の Grok を叩く TUI エージェント CLI (cmux 同梱)。
+    Grok,
     AppleIntelligence,
 }
 
@@ -26,6 +28,7 @@ impl AiProvider {
             AiProvider::Codex => "Codex CLI",
             AiProvider::Claude => "Claude Code",
             AiProvider::Opencode => "opencode",
+            AiProvider::Grok => "Grok CLI",
             AiProvider::AppleIntelligence => "Apple Intelligence",
         }
     }
@@ -36,6 +39,7 @@ impl AiProvider {
             AiProvider::Codex => "codex",
             AiProvider::Claude => "claude",
             AiProvider::Opencode => "opencode",
+            AiProvider::Grok => "grok",
             AiProvider::AppleIntelligence => "apple-ai",
         }
     }
@@ -47,6 +51,7 @@ impl AiProvider {
             AiProvider::Codex => "codex",
             AiProvider::Claude => "claude",
             AiProvider::Opencode => "opencode",
+            AiProvider::Grok => "grok",
             AiProvider::AppleIntelligence => "apple-ai",
         }
     }
@@ -61,6 +66,7 @@ impl AiProvider {
             "codex" => Some(AiProvider::Codex),
             "claude" => Some(AiProvider::Claude),
             "opencode" => Some(AiProvider::Opencode),
+            "grok" => Some(AiProvider::Grok),
             "apple-intelligence" | "apple_intelligence" => Some(AiProvider::AppleIntelligence),
             _ => None,
         }
@@ -102,6 +108,7 @@ impl AiService {
     fn default_steps() -> Vec<ProviderStep> {
         let mut steps = vec![
             ProviderStep::from_provider("opencode"),
+            ProviderStep::from_provider("grok"),
             ProviderStep::from_provider("antigravity"),
             ProviderStep::from_provider("codex"),
             ProviderStep::from_provider("claude"),
@@ -473,6 +480,7 @@ impl AiService {
             AiProvider::Codex => self.models.codex.clone(),
             AiProvider::Claude => self.models.claude.clone(),
             AiProvider::Opencode => self.models.opencode.clone(),
+            AiProvider::Grok => self.models.grok.clone(),
             AiProvider::AppleIntelligence => String::new(),
         }
     }
@@ -630,9 +638,12 @@ impl AiService {
         prompt: &str,
         silent: bool,
     ) -> Result<String, AppError> {
-        // opencode は一時ファイル経由でプロンプトを渡す（stdinサポートが不明確なため）
-        // TempFile の RAII ガードにより、どのパスで return しても自動クリーンアップされる
-        let temp_file = if matches!(provider, AiProvider::Opencode) {
+        // opencode / grok は一時ファイル経由でプロンプトを渡す。
+        // opencode は stdin サポートが不明確なため、grok は `--prompt-file` を使うと
+        // `-p <PROMPT>` で長大な diff を渡すより堅牢(引数長制限や cmd.exe 経由の
+        // メタ文字問題を回避)。TempFile の RAII ガードにより、どのパスで return しても
+        // 自動クリーンアップされる。
+        let temp_file = if matches!(provider, AiProvider::Opencode | AiProvider::Grok) {
             Some(TempFile::create_with_content(prompt.as_bytes())?)
         } else {
             None
@@ -718,6 +729,7 @@ mod tests {
         assert_eq!(AiProvider::Codex.name(), "Codex CLI");
         assert_eq!(AiProvider::Claude.name(), "Claude Code");
         assert_eq!(AiProvider::Opencode.name(), "opencode");
+        assert_eq!(AiProvider::Grok.name(), "Grok CLI");
         assert_eq!(AiProvider::AppleIntelligence.name(), "Apple Intelligence");
     }
 
@@ -727,6 +739,7 @@ mod tests {
         assert_eq!(AiProvider::Codex.command(), "codex");
         assert_eq!(AiProvider::Claude.command(), "claude");
         assert_eq!(AiProvider::Opencode.command(), "opencode");
+        assert_eq!(AiProvider::Grok.command(), "grok");
         assert_eq!(AiProvider::AppleIntelligence.command(), "apple-ai");
     }
 
@@ -739,6 +752,7 @@ mod tests {
         assert_eq!(AiProvider::Codex.config_key(), "codex");
         assert_eq!(AiProvider::Claude.config_key(), "claude");
         assert_eq!(AiProvider::Opencode.config_key(), "opencode");
+        assert_eq!(AiProvider::Grok.config_key(), "grok");
         assert_eq!(AiProvider::AppleIntelligence.config_key(), "apple-ai");
     }
 
@@ -756,6 +770,9 @@ mod tests {
     #[case("claude", Some(AiProvider::Claude))]
     #[case("opencode", Some(AiProvider::Opencode))]
     #[case("OPENCODE", Some(AiProvider::Opencode))]
+    #[case("grok", Some(AiProvider::Grok))]
+    #[case("GROK", Some(AiProvider::Grok))]
+    #[case("Grok", Some(AiProvider::Grok))]
     #[case("apple-intelligence", Some(AiProvider::AppleIntelligence))]
     #[case("apple_intelligence", Some(AiProvider::AppleIntelligence))]
     #[case("APPLE-INTELLIGENCE", Some(AiProvider::AppleIntelligence))]
@@ -808,9 +825,9 @@ mod tests {
         let service = AiService::new();
         assert_eq!(service.language, "Japanese");
         let expected_len = if cfg!(all(target_os = "macos", feature = "apple-ai")) {
-            5
+            6
         } else {
-            4
+            5
         };
         assert_eq!(service.steps.len(), expected_len);
     }
@@ -1383,9 +1400,9 @@ mod tests {
 
         assert_eq!(service.language, "Japanese");
         let expected_len = if cfg!(all(target_os = "macos", feature = "apple-ai")) {
-            5
+            6
         } else {
-            4
+            5
         };
         assert_eq!(service.steps.len(), expected_len);
         // antigravity のデフォルトは GPT-OSS 120B (Medium)
@@ -1458,9 +1475,9 @@ mod tests {
 
         // 無効なプロバイダーのみの場合はデフォルトにフォールバック
         let expected_len = if cfg!(all(target_os = "macos", feature = "apple-ai")) {
-            5
+            6
         } else {
-            4
+            5
         };
         assert_eq!(service.steps.len(), expected_len);
     }
@@ -1518,17 +1535,18 @@ mod tests {
 
         assert_eq!(service.language, "Japanese");
         let expected_len = if cfg!(all(target_os = "macos", feature = "apple-ai")) {
-            5
+            6
         } else {
-            4
+            5
         };
         assert_eq!(service.steps.len(), expected_len);
         assert_eq!(service.steps[0].provider, "opencode");
-        assert_eq!(service.steps[1].provider, "antigravity");
-        assert_eq!(service.steps[2].provider, "codex");
-        assert_eq!(service.steps[3].provider, "claude");
+        assert_eq!(service.steps[1].provider, "grok");
+        assert_eq!(service.steps[2].provider, "antigravity");
+        assert_eq!(service.steps[3].provider, "codex");
+        assert_eq!(service.steps[4].provider, "claude");
         if cfg!(all(target_os = "macos", feature = "apple-ai")) {
-            assert_eq!(service.steps[4].provider, "apple-intelligence");
+            assert_eq!(service.steps[5].provider, "apple-intelligence");
         }
     }
 
@@ -1637,6 +1655,59 @@ mod tests {
     }
 
     #[test]
+    fn test_format_command_for_debug_grok() {
+        // grok はデフォルトで空モデルなので -m なし。副作用抑制フラグ一式が付与される。
+        let service = AiService::new();
+        let temp_path = std::path::Path::new("/tmp/git-sc-prompt-grok.txt");
+        let cmd = service.format_command_for_debug(
+            &AiProvider::Grok,
+            &service.models.grok.clone(),
+            &ProviderStep::from_provider("grok"),
+            "test prompt",
+            Some(temp_path),
+        );
+        assert!(cmd.starts_with("grok "), "grok から始まるべき: {}", cmd);
+        assert!(cmd.contains("--output-format plain"));
+        assert!(cmd.contains("--sandbox read-only"));
+        assert!(cmd.contains("--no-plan"));
+        assert!(cmd.contains("--no-memory"));
+        assert!(cmd.contains("--disable-web-search"));
+        assert!(cmd.contains("--max-turns 1"));
+        assert!(cmd.contains("--verbatim"));
+        assert!(cmd.contains("--prompt-file '/tmp/git-sc-prompt-grok.txt'"));
+        assert!(!cmd.contains(" -m "), "モデル空なら -m は付けない: {}", cmd);
+    }
+
+    #[test]
+    fn test_format_command_for_debug_grok_with_model() {
+        let mut service = AiService::new();
+        service.models.grok = "grok-4.5".to_string();
+        let temp_path = std::path::Path::new("/tmp/git-sc-prompt-grok.txt");
+        let cmd = service.format_command_for_debug(
+            &AiProvider::Grok,
+            "grok-4.5",
+            &ProviderStep::from_provider("grok"),
+            "test prompt",
+            Some(temp_path),
+        );
+        assert!(cmd.contains("-m 'grok-4.5'"));
+        assert!(cmd.contains("--prompt-file '/tmp/git-sc-prompt-grok.txt'"));
+    }
+
+    #[test]
+    fn test_format_command_for_debug_grok_no_path() {
+        let service = AiService::new();
+        let cmd = service.format_command_for_debug(
+            &AiProvider::Grok,
+            &service.models.grok.clone(),
+            &ProviderStep::from_provider("grok"),
+            "test prompt",
+            None,
+        );
+        assert!(cmd.contains("--prompt-file '<temp_file>'"));
+    }
+
+    #[test]
     fn test_format_command_for_debug_apple_intelligence() {
         let service = AiService::new();
         let cmd = service.format_command_for_debug(
@@ -1738,6 +1809,84 @@ mod tests {
         );
         assert!(cmd.contains("codex --disable hooks exec"));
         assert!(!cmd.contains("model_reasoning_effort"));
+    }
+
+    /// Grok: 一時ファイルとフラグ群が正しく組み立てられ、stdin を使わないこと
+    #[test]
+    fn test_build_provider_command_grok_uses_prompt_file() {
+        let service = AiService::new();
+        let prompt_file = TempFile::create_with_content(b"test").unwrap();
+
+        let (cmd, uses_stdin) = service
+            .build_provider_command(
+                &AiProvider::Grok,
+                &ProviderStep::from_provider("grok"),
+                "",
+                "test",
+                Some(&prompt_file),
+                None,
+            )
+            .unwrap();
+        let debug = format!("{:?}", cmd);
+
+        assert!(!uses_stdin, "grok は stdin を使わない (--prompt-file 経由)");
+        // 副作用抑制フラグが全て含まれる
+        assert!(debug.contains("\"--output-format\""));
+        assert!(debug.contains("\"plain\""));
+        assert!(debug.contains("\"--sandbox\""));
+        assert!(debug.contains("\"read-only\""));
+        assert!(debug.contains("\"--no-plan\""));
+        assert!(debug.contains("\"--no-memory\""));
+        assert!(debug.contains("\"--disable-web-search\""));
+        assert!(debug.contains("\"--max-turns\""));
+        assert!(debug.contains("\"--verbatim\""));
+        assert!(debug.contains("\"--prompt-file\""));
+        assert!(debug.contains(&prompt_file.path().to_string_lossy().to_string()));
+    }
+
+    /// Grok: モデル指定があれば `-m <model>` を付与すること
+    #[test]
+    fn test_build_provider_command_grok_passes_model() {
+        let mut service = AiService::new();
+        service.models.grok = "grok-4.5".to_string();
+        let prompt_file = TempFile::create_with_content(b"test").unwrap();
+
+        let (cmd, _) = service
+            .build_provider_command(
+                &AiProvider::Grok,
+                &ProviderStep::from_provider("grok"),
+                "grok-4.5",
+                "test",
+                Some(&prompt_file),
+                None,
+            )
+            .unwrap();
+        let debug = format!("{:?}", cmd);
+
+        assert!(debug.contains("\"-m\""));
+        assert!(debug.contains("\"grok-4.5\""));
+    }
+
+    /// Grok: モデル未指定(空)なら `-m` を付けないこと
+    #[test]
+    fn test_build_provider_command_grok_no_model_when_empty() {
+        let mut service = AiService::new();
+        service.models.grok = String::new();
+        let prompt_file = TempFile::create_with_content(b"test").unwrap();
+
+        let (cmd, _) = service
+            .build_provider_command(
+                &AiProvider::Grok,
+                &ProviderStep::from_provider("grok"),
+                "",
+                "test",
+                Some(&prompt_file),
+                None,
+            )
+            .unwrap();
+        let debug = format!("{:?}", cmd);
+
+        assert!(!debug.contains("\"-m\""));
     }
 
     #[test]

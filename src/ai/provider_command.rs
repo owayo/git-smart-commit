@@ -106,6 +106,28 @@ impl AiService {
                     opencode_model, file_display
                 )
             }
+            AiProvider::Grok => {
+                // grok は TUI エージェント CLI で subagent / plan / web-search / memory /
+                // sandbox 等の副作用機能がデフォルト有効。commit メッセージ生成は 1 ターン
+                // 純粋関数として扱いたいので、これらをすべて off にした上で `--prompt-file`
+                // 経由でプロンプトを渡す(引数長制限と cmd.exe メタ文字問題を回避)。
+                // --verbatim は「プロンプトを整形せずそのまま送る」フラグ。
+                let file_display = temp_file_path
+                    .and_then(|p| p.to_str())
+                    .map(|s| s.replace('\\', "/"))
+                    .unwrap_or_else(|| "<temp_file>".to_string());
+                let grok_model = if model.is_empty() {
+                    String::new()
+                } else {
+                    format!(" -m '{}'", model)
+                };
+                format!(
+                    "{env_prefix}{bin}{fixed_args} --output-format plain --sandbox read-only \
+                     --no-plan --no-memory --disable-web-search --max-turns 1 --verbatim{} \
+                     --prompt-file '{}'",
+                    grok_model, file_display
+                )
+            }
             AiProvider::AppleIntelligence => {
                 format!("echo '{}' | {env_prefix}{bin}", escaped_prompt)
             }
@@ -262,6 +284,45 @@ impl AiService {
                     if self.debug {
                         cmd.arg("--print-logs");
                     }
+                }
+                false
+            }
+            AiProvider::Grok => {
+                // grok --output-format plain --sandbox read-only --no-plan --no-memory
+                //   --disable-web-search --max-turns 1 --verbatim [-m <model>] --prompt-file <temp_file>
+                //
+                // grok は subagent / plan mode / cross-session memory / web search / tool 実行
+                // など副作用機能をデフォルトで持つ TUI エージェント CLI (cmux 同梱)。commit
+                // メッセージ生成は 1 ターンの純粋関数として扱いたいので:
+                //   --output-format plain: headless テキスト出力 (JSON/streaming ではない)
+                //   --sandbox read-only:   ファイル書き込み・ネットワークを禁止 (Codex と同じ発想)
+                //   --no-plan:             plan mode を無効 (単発応答で十分)
+                //   --no-memory:           前回セッションの memory を持ち込ませない (再現性)
+                //   --disable-web-search:  web fetch/search を無効
+                //   --max-turns 1:         1 ターンで打ち切り (tool ループを止める)
+                //   --verbatim:            プロンプトを CLI 側で加工させず送る
+                // プロンプトは `--prompt-file` で一時ファイル経由で渡す。`-p <PROMPT>` で
+                // diff を引数として渡すと OS の ARG_MAX や cmd.exe メタ文字問題に触れるため。
+                if let Some(tf) = temp_file {
+                    // Windows: バックスラッシュをフォワードスラッシュに正規化
+                    // cmd /C 経由や CLI ツール間でのパス受け渡しの互換性対策
+                    let path_str = tf.path().to_str().unwrap_or("").replace('\\', "/");
+                    cmd.args([
+                        "--output-format",
+                        "plain",
+                        "--sandbox",
+                        "read-only",
+                        "--no-plan",
+                        "--no-memory",
+                        "--disable-web-search",
+                        "--max-turns",
+                        "1",
+                        "--verbatim",
+                    ]);
+                    if !model.is_empty() {
+                        cmd.args(["-m", model]);
+                    }
+                    cmd.args(["--prompt-file", &path_str]);
                 }
                 false
             }

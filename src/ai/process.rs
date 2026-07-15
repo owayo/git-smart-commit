@@ -407,6 +407,23 @@ impl AiService {
                     .unwrap_or("opencode request failed")
                     .to_string()
             }
+            AiProvider::Grok => {
+                // grok CLI: clap 由来のエラーは `error:` プレフィックス、認証系は
+                // "You need to login" / "Rate limit" / "unauthorized" などが出やすい。
+                // まず error/failed を含む行を優先し、無ければ最初の非空行を返す。
+                for line in stderr.lines() {
+                    let trimmed = line.trim();
+                    let lower = trimmed.to_lowercase();
+                    if lower.contains("error") || lower.contains("failed") {
+                        return trimmed.to_string();
+                    }
+                }
+                stderr
+                    .lines()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("Grok CLI request failed")
+                    .to_string()
+            }
             AiProvider::AppleIntelligence => {
                 // apple-ai: "Error:" で始まる行を探す
                 for line in stderr.lines() {

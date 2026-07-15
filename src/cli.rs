@@ -11,11 +11,11 @@ pub enum Command {
     },
 }
 
-/// AI コーディングエージェントによるスマートコミットメッセージ生成ツール (Antigravity CLI, Codex CLI, Claude Code)
+/// AI コーディングエージェントによるスマートコミットメッセージ生成ツール (Antigravity CLI, Codex CLI, Claude Code, Grok CLI)
 #[derive(Parser, Debug)]
 #[command(name = "git-sc")]
 #[command(
-    about = "AI-powered smart commit message generator using coding agents (opencode, Antigravity CLI, Codex CLI, Claude Code, or Apple Intelligence)"
+    about = "AI-powered smart commit message generator using coding agents (opencode, Grok CLI, Antigravity CLI, Codex CLI, Claude Code, or Apple Intelligence)"
 )]
 #[command(version)]
 pub struct Cli {
@@ -67,7 +67,7 @@ pub struct Cli {
     #[arg(short = 'q', long = "quiet")]
     pub quiet: bool,
 
-    /// 使用するAIプロバイダーを指定 (例: antigravity, codex, claude, opencode, apple-intelligence)
+    /// 使用するAIプロバイダーを指定 (例: antigravity, codex, claude, opencode, grok, apple-intelligence)
     /// 旧名 "gemini" も後方互換のため受理し、"antigravity" として動作する
     #[arg(short = 'p', long = "provider")]
     pub provider: Option<String>,

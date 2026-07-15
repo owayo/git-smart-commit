@@ -25,6 +25,10 @@ pub struct ModelsConfig {
     pub claude: String,
     #[serde(default = "default_opencode_model")]
     pub opencode: String,
+    /// Grok CLI の `-m` に渡すモデル ID。`grok models` が表示する ID (例: "grok-4.5")
+    /// をそのまま指定する。空文字列なら `-m` を省略し grok 自身の既定モデルに委ねる。
+    #[serde(default = "default_grok_model")]
+    pub grok: String,
 }
 
 /// Antigravity CLI (`agy`) のデフォルトモデル。
@@ -50,6 +54,16 @@ fn default_opencode_model() -> String {
     String::new()
 }
 
+/// Grok CLI のデフォルトモデル。
+///
+/// grok CLI 0.2.x は現状 `grok-4.5` のみを提供している (`grok models` で確認)。
+/// 空文字列にすれば `-m` を省略し grok 自身の既定モデルに委ねられるため、将来 grok CLI が
+/// より安価なモデル (grok-4-fast 等) を追加してもユーザ側で追随できる。既定は
+/// CLI 側の変化を追わないよう空文字列 (= 委譲) とする。
+fn default_grok_model() -> String {
+    String::new()
+}
+
 impl Default for ModelsConfig {
     fn default() -> Self {
         Self {
@@ -57,6 +71,7 @@ impl Default for ModelsConfig {
             codex: default_codex_model(),
             claude: default_claude_model(),
             opencode: default_opencode_model(),
+            grok: default_grok_model(),
         }
     }
 }
@@ -311,6 +326,7 @@ struct PartialModelsConfig {
     pub codex: Option<String>,
     pub claude: Option<String>,
     pub opencode: Option<String>,
+    pub grok: Option<String>,
 }
 
 /// 設定ファイルからの部分読み込み用
@@ -351,6 +367,7 @@ impl PartialConfig {
                 codex: self.models.codex.unwrap_or(defaults.models.codex),
                 claude: self.models.claude.unwrap_or(defaults.models.claude),
                 opencode: self.models.opencode.unwrap_or(defaults.models.opencode),
+                grok: self.models.grok.unwrap_or(defaults.models.grok),
             },
             prefix_scripts: self.prefix_scripts.unwrap_or(defaults.prefix_scripts),
             prefix_rules: self.prefix_rules.unwrap_or(defaults.prefix_rules),
@@ -392,6 +409,9 @@ impl PartialConfig {
         }
         if let Some(opencode) = self.models.opencode {
             config.models.opencode = opencode;
+        }
+        if let Some(grok) = self.models.grok {
+            config.models.grok = grok;
         }
         if let Some(scripts) = self.prefix_scripts
             && !scripts.is_empty()
@@ -573,6 +593,7 @@ impl Default for Config {
     fn default() -> Self {
         let mut providers = vec![
             ProviderStep::from_provider("opencode"),
+            ProviderStep::from_provider("grok"),
             ProviderStep::from_provider("antigravity"),
             ProviderStep::from_provider("codex"),
             ProviderStep::from_provider("claude"),
@@ -745,17 +766,17 @@ impl Config {
         let codex_model = default_codex_model();
         let antigravity_model = default_antigravity_model();
         let providers = if cfg!(all(target_os = "macos", feature = "apple-ai")) {
-            r#"providers = ["opencode", "antigravity", "codex", "claude", "apple-intelligence"]"#
+            r#"providers = ["opencode", "grok", "antigravity", "codex", "claude", "apple-intelligence"]"#
         } else {
-            r#"providers = ["opencode", "antigravity", "codex", "claude"]"#
+            r#"providers = ["opencode", "grok", "antigravity", "codex", "claude"]"#
         };
 
         let apple_ai_available = if cfg!(all(target_os = "macos", feature = "apple-ai")) {
-            r#"# 使用可能: "opencode", "antigravity", "codex", "claude", "apple-intelligence"
+            r#"# 使用可能: "opencode", "grok", "antigravity", "codex", "claude", "apple-intelligence"
 # "antigravity" は旧 Gemini CLI の後継 (`agy`)。"gemini" と書いても同じプロバイダーとして扱う
 # "apple-intelligence" には macOS 26+ と Apple Silicon が必要"#
         } else {
-            r#"# 使用可能: "opencode", "antigravity", "codex", "claude"
+            r#"# 使用可能: "opencode", "grok", "antigravity", "codex", "claude"
 # "antigravity" は旧 Gemini CLI の後継 (`agy`)。"gemini" と書いても同じプロバイダーとして扱う"#
         };
 
@@ -793,11 +814,14 @@ codex_reasoning_effort = "low"
 # Antigravity CLI (`agy`) は `--model` に対応。`agy models` の表示名をそのまま指定する
 # (空文字列なら agy 既定モデルに委ねる)。旧 `gemini = "..."` キーは後方互換で
 # antigravity に昇格して扱われる。
+# Grok CLI は `-m` に対応。`grok models` の ID (例: "grok-4.5") をそのまま指定する
+# (空文字列なら grok 既定モデルに委ねる)。
 [models]
 antigravity = "{antigravity_model}"
 codex = "{codex_model}"
 claude = "haiku"
 opencode = ""
+grok = ""
 
 # プレフィックススクリプト（上から順に実行し、最初の一致を使用）
 # スクリプト引数: remote_url, branch_name
@@ -917,6 +941,9 @@ impl Config {
         if other.models.opencode != ModelsConfig::default().opencode {
             self.models.opencode = other.models.opencode;
         }
+        if other.models.grok != ModelsConfig::default().grok {
+            self.models.grok = other.models.grok;
+        }
 
         // provider_cooldown_minutes: デフォルトでなければ上書き
         if other.provider_cooldown_minutes != default_provider_cooldown_minutes() {
@@ -947,6 +974,7 @@ mod tests {
 
         let mut expected_providers = vec![
             ProviderStep::from_provider("opencode"),
+            ProviderStep::from_provider("grok"),
             ProviderStep::from_provider("antigravity"),
             ProviderStep::from_provider("codex"),
             ProviderStep::from_provider("claude"),
@@ -2082,6 +2110,7 @@ gemini = "gemini-2.5-pro"
                 codex: "gpt-5".to_string(),
                 claude: "opus".to_string(),
                 opencode: "custom".to_string(),
+                grok: "grok-custom".to_string(),
             },
             prefix_scripts: vec![PrefixScriptConfig {
                 url_pattern: "github".to_string(),
@@ -2236,6 +2265,7 @@ prefix_type = "conventional"
                 codex: "old-codex".to_string(),
                 claude: "old-claude".to_string(),
                 opencode: "old-opencode".to_string(),
+                grok: "old-grok".to_string(),
             },
             ..Default::default()
         };
@@ -2266,6 +2296,7 @@ gemini = "gemini-2.5-pro"
                 codex: "old-codex".to_string(),
                 claude: "old-claude".to_string(),
                 opencode: "old-opencode".to_string(),
+                grok: "old-grok".to_string(),
             },
             ..Default::default()
         };

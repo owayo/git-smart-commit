@@ -115,7 +115,7 @@ impl App {
         if let Some(ref provider_name) = cli.provider {
             let provider = AiProvider::from_str(provider_name).ok_or_else(|| {
                 AppError::InvalidArgument(format!(
-                    "Unknown provider '{}'. Valid providers: antigravity (alias: agy, gemini), codex, claude, opencode, apple-intelligence",
+                    "Unknown provider '{}'. Valid providers: antigravity (alias: agy, gemini), codex, claude, opencode, grok, apple-intelligence",
                     provider_name
                 ))
             })?;
@@ -219,6 +219,15 @@ impl App {
             }
         ));
         emit(format!("  models.claude: {}", config.models.claude));
+        // grok モデルは grok の `-m` に渡される。空文字列なら grok 既定に委ねる。
+        emit(format!(
+            "  models.grok: {}",
+            if config.models.grok.is_empty() {
+                "(grok default)".to_string()
+            } else {
+                config.models.grok.clone()
+            }
+        ));
         emit(format!("  prefix_type: {:?}", config.prefix_type));
         emit(format!("  auto_push: {:?}", config.auto_push));
         emit(format!("  nano_buddy: {}", config.nano_buddy));
