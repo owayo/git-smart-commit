@@ -270,9 +270,12 @@ codex_reasoning_effort = "low"
 
 # Model configuration
 # Antigravity CLI (`agy`) supports `--model`: the `antigravity` value is passed straight
-# to `agy --model "<name>"`. Use the display name shown by `agy models`
-# (e.g. "GPT-OSS 120B (Medium)", "Gemini 3.5 Flash (Low)"); an empty string omits
-# `--model` and lets agy pick its own default. A legacy `gemini = "..."` key is still
+# to `agy --model "<name>"`. Either spelling works — the display name
+# (e.g. "GPT-OSS 120B (Medium)", "Gemini 3.5 Flash (Low)") or the slug
+# (e.g. "gpt-oss-120b-medium", "gemini-3.5-flash-low"). Which one `agy models` prints
+# varies by agy version (1.0.x: display names, 1.1.10: slugs). An unknown name is
+# rejected with a non-zero exit rather than silently falling back, so a typo just
+# fails the step. An empty string omits `--model` and lets agy pick its own default. A legacy `gemini = "..."` key is still
 # accepted as an input alias and is promoted to `antigravity` (an explicit `antigravity`
 # value wins if both are present).
 [models]
@@ -305,7 +308,7 @@ provider_timeout_seconds = 60
 
 Existing global config files are not rewritten automatically. The current Codex default is `gpt-5.4-mini`; to use it in an existing setup, update `models.codex` in `~/.config/git-sc/config.toml`. This default was reselected on June 9, 2026 (JST) by comparing `input_tokens` for Codex models that are API-visible, listed, and support `medium` reasoning, and re-verified on June 29, 2026 (JST). The latest measurement used `Reply ok.` in an empty directory with `--ignore-user-config --ignore-rules --ephemeral --sandbox read-only` and `model_reasoning_effort='medium'`: `gpt-5.5` = 17593, `gpt-5.4` = 16206, `gpt-5.4-mini` = 15856. All accepted runs produced `ok` and no tool calls, so the ranking is stable and the default is unchanged.
 
-The default Antigravity (`agy`) model is `GPT-OSS 120B (Medium)`. `agy` 1.0.x print mode currently exposes no official `--json` / `--output` option for per-request token usage, so an `input_tokens` comparison like Codex's is not possible. Re-verified June 29, 2026 (JST) with `agy` 1.0.13: `agy models` lists `Gemini 3.5 Flash (Medium/High/Low)`, `Gemini 3.1 Pro (Low/High)`, `Claude Sonnet 4.6 (Thinking)`, `Claude Opus 4.6 (Thinking)`, and `GPT-OSS 120B (Medium)` — unchanged from the June 26, 2026 candidate set. Google Cloud Agent Platform pricing lists `gpt-oss-120b` at $0.09 / 1M input tokens, lower than the listed Gemini and Claude alternatives, so this remains the lowest input-price default among the CLI-provided models. To use it in an existing setup, add or update `models.antigravity` in `~/.config/git-sc/config.toml`, or set it to `""` to defer to agy's own default.
+The default Antigravity (`agy`) model is `GPT-OSS 120B (Medium)`, chosen by measurement. `agy` 1.1.10 added `--output-format json` to print mode, which reports a per-request `usage` object, so the same `input_tokens` comparison used for Codex is now possible (earlier agy releases had no machine-readable usage output, and this default originally rested on published pricing instead). Measured August 4, 2026 (JST) with `agy` 1.1.10 using the fixed prompt `Reply ok.` in an empty directory: `gpt-oss-120b-medium` = 13680, `gemini-3.5-flash-medium` = 16994, `gemini-3.5-flash-low` = 16998, `gemini-3.1-pro-low` = 17684, `gemini-3.6-flash-low` = 18175, `gemini-3.6-flash-medium` = 18176, `claude-sonnet-4-6` = 19346. All runs succeeded in a single turn, and `gpt-oss-120b-medium` is the minimum by roughly 19%, so it remains the default. This measures minimal per-request overhead only and says nothing about real-workload quality. To use it in an existing setup, add or update `models.antigravity` in `~/.config/git-sc/config.toml`, or set it to `""` to defer to agy's own default.
 
 Provider cooldown state normalizes legacy aliases before reordering providers, so `gemini`/`agy` cooldown entries still apply to `antigravity`, and legacy `apple-ai` / `apple_intelligence` entries still apply to `apple-intelligence`. Running with `--debug` also prints a one-time notice when a legacy `gemini` provider alias is found in your config, reminding you that it is normalized to `antigravity`.
 

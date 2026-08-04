@@ -15,7 +15,11 @@ use crate::error::AppError;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelsConfig {
     /// Antigravity CLI (`agy`) の `--model` に渡すモデル名。
-    /// `agy models` が表示する名前(例: "GPT-OSS 120B (Medium)")をそのまま指定する。
+    /// 表示名(例: "GPT-OSS 120B (Medium)")と slug(例: "gpt-oss-120b-medium")の
+    /// どちらでも受理される。`agy models` がどちらを出力するかは agy のバージョンで
+    /// 変わる(1.0.x = 表示名 / 1.1.10 = slug)ので、どちらか一方だけが正しいと
+    /// 仮定しないこと。未知の名前は agy が非ゼロ終了で明示的に弾くため、
+    /// 打ち間違いは既定モデルへの暗黙フォールバックではなくステップ失敗になる。
     /// 空文字列なら `--model` を省略し agy 自身の既定モデルに委ねる。
     #[serde(default = "default_antigravity_model")]
     pub antigravity: String,
@@ -33,11 +37,13 @@ pub struct ModelsConfig {
 
 /// Antigravity CLI (`agy`) のデフォルトモデル。
 ///
-/// agy 1.0.x の print mode にはトークン使用量(input_tokens)を機械的に出力する
-/// `--json`/`--output` 等の公式オプションが無いため、Codex のような実測比較はできない。
-/// `agy` には usage/token の機械可読出力がないため、公式の Agent Platform 価格で比較する。
-/// agy が提供するモデル中では GPT-OSS-120b の入力単価が最小だったため、2026-06-29 (JST) に維持した。
-/// `agy models` の表示名をそのまま使う。空文字列にすれば agy 自身の既定に委ねられる。
+/// agy 1.1.10 で print mode に `--output-format json` が追加され、1 リクエストごとの
+/// `usage` (input_tokens 等) が取れるようになったため、Codex と同じ実測比較が可能になった
+/// (それ以前は機械可読な使用量出力が無く、公開価格による比較に頼っていた)。
+/// 2026-08-04 (JST) に固定プロンプト `Reply ok.` で実測: gpt-oss-120b-medium = 13680 が最小で、
+/// 次点 gemini-3.5-flash-medium = 16994 に約 19% の差をつけたため既定として維持する。
+/// 詳細な計測値と候補一覧は AGENTS.md の "Default Antigravity (`agy`) model note" を参照。
+/// 表示名・slug のどちらでも受理される。空文字列にすれば agy 自身の既定に委ねられる。
 fn default_antigravity_model() -> String {
     "GPT-OSS 120B (Medium)".to_string()
 }

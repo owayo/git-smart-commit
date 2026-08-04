@@ -269,8 +269,12 @@ codex_reasoning_effort = "low"
 
 # モデル設定
 # Antigravity CLI (`agy`) は `--model` に対応。`antigravity` の値はそのまま
-# `agy --model "<名前>"` に渡されます。`agy models` が表示する名前
-# (例: "GPT-OSS 120B (Medium)"、"Gemini 3.5 Flash (Low)") をそのまま指定してください。
+# `agy --model "<名前>"` に渡されます。表示名 (例: "GPT-OSS 120B (Medium)"、
+# "Gemini 3.5 Flash (Low)") と slug (例: "gpt-oss-120b-medium"、
+# "gemini-3.5-flash-low") のどちらでも指定できます。`agy models` がどちらを表示するかは
+# agy のバージョンで変わります (1.0.x は表示名、1.1.10 は slug)。未知の名前は
+# 非ゼロ終了で明示的に弾かれ、既定モデルへ黙って落ちることはないため、
+# 打ち間違いはそのステップの失敗として現れます。
 # 空文字列なら `--model` を省略し agy 自身の既定モデルに委ねます。
 # 旧 `gemini = "..."` キーは後方互換の入力エイリアスとして受理され、`antigravity` に
 # 昇格します(両方指定した場合は `antigravity` が優先)。
@@ -304,7 +308,7 @@ provider_timeout_seconds = 60
 
 既存のグローバル設定ファイルは自動では書き換えられません。現在の Codex 既定モデルは `gpt-5.4-mini` です。既存設定で使うには、`~/.config/git-sc/config.toml` の `models.codex` を更新してください。この既定値は、API で利用可能・一覧表示対象・`medium` reasoning 対応の Codex モデルについて `input_tokens` を比較し、2026年6月9日 (JST) に再選定し、2026年6月29日 (JST) に再確認したものです。最新計測は空ディレクトリで `Reply ok.` を使い、`--ignore-user-config --ignore-rules --ephemeral --sandbox read-only` と `model_reasoning_effort='medium'` を指定しました: `gpt-5.5` = 17593、`gpt-5.4` = 16206、`gpt-5.4-mini` = 15856。採用した試行はいずれも最終出力が `ok` で、ツール呼び出しはありません。ランキングは安定しているため既定値は変更ありません。
 
-Antigravity (`agy`) の既定モデルは `GPT-OSS 120B (Medium)` です。`agy` 1.0.x の print mode には現状、1リクエストのトークン使用量を出力する公式の `--json` / `--output` オプションがないため、Codex のような `input_tokens` 実測比較はできません。2026年6月29日 (JST) に `agy` 1.0.13 で再確認した `agy models` は `Gemini 3.5 Flash (Medium/High/Low)`、`Gemini 3.1 Pro (Low/High)`、`Claude Sonnet 4.6 (Thinking)`、`Claude Opus 4.6 (Thinking)`、`GPT-OSS 120B (Medium)` で、2026年6月26日時点の候補と同一でした。Google Cloud Agent Platform 価格では `gpt-oss-120b` が入力 $0.09 / 100万トークンで、表示されている Gemini / Claude 系の代替より低いため、入力単価が最も低い既定値として維持します。既存設定で使うには `~/.config/git-sc/config.toml` の `models.antigravity` を追加・更新するか、`""` を指定して agy 自身の既定に委ねてください。
+Antigravity (`agy`) の既定モデルは `GPT-OSS 120B (Medium)` で、実測に基づいて選定しています。`agy` 1.1.10 で print mode に `--output-format json` が追加され、1リクエストごとの `usage` が取得できるようになったため、Codex と同じ `input_tokens` 比較が可能になりました (それ以前の agy には機械可読な使用量出力がなく、この既定値は公開価格を根拠にしていました)。2026年8月4日 (JST) に `agy` 1.1.10 で、空ディレクトリ・固定プロンプト `Reply ok.` で実測した結果: `gpt-oss-120b-medium` = 13680、`gemini-3.5-flash-medium` = 16994、`gemini-3.5-flash-low` = 16998、`gemini-3.1-pro-low` = 17684、`gemini-3.6-flash-low` = 18175、`gemini-3.6-flash-medium` = 18176、`claude-sonnet-4-6` = 19346。いずれも1ターンで成功し、`gpt-oss-120b-medium` が約19%差で最小だったため既定値を維持します。これは1リクエストあたりの最小オーバーヘッドの比較であり、実作業での品質を保証するものではありません。既存設定で使うには `~/.config/git-sc/config.toml` の `models.antigravity` を追加・更新するか、`""` を指定して agy 自身の既定に委ねてください。
 
 プロバイダーのクールダウン状態は、並び替え前に旧エイリアスを正規化します。そのため `gemini`/`agy` のクールダウンは `antigravity` に、旧 `apple-ai` / `apple_intelligence` キーは `apple-intelligence` に引き続き適用されます。`--debug` 付きで実行すると、設定の providers に旧 `gemini` エイリアスが残っている場合に「`antigravity` に正規化される」旨の注意が一度だけ表示されます。
 
