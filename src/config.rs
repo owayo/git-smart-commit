@@ -113,6 +113,16 @@ pub struct ProviderStep {
     /// ai-usage は残量経路の管理で独立して機能させるため)。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_usage_profile: Option<String>,
+    /// ai-usage --json の `group_label` と照合するモデル系統名(任意)。大文字小文字は無視する。
+    ///
+    /// 1 アカウントの残量が「モデル系統ごとの別プール」に分かれている provider 用。
+    /// 例: Antigravity は同じ profile に対して `group_label = "Gemini"` と
+    /// `"Claude&GPT"` の 2 行を返し、両者は独立した週次プールなので、Gemini 側が
+    /// 100% でも GPT-OSS 側は使える。これを指定しないと同一 profile の複数行を
+    /// 区別できず、片方の枯渇でもう片方まで chain から外れてしまう。
+    /// `ai_usage_profile` と同じ理由で cooldown_key には含めない。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_usage_group: Option<String>,
 }
 
 impl ProviderStep {
@@ -125,6 +135,7 @@ impl ProviderStep {
             env: BTreeMap::new(),
             name: None,
             ai_usage_profile: None,
+            ai_usage_group: None,
         }
     }
 
@@ -203,6 +214,8 @@ impl<'de> Deserialize<'de> for ProviderStep {
             name: Option<String>,
             #[serde(default)]
             ai_usage_profile: Option<String>,
+            #[serde(default)]
+            ai_usage_group: Option<String>,
         }
 
         struct StepVisitor;
@@ -229,6 +242,7 @@ impl<'de> Deserialize<'de> for ProviderStep {
                     env: raw.env,
                     name: raw.name.filter(|n| !n.trim().is_empty()),
                     ai_usage_profile: raw.ai_usage_profile.filter(|p| !p.trim().is_empty()),
+                    ai_usage_group: raw.ai_usage_group.filter(|g| !g.trim().is_empty()),
                 })
             }
         }
@@ -869,6 +883,11 @@ grok = ""
 # 一意に照合される。省略時は「同一 provider の中で残量が最も多い account」を
 # 自動採用する。
 #
+# 1 アカウントの残量がモデル系統ごとに別プールになっている provider (Antigravity は
+# `group_label = "Gemini"` と `"Claude&GPT"` の 2 行が返り、別々の週次枠) では
+# `ai_usage_group` でどの系統を見るか指定する。指定しないと片方の枯渇でもう片方の
+# step まで chain から外れる。大文字小文字は区別しない。
+#
 # [ai_usage]
 # enabled = true                          # false または省略で連携無効
 # command = ["ai-usage", "--json"]        # 起動コマンド。ラッパー可
@@ -883,7 +902,11 @@ grok = ""
 #      env = {{ CODEX_HOME = "~/.codex-home" }} }},
 #   {{ provider = "claude", ai_usage_profile = "Work",
 #      env = {{ CLAUDE_CONFIG_DIR = "~/.claude" }} }},
-#   "antigravity",  # profile 未指定は auto-select (最も残量が多い account を採用)
+#   {{ provider = "antigravity", model = "GPT-OSS 120B (Medium)",
+#      ai_usage_group = "Claude&GPT" }},   # Gemini 系が枯れてもこの系統は使える
+#   {{ provider = "antigravity", model = "Gemini 3.5 Flash (Low)",
+#      ai_usage_group = "Gemini" }},
+#   "opencode",  # profile 未指定は auto-select (最も残量が多い account を採用)
 # ]
 "#
         )
@@ -2597,6 +2620,57 @@ providers = [
         let config =
             Config::from_str(r#"providers = [{ provider = "codex", model = "" }]"#).unwrap();
         assert_eq!(config.providers[0].model, None);
+    }
+
+    #[test]
+    fn test_provider_step_parse_ai_usage_profile_and_group() {
+        // ai-usage 連携用の 2 フィールド。group は「同一 profile でモデル系統ごとに
+        // 残量プールが分かれる provider」(Antigravity) を撃ち分けるために使う。
+        let toml = r#"
+providers = [
+  { provider = "antigravity", model = "GPT-OSS 120B (Medium)",
+    ai_usage_profile = "Antigravity", ai_usage_group = "Claude&GPT" },
+  { provider = "antigravity", model = "Gemini 3.5 Flash (Low)",
+    ai_usage_profile = "Antigravity", ai_usage_group = "Gemini" },
+]
+"#;
+        let config = Config::from_str(toml).unwrap();
+        assert_eq!(
+            config.providers[0].ai_usage_profile.as_deref(),
+            Some("Antigravity")
+        );
+        assert_eq!(
+            config.providers[0].ai_usage_group.as_deref(),
+            Some("Claude&GPT")
+        );
+        assert_eq!(
+            config.providers[1].ai_usage_group.as_deref(),
+            Some("Gemini")
+        );
+        // 同一 provider + 同一 profile でも model が違えば cooldown キーは独立
+        assert_ne!(
+            config.providers[0].cooldown_key(),
+            config.providers[1].cooldown_key()
+        );
+    }
+
+    #[test]
+    fn test_provider_step_blank_ai_usage_group_is_none() {
+        // 空文字/空白のみは「系統を問わない」= None 扱い
+        let config = Config::from_str(
+            r#"providers = [{ provider = "antigravity", ai_usage_group = "   " }]"#,
+        )
+        .unwrap();
+        assert_eq!(config.providers[0].ai_usage_group, None);
+    }
+
+    #[test]
+    fn test_provider_step_ai_usage_group_not_in_cooldown_key() {
+        // ai_usage_group は残量ゲート側の関心事。cooldown(失敗ゲート)キーには含めない。
+        let plain = ProviderStep::from_provider("antigravity");
+        let mut grouped = ProviderStep::from_provider("antigravity");
+        grouped.ai_usage_group = Some("Gemini".to_string());
+        assert_eq!(plain.cooldown_key(), grouped.cooldown_key());
     }
 
     // ============================================================

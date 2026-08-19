@@ -252,13 +252,23 @@ impl AiService {
         (kept, notes, gate_blocked)
     }
 
-    /// ai-usage debug 表示用の 1 行ラベル(provider + profile 明示 + account hint)。
+    /// ai-usage debug 表示用の 1 行ラベル(provider + profile/group 明示 + account hint)。
+    ///
+    /// group まで出すのは、同一 profile の複数 step (Antigravity のモデル系統別プール等) を
+    /// debug 出力で見分けられるようにするため。
     fn step_debug_label(step: &ProviderStep) -> String {
         let mut label = step.provider.clone();
+        let mut parts: Vec<String> = Vec::new();
         if let Some(profile) = step.ai_usage_profile.as_deref() {
-            label.push_str(&format!("(profile={profile})"));
+            parts.push(format!("profile={profile}"));
         } else if let Some(hint) = step.account_hint() {
-            label.push_str(&format!("(env={hint})"));
+            parts.push(format!("env={hint}"));
+        }
+        if let Some(group) = step.ai_usage_group.as_deref() {
+            parts.push(format!("group={group}"));
+        }
+        if !parts.is_empty() {
+            label.push_str(&format!("({})", parts.join(", ")));
         }
         label
     }
@@ -4331,6 +4341,26 @@ mod tests {
         assert!(label.contains(".codex-work"), "label: {label}");
     }
 
+    #[test]
+    fn test_step_debug_label_distinguishes_ai_usage_group() {
+        // 同一 profile の 2 step (Antigravity のモデル系統別プール) を debug 出力で
+        // 見分けられること。group が出ないと 2 行が同一ラベルになり判定を追えない。
+        let mut gemini = ProviderStep::from_provider("antigravity");
+        gemini.ai_usage_profile = Some("Antigravity".to_string());
+        gemini.ai_usage_group = Some("Gemini".to_string());
+        let label = AiService::step_debug_label(&gemini);
+        assert!(label.contains("profile=Antigravity"), "label: {label}");
+        assert!(label.contains("group=Gemini"), "label: {label}");
+
+        // group 未指定なら従来どおり profile / env のみ
+        let mut plain = ProviderStep::from_provider("codex");
+        plain
+            .env
+            .insert("CODEX_HOME".to_string(), "/home/u/.codex-work".to_string());
+        let label = AiService::step_debug_label(&plain);
+        assert_eq!(label, "codex(env=.codex-work)");
+    }
+
     // ============================================================
     // ai-usage 全 step 除外時の gate 挙動テスト
     // ============================================================
@@ -4340,6 +4370,7 @@ mod tests {
         AiUsageAccount {
             profile: profile.to_string(),
             provider: provider.to_string(),
+            group_label: None,
             ok: true,
             weekly: Some(UsageWindowData {
                 used_percent: Some(used),
