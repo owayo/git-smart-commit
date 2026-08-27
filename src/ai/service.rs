@@ -928,6 +928,33 @@ mod tests {
         );
     }
 
+    /// プロンプトは応答を `<commit></commit>` で囲むよう指示する(打ち切り対策)。
+    /// この 1 行が応答の終端を明示することで、実測の打ち切り率が 32% から 0% に落ちる。
+    /// 具体例 (`e.g. <commit>fix: …</commit>`) は付けない — 付けると空応答が 16% 発生し、
+    /// Apple Intelligence の on-device モデルは例示をそのまま返す性質がある。
+    #[rstest]
+    #[case(false)]
+    #[case(true)]
+    fn test_build_prompt_requests_commit_tags(#[case] with_body: bool) {
+        let recent_commits: Vec<String> = vec![];
+        let prompt = AiService::build_prompt(
+            "test diff",
+            &recent_commits,
+            "Japanese",
+            None,
+            with_body,
+            None,
+        );
+        assert!(
+            prompt.contains("- Output the commit message wrapped in <commit></commit> tags"),
+            "prompt should ask for <commit> tags (with_body={with_body})"
+        );
+        assert!(
+            !prompt.contains("e.g. <commit>"),
+            "prompt must not include a concrete tag example (with_body={with_body})"
+        );
+    }
+
     #[test]
     fn test_build_prompt_custom_prefix() {
         let diff = "test diff";
@@ -1140,6 +1167,61 @@ mod tests {
     #[test]
     fn test_clean_message_empty() {
         assert_eq!(AiService::clean_message(""), "");
+    }
+
+    /// `<commit>` タグの取り出し。指示に従わないモデルもあるため、
+    /// 片側だけ・タグ無しでも本文が壊れないことを固定する。
+    #[rstest]
+    #[case("<commit>feat: 機能を追加</commit>", "feat: 機能を追加")]
+    // 閉じタグが欠けている(まさに打ち切られた応答)
+    #[case("<commit>feat: 機能を追加", "feat: 機能を追加")]
+    // 閉じタグの生成途中で終わった応答。実測で `…追加</` が commit message に混入した
+    #[case("<commit>ci: CIワークフローを追加</", "ci: CIワークフローを追加")]
+    #[case("<commit>feat: 機能を追加</commit", "feat: 機能を追加")]
+    #[case("<commit>feat: 機能を追加</c", "feat: 機能を追加")]
+    // 本文が `<` で終わるケースは 1 文字なので削らない(本文の一部でありうる)
+    #[case("<commit>fix: a <", "fix: a <")]
+    // 開始タグが欠けている
+    #[case("feat: 機能を追加</commit>", "feat: 機能を追加")]
+    // タグを出さないモデルの応答はそのまま通す
+    #[case("feat: 機能を追加", "feat: 機能を追加")]
+    // タグの外側に前置きを付けてきた場合も本文だけ取れる
+    #[case(
+        "Here is the message:\n<commit>feat: 機能を追加</commit>",
+        "feat: 機能を追加"
+    )]
+    // 本文が複数行(--body 指定時)でも維持される
+    #[case(
+        "<commit>feat: 機能を追加\n\n- 詳細1\n- 詳細2</commit>",
+        "feat: 機能を追加\n\n- 詳細1\n- 詳細2"
+    )]
+    // タグ内外の余分な空白は落とす
+    #[case("<commit>\n  feat: 機能を追加\n</commit>", "feat: 機能を追加")]
+    // 閉じタグが開始タグより前にある異常な並びは加工しない
+    #[case(
+        "</commit>feat: 機能を追加<commit>",
+        "</commit>feat: 機能を追加<commit>"
+    )]
+    #[case("", "")]
+    fn test_strip_commit_tags(#[case] input: &str, #[case] expected: &str) {
+        assert_eq!(
+            AiService::strip_commit_tags(input),
+            expected,
+            "input: {input:?}"
+        );
+    }
+
+    /// clean_message 経由でもタグが外れること(コードフェンスとの併用を含む)
+    #[test]
+    fn test_clean_message_strips_commit_tags() {
+        assert_eq!(
+            AiService::clean_message("<commit>feat: 機能を追加</commit>"),
+            "feat: 機能を追加"
+        );
+        assert_eq!(
+            AiService::clean_message("```\n<commit>feat: 機能を追加</commit>\n```"),
+            "feat: 機能を追加"
+        );
     }
 
     /// 打ち切り検出。真陽性は agy 1.1.21 + GPT-OSS 120B (Medium) が exit 0 で返した応答と、

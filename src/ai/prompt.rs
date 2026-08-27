@@ -112,7 +112,7 @@ Instructions:
 - Do NOT end with a period or any punctuation (no ".", "。", etc.)
 - Do NOT use past tense or polite/formal endings (no "しました", "ました", "した", "です", etc.)
 - Use short, direct noun phrases or imperative form (e.g., "追加", "修正", "変更", NOT "追加しました", "修正した")
-- Output ONLY the commit message as plain text
+- Output the commit message wrapped in <commit></commit> tags
 - Do NOT use any markdown formatting (no **, *, `, #, etc.)
 - Do NOT include any explanation, reasoning, or thinking process
 - Do NOT write phrases like "I will...", "Let me...", "Based on...", "Here is..."
@@ -140,6 +140,9 @@ Instructions:
             message.to_string()
         };
 
+        // <commit>...</commit> で囲まれている場合は中身を取り出す
+        let message = Self::strip_commit_tags(&message);
+
         // 先頭と末尾の引用符がある場合は削除
         let message = message.trim_matches('"').trim_matches('\'');
 
@@ -147,6 +150,50 @@ Instructions:
 
         // 件名と本文の間に空行を保証
         Self::ensure_body_separator(&message)
+    }
+
+    /// `<commit>...</commit>` で囲まれた本文を取り出す
+    ///
+    /// プロンプトはコミットメッセージをこのタグで囲むよう指示している(応答の打ち切り対策。
+    /// 終端が明示されると生成が安定する)。ただし指示に従わないモデルもあるため、
+    /// 片側しか無い場合・まったく無い場合もそのまま通す寛容な実装にする。
+    pub(super) fn strip_commit_tags(message: &str) -> String {
+        const OPEN: &str = "<commit>";
+        const CLOSE: &str = "</commit>";
+
+        let body = match (message.find(OPEN), message.rfind(CLOSE)) {
+            // 通常形。開始タグの後ろから閉じタグの手前まで
+            (Some(start), Some(end)) if start + OPEN.len() <= end => {
+                &message[start + OPEN.len()..end]
+            }
+            // 閉じタグが開始タグより前にある異常な並びは加工しない
+            (Some(_), Some(_)) => message,
+            // 閉じタグが完全な形で無い。応答が閉じタグの途中で終わることが実際にあり
+            // (実測: `<commit>ci: CIワークフローを追加</`)、そのままだと `</` が
+            // コミットメッセージ末尾に残るため、閉じタグの断片を落としてから採用する。
+            // 本文自体が途中で切れていれば is_truncated_subject が弾く
+            (Some(start), None) => Self::trim_partial_close_tag(&message[start + OPEN.len()..]),
+            // 開始タグだけ欠けている
+            (None, Some(end)) => &message[..end],
+            (None, None) => message,
+        };
+
+        body.trim().to_string()
+    }
+
+    /// 末尾に残った `</commit>` の書きかけを取り除く
+    ///
+    /// 応答が閉じタグの生成途中で終わると `…追加</` `…追加</commi` のような断片が残る。
+    /// 2 文字以上一致した場合だけ落とす(`<` 一文字は本文の一部でありうるため)。
+    fn trim_partial_close_tag(body: &str) -> &str {
+        const CLOSE: &str = "</commit>";
+        let trimmed = body.trim_end();
+        for len in (2..CLOSE.len()).rev() {
+            if trimmed.ends_with(&CLOSE[..len]) {
+                return &trimmed[..trimmed.len() - len];
+            }
+        }
+        body
     }
 
     /// 件名が文の途中で打ち切られているかを判定する
