@@ -69,6 +69,7 @@ impl AiService {
             r#"
 Structure:
 - First line: Subject line (concise summary, ideally under 72 characters)
+- The subject line must contain exactly ONE commit message with ONE prefix. Never combine several messages on it
 - Second line: Empty (blank line)
 - Third line onwards: Body with bullet points describing key changes
 
@@ -81,6 +82,7 @@ Body Guidelines:
             r#"
 Rules:
 - Write only a single line (no multi-line message)
+- Write exactly ONE commit message with ONE prefix. Never combine several messages on the line
 - Keep it concise (ideally under 72 characters)"#
         };
 
@@ -194,6 +196,44 @@ Instructions:
             }
         }
         body
+    }
+
+    /// 件名に複数のコミットメッセージが連結されているかを判定する
+    ///
+    /// 「1 行で書け」という制約は守りつつ、複数の変更をまとめて表現しようとして
+    /// `ci: CI設定追加 docs: README更新 build: mise.toml追加` のように 1 行へ
+    /// 複数のメッセージを詰め込むことがある。コミットの件名としては壊れているので
+    /// 打ち切りと同じく引き直す。
+    ///
+    /// 判定は Conventional Commits の標準 type が 2 つ以上現れた場合だけに限る。
+    /// 任意の `語:` を数える緩い条件は、`docs(memory): … trust but verify: …` のような
+    /// 正常な件名を巻き込む(実在するコミット履歴 9139 件で 5 件の誤検出)。標準 type に
+    /// 絞ると同じ履歴で誤検出は 0 件だった。
+    pub(super) fn is_concatenated_subject(subject: &str) -> bool {
+        const CONVENTIONAL_TYPES: [&str; 11] = [
+            "feat", "fix", "docs", "style", "refactor", "perf", "test", "build", "ci", "chore",
+            "revert",
+        ];
+
+        let count = subject
+            .split_whitespace()
+            .filter(|token| {
+                // `type:` / `type(scope):` / `type!:` の形をした語だけを数える。
+                // 末尾がコロンであることを要求するので、`http://…` のような
+                // 文中の URL や `観点 B:` のような注釈は数えない。
+                let Some(head) = token.strip_suffix(':') else {
+                    return false;
+                };
+                let head = head.strip_suffix('!').unwrap_or(head);
+                let base = match (head.find('('), head.ends_with(')')) {
+                    (Some(paren), true) => &head[..paren],
+                    _ => head,
+                };
+                CONVENTIONAL_TYPES.contains(&base.to_ascii_lowercase().as_str())
+            })
+            .count();
+
+        count >= 2
     }
 
     /// 件名が文の途中で打ち切られているかを判定する

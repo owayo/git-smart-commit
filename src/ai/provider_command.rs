@@ -204,6 +204,13 @@ impl AiService {
             cmd.env(key, value);
         }
 
+        // AI CLI とその子プロセスへ「git-sc の内側で動いている」ことを伝える。
+        // AI CLI はコーディングエージェントでもあるため自身の stop hook を発火させ、
+        // そこに git-sc が登録されていると再帰起動されて意図しないコミットが起きる
+        // (詳細は main.rs の NESTED_ENV_KEY を参照)。設定ミスで無効化されないよう、
+        // ユーザー指定の env より後に設定する。
+        cmd.env(crate::NESTED_ENV_KEY, "1");
+
         // プロバイダー固有の引数を追加
         // model が空文字列の場合、モデルパラメータを省略する
         let uses_stdin = match provider {

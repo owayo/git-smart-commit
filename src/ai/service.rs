@@ -619,18 +619,27 @@ impl AiService {
                             )));
                             break;
                         }
-                        // 生成が途中で打ち切られた件名はコミットに使わない。
-                        // AI CLI 自体は成功(exit 0)を返すため、ここで弾かないと
-                        // 「... mise 設定を」のような未完成のメッセージが確定してしまう。
+                        // 壊れた件名はコミットに使わない。AI CLI 自体は成功(exit 0)を
+                        // 返すため、ここで弾かないと「... mise 設定を」のような未完成の
+                        // メッセージや、複数のメッセージを 1 行に詰め込んだものが確定してしまう。
+                        // どちらも確率的に起きるので、まず同じステップを引き直す。
                         let subject = message.lines().next().unwrap_or("").to_string();
-                        if Self::is_truncated_subject(&subject) {
+                        let defect = if Self::is_truncated_subject(&subject) {
+                            Some("truncated")
+                        } else if Self::is_concatenated_subject(&subject) {
+                            Some("multi-message")
+                        } else {
+                            None
+                        };
+                        if let Some(defect) = defect {
                             if retries_left > 0 {
                                 retries_left -= 1;
                                 if !silent {
                                     eprintln!(
-                                        "  {} {} returned a truncated message ({}); retrying",
+                                        "  {} {} returned a {} message ({}); retrying",
                                         "⚠".yellow(),
                                         Self::step_label(&provider, step),
+                                        defect,
                                         subject.dimmed()
                                     );
                                 }
@@ -638,15 +647,17 @@ impl AiService {
                             }
                             if !silent {
                                 eprintln!(
-                                    "  {} {} kept returning a truncated message ({})",
+                                    "  {} {} kept returning a {} message ({})",
                                     "⚠".yellow(),
                                     Self::step_label(&provider, step),
+                                    defect,
                                     subject.dimmed()
                                 );
                             }
                             last_error = Some(AppError::AiProviderError(format!(
-                                "{} returned a truncated message: {}",
+                                "{} returned a {} message: {}",
                                 provider.name(),
+                                defect,
                                 subject
                             )));
                             break;
@@ -952,6 +963,28 @@ mod tests {
         assert!(
             !prompt.contains("e.g. <commit>"),
             "prompt must not include a concrete tag example (with_body={with_body})"
+        );
+    }
+
+    /// プロンプトは「1 行に複数のコミットメッセージを並べるな」と明示する。
+    /// タグ指示だけだと連結が 3/25 発生し、この 1 行を足すと 0/25 になる(実測)。
+    #[rstest]
+    #[case(false)]
+    #[case(true)]
+    fn test_build_prompt_forbids_concatenation(#[case] with_body: bool) {
+        let recent_commits: Vec<String> = vec![];
+        let prompt = AiService::build_prompt(
+            "test diff",
+            &recent_commits,
+            "Japanese",
+            None,
+            with_body,
+            None,
+        );
+        assert!(
+            prompt.contains("ONE commit message with ONE prefix")
+                && prompt.contains("Never combine several messages"),
+            "prompt should forbid combining several messages (with_body={with_body})"
         );
     }
 
@@ -1282,6 +1315,50 @@ mod tests {
     fn test_is_truncated_subject(#[case] subject: &str, #[case] expected: bool) {
         assert_eq!(
             AiService::is_truncated_subject(subject),
+            expected,
+            "subject: {subject:?}"
+        );
+    }
+
+    /// 連結検出。真陽性は agy + GPT-OSS が返した実際の応答から、
+    /// 偽陽性ケースは実コミット履歴 9139 件のうち「任意の `語:` を数える緩い条件」が
+    /// 誤検出した件名から採取する。
+    #[rstest]
+    // 複数のコミットメッセージを 1 行に詰め込んだ実測応答
+    #[case(
+        "ci: GitHub Actions CI設定追加 docs: READMEにmise手順追記 config: mise.toml追加",
+        true
+    )]
+    #[case(
+        "ci: GitHub Actionsワークフロー追加 docs: READMEにmise設定と手順追記",
+        true
+    )]
+    #[case(
+        "ci: GitHub Actions CI導入 docs: README更新 mise: ツール構成追加",
+        true
+    )]
+    #[case("feat: 機能追加 fix: 不具合修正", true)]
+    // scope 付き・破壊的変更マーカー付きでも数える
+    #[case("feat(api): 追加 fix(db): 修正", true)]
+    #[case("feat!: 追加 docs: 更新", true)]
+    // 正常な件名(標準 type は 1 つだけ)
+    #[case("ci: GitHub Actions CIワークフローとmise設定を追加", false)]
+    #[case("feat(mise): ツールバージョン固定を追加", false)]
+    #[case("docs: SD質問回答テンプレート・Phase A情報抽出強化", false)]
+    // 文中のコロンを type と読み違えない(実コミット履歴からの回帰ケース)
+    #[case(
+        "docs(memory): Codex 再 review 反映の学び 2 件追記 — CC 範囲制御は AccountRepository が解",
+        false
+    )]
+    #[case(
+        "docs(T0.1): 88 ルール台帳を新設し実ファイル突合検証を完了（trust but verify: 修正 77 件）",
+        false
+    )]
+    #[case("fix: URL を http: から https: に変更", false)]
+    #[case("", false)]
+    fn test_is_concatenated_subject(#[case] subject: &str, #[case] expected: bool) {
+        assert_eq!(
+            AiService::is_concatenated_subject(subject),
             expected,
             "subject: {subject:?}"
         );
