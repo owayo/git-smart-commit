@@ -368,6 +368,101 @@ fn test_dry_run_no_staged_changes() {
 }
 
 // ============================================================
+// .git-sc-ignore が読めないときは差分を送らず中止する (fail-closed)
+// ============================================================
+
+#[test]
+fn test_unreadable_ignore_file_aborts_instead_of_sending_diff() {
+    // 除外設定が適用できない状態のまま続行すると、除外したかったファイルが
+    // そのまま AI プロバイダーへ送られる。CLI の出口でも中止することを固定する。
+    let dir = setup_git_repo_with_commit();
+
+    // `.git-sc-ignore` をディレクトリにすると読み取りは必ず失敗する
+    // (パーミッション 000 は root 実行だと読めてしまい環境依存になる)。
+    std::fs::create_dir(dir.path().join(".git-sc-ignore")).unwrap();
+
+    std::fs::write(dir.path().join("secret.env"), "TOKEN=abc\n").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "secret.env"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // --dry-run でもコミットは作らないが、差分取得の時点で失敗するべき
+    git_sc!()
+        .arg("--dry-run")
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(".git-sc-ignore"));
+}
+
+// ============================================================
+// rebase 進行中は reword を拒否する
+// ============================================================
+
+#[test]
+fn test_reword_refuses_while_another_rebase_is_in_progress() {
+    // reword は失敗した rebase を必ず `git rebase --abort` で終わらせるため、
+    // ユーザーの rebase の上で起動すると解決作業中の内容を破棄してしまう。
+    // また、rebase 中は HEAD が detached なので、素通しすると原因と無関係な
+    // InvalidRewordTarget が表示される。CLI の出口で正しい理由が出ることを固定する。
+    let dir = setup_git_repo_with_commit();
+    let repo = dir.path();
+
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .unwrap()
+    };
+
+    let base_branch = String::from_utf8(git(&["branch", "--show-current"]).stdout)
+        .unwrap()
+        .trim()
+        .to_string();
+
+    // side ブランチと元ブランチで同じ行を書き換え、rebase で必ず衝突させる
+    git(&["checkout", "-b", "side"]);
+    std::fs::write(repo.join("conflict.txt"), "side\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-m", "side change"]);
+
+    git(&["checkout", &base_branch]);
+    std::fs::write(repo.join("conflict.txt"), "main\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-m", "main change"]);
+
+    let target = String::from_utf8(git(&["rev-parse", "HEAD"]).stdout)
+        .unwrap()
+        .trim()
+        .to_string();
+
+    // ユーザーの rebase を衝突で停止させる
+    let rebase = git(&["rebase", "side"]);
+    assert!(
+        !rebase.status.success(),
+        "衝突で停止させたいので rebase は失敗するはず"
+    );
+
+    git_sc!()
+        .args(["--reword", &target, "--dry-run"])
+        .current_dir(repo)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("rebaseが進行中です"));
+
+    // ユーザーの rebase が生き残っていることが本題
+    let status = git(&["status", "--porcelain=v1", "-b"]);
+    let status = String::from_utf8_lossy(&status.stdout);
+    assert!(
+        status.contains("HEAD (no branch)"),
+        "git-sc がユーザーの進行中 rebase を破棄してはいけない: {status}"
+    );
+}
+
+// ============================================================
 // 非Gitリポジトリでの実行テスト
 // ============================================================
 

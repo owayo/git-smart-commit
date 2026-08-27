@@ -161,20 +161,34 @@ impl AiService {
         };
 
         // stdout 読み取りスレッド（デバッグ時はリアルタイム表示）
+        //
+        // 読み取りエラー(不正な UTF-8 や I/O エラー)は捨てずに持ち帰る。
+        // `lines()` はエラーが出た時点で打ち切られるため、握りつぶすと
+        // 「そこまでに読めた分」が完全な応答に見えてしまい、途中で切れた
+        // 出力がそのままコミットメッセージとして採用される。
         let stdout_thread = std::thread::spawn(move || {
             use std::io::BufRead;
             let mut buf = String::new();
+            let mut read_error: Option<std::io::Error> = None;
             if let Some(pipe) = stdout_pipe {
                 let reader = std::io::BufReader::new(pipe);
-                for line in reader.lines().map_while(Result::ok) {
-                    if is_debug {
-                        Self::emit_debug_line(silent, &format!("  {}", line));
+                for line in reader.lines() {
+                    match line {
+                        Ok(line) => {
+                            if is_debug {
+                                Self::emit_debug_line(silent, &format!("  {}", line));
+                            }
+                            buf.push_str(&line);
+                            buf.push('\n');
+                        }
+                        Err(e) => {
+                            read_error = Some(e);
+                            break;
+                        }
                     }
-                    buf.push_str(&line);
-                    buf.push('\n');
                 }
             }
-            buf
+            (buf, read_error)
         });
 
         // stderr 読み取りスレッド（デバッグ時はリアルタイム表示）
@@ -233,7 +247,7 @@ impl AiService {
             Some(handle) => handle.join().unwrap_or(Ok(())),
             None => Ok(()),
         };
-        let stdout_str = stdout_thread.join().unwrap_or_default();
+        let (stdout_str, stdout_read_error) = stdout_thread.join().unwrap_or_default();
         let stderr_str = stderr_thread.join().unwrap_or_default();
 
         let exit_status = wait_result?;
@@ -247,6 +261,24 @@ impl AiService {
         {
             return Err(AppError::AiProviderError(format!(
                 "Failed to write prompt to {} stdin: {}",
+                provider.name(),
+                e
+            )));
+        }
+
+        // stdout の読み取りが途中で失敗した場合も同じ理由でエラーにする。
+        // 読めた分だけを完全な応答として扱うと、途中で切れたメッセージが
+        // そのままコミットされる(exit 0 なので他の検証はすべて通過する)。
+        //
+        // Codex だけは除外する。Codex の stdout は実行トランスクリプトで、
+        // コミットメッセージは `-o` で指定した別ファイルから読む。stdout が壊れても
+        // 採用するメッセージ自体は無傷なので、ここで失敗させると正常な応答まで捨てることになる。
+        if exit_status.success()
+            && !matches!(provider, AiProvider::Codex)
+            && let Some(e) = stdout_read_error
+        {
+            return Err(AppError::AiProviderError(format!(
+                "Failed to read {} stdout: {}",
                 provider.name(),
                 e
             )));

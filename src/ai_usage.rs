@@ -369,9 +369,9 @@ fn run_command_with_timeout(command: &[String], timeout_secs: u64) -> Result<Vec
                 if start.elapsed() >= timeout {
                     let _ = child.kill();
                     let _ = child.wait();
-                    // reader スレッドは EOF で自然終了する。ここでは join せずに
-                    // 落として構わない(戻り値を捨てるだけなので detach でも
-                    // メモリリークにはならない)。
+                    // kill/wait でパイプが閉じるため reader スレッドは EOF で必ず終了する。
+                    // タイムアウト経路でも join してスレッドを回収してから抜ける
+                    // (detach するとプロセス終了まで残り、スレッドリークの温床になる)。
                     let _ = stdout_handle.join();
                     let _ = stderr_handle.join();
                     return Err(AppError::AiUsageError(format!(
@@ -772,6 +772,108 @@ mod tests {
         let step = step_with_profile("claude", Some("Work"));
         let decision = snap.evaluate(&step, AiUsageWindow::Nearest, 95.0);
         assert!(matches!(decision, UsageDecision::Usable { .. }));
+    }
+
+    #[test]
+    fn evaluate_weekly_window_ignores_five_hour_value() {
+        // `window = "weekly"` は weekly だけを見る。weekly が欠損していれば、
+        // five_hour が閾値超過でも 0.0 扱いで残す(nearest との差を固定する)。
+        let snap = AiUsageSnapshot::from_accounts(vec![AiUsageAccount {
+            profile: "Work".into(),
+            provider: "claude".into(),
+            group_label: None,
+            ok: true,
+            weekly: None,
+            five_hour: Some(window_data(Some(99.0))),
+            error: None,
+        }]);
+        let step = step_with_profile("claude", Some("Work"));
+
+        let weekly = snap.evaluate(&step, AiUsageWindow::Weekly, 95.0);
+        assert!(
+            matches!(weekly, UsageDecision::Usable { .. }),
+            "weekly 指定では five_hour の 99% を見ないはず: {weekly:?}"
+        );
+
+        // 同じ snapshot でも nearest なら five_hour 側を拾って除外される
+        let nearest = snap.evaluate(&step, AiUsageWindow::Nearest, 95.0);
+        assert!(
+            matches!(nearest, UsageDecision::OverThreshold { .. }),
+            "nearest は使用率が高い方を採るはず: {nearest:?}"
+        );
+    }
+
+    #[test]
+    fn evaluate_five_hour_window_ignores_weekly_value() {
+        // `window = "five_hour"` は five_hour だけを見る(上のテストの対称ケース)。
+        let snap = AiUsageSnapshot::from_accounts(vec![AiUsageAccount {
+            profile: "Work".into(),
+            provider: "claude".into(),
+            group_label: None,
+            ok: true,
+            weekly: Some(window_data(Some(99.0))),
+            five_hour: None,
+            error: None,
+        }]);
+        let step = step_with_profile("claude", Some("Work"));
+
+        let five_hour = snap.evaluate(&step, AiUsageWindow::FiveHour, 95.0);
+        assert!(
+            matches!(five_hour, UsageDecision::Usable { .. }),
+            "five_hour 指定では weekly の 99% を見ないはず: {five_hour:?}"
+        );
+
+        let nearest = snap.evaluate(&step, AiUsageWindow::Nearest, 95.0);
+        assert!(
+            matches!(nearest, UsageDecision::OverThreshold { .. }),
+            "nearest は使用率が高い方を採るはず: {nearest:?}"
+        );
+    }
+
+    #[test]
+    fn evaluate_auto_select_is_deterministic_on_tie() {
+        // 使用率が同率のときは snapshot の並び順で先に現れた account を採る。
+        // ai-usage の出力順が変わっても同じ結果になることを固定する。
+        let snap = AiUsageSnapshot::from_accounts(vec![
+            account("First", "codex", true, Some(50.0), Some(50.0)),
+            account("Second", "codex", true, Some(50.0), Some(50.0)),
+        ]);
+        let step = step_with_profile("codex", None);
+
+        let decision = snap.evaluate(&step, AiUsageWindow::Nearest, 95.0);
+        assert!(
+            decision.reason().contains("First"),
+            "同率なら先頭の account を採るはず: {decision:?}"
+        );
+    }
+
+    #[test]
+    fn evaluate_threshold_boundary_is_inclusive() {
+        // 判定は `used >= threshold`。境界ちょうどは除外側に倒す。
+        let snap = AiUsageSnapshot::from_accounts(vec![account(
+            "Work",
+            "codex",
+            true,
+            Some(95.0),
+            Some(0.0),
+        )]);
+        let step = step_with_profile("codex", Some("Work"));
+        assert!(matches!(
+            snap.evaluate(&step, AiUsageWindow::Weekly, 95.0),
+            UsageDecision::OverThreshold { .. }
+        ));
+
+        let below = AiUsageSnapshot::from_accounts(vec![account(
+            "Work",
+            "codex",
+            true,
+            Some(94.9),
+            Some(0.0),
+        )]);
+        assert!(matches!(
+            below.evaluate(&step, AiUsageWindow::Weekly, 95.0),
+            UsageDecision::Usable { .. }
+        ));
     }
 
     #[test]

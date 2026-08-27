@@ -655,6 +655,9 @@ impl App {
     }
 
     /// メインワークフローを実行
+    ///
+    /// 専用ワークフローを持つモード(--generate-for / --reword / --amend / --squash)は
+    /// `dispatch_special_mode` で振り分け、どれにも該当しなければ通常のコミット処理へ進む。
     pub fn run(&self, cli: &Cli) -> Result<(), AppError> {
         // claw-hooks stop hook から渡されるエージェントコンテキスト
         let agent_context = std::env::var("CLAW_HOOKS_AGENT_MESSAGE").ok();
@@ -662,36 +665,50 @@ impl App {
         // Gitリポジトリかどうかを確認
         self.git.verify_repository()?;
 
-        // --generate-forモードは別処理（排他チェック付き）
+        match self.dispatch_special_mode(cli, agent_context.as_deref()) {
+            Some(result) => result,
+            None => self.run_commit(cli, agent_context.as_deref()),
+        }
+    }
+
+    /// 専用ワークフローを持つモードを振り分ける
+    ///
+    /// 該当するモードがあればその実行結果を `Some` で返し、無ければ `None` を返す。
+    /// 判定順(generate-for → reword → amend → squash)は従来の分岐順そのままで、
+    /// これらは CLI 引数解析時点で相互排他なので実際には同時に立たない。
+    fn dispatch_special_mode(
+        &self,
+        cli: &Cli,
+        agent_context: Option<&str>,
+    ) -> Option<Result<(), AppError>> {
         if cli.generate_for.is_some() {
-            // 排他チェック
+            // 排他チェック。clap の conflicts_with でも弾かれるが、
+            // Cli を直接組み立てる内部経路のための保険として残す。
             if cli.reword.is_some() {
-                return Err(AppError::ConflictingOptions("reword".to_string()));
+                return Some(Err(AppError::ConflictingOptions("reword".to_string())));
             }
             if cli.amend {
-                return Err(AppError::ConflictingOptions("amend".to_string()));
+                return Some(Err(AppError::ConflictingOptions("amend".to_string())));
             }
             if cli.squash.is_some() {
-                return Err(AppError::ConflictingOptions("squash".to_string()));
+                return Some(Err(AppError::ConflictingOptions("squash".to_string())));
             }
-            return self.run_generate_for(cli, agent_context.as_deref());
+            return Some(self.run_generate_for(cli, agent_context));
         }
-
-        // --rewordモードは別処理
         if cli.reword.is_some() {
-            return self.run_reword(cli, agent_context.as_deref());
+            return Some(self.run_reword(cli, agent_context));
         }
-
-        // --amendモードは別処理
         if cli.amend {
-            return self.run_amend(cli, agent_context.as_deref());
+            return Some(self.run_amend(cli, agent_context));
         }
-
-        // --squashモードは別処理
         if cli.squash.is_some() {
-            return self.run_squash(cli, agent_context.as_deref());
+            return Some(self.run_squash(cli, agent_context));
         }
+        None
+    }
 
+    /// 通常のコミットワークフロー(ステージ済み差分からメッセージを生成してコミットする)
+    fn run_commit(&self, cli: &Cli, agent_context: Option<&str>) -> Result<(), AppError> {
         // --allフラグがあれば全変更をステージング
         if cli.stage_all {
             if !cli.quiet {
@@ -700,8 +717,21 @@ impl App {
             self.git.stage_all()?;
         }
 
+        // AI へ渡す差分を作る「前」の index を控えておく。生成には数十秒かかることが
+        // あり、その間に別の端末やエディタが `git add` すると、確認していない変更まで
+        // このコミットに入ってしまう。コミット直前に取り直して突き合わせる。
+        //
+        // 取得は差分取得より前に行う。後にすると、差分を読み終えてからスナップショットを
+        // 撮るまでの隙に入った `git add` が「差分は旧内容・スナップショットは新内容」に
+        // なり、コミット直前の比較をすり抜けてしまう。
+        //
+        // 取得できない場合(未解決コンフリクトが index にある等)は None にして
+        // 従来どおり進める。これは追加の防御であって、必須の前提条件ではない。
+        let index_tree_before_generate = self.git.write_tree().ok();
+
         // ステージ済みのdiffを取得
         let staged_diff = self.git.get_staged_diff()?;
+
         let diff = if !staged_diff.trim().is_empty() {
             staged_diff
         } else if cli.stage_all {
@@ -734,15 +764,13 @@ impl App {
             println!("{}", "Generating commit message...".cyan());
         }
 
-        let agent_ctx = agent_context.as_deref();
-
         let (message, provider_name) = self.generate_with_prefix(
             cli,
             &diff,
             &recent_commits,
             prefix_mode,
             false,
-            agent_ctx,
+            agent_context,
             false,
         )?;
 
@@ -768,6 +796,17 @@ impl App {
                     );
                 }
                 return Ok(());
+            }
+            // 「変更が残っているか」だけでなく「同じ内容か」も確認する。
+            // 有無の判定だけでは、AI 生成中に別プロセスが `git add` した変更を
+            // 生成済みメッセージのままコミットしてしまう。
+            if let Some(before) = &index_tree_before_generate
+                && let Ok(now) = self.git.write_tree()
+                && now != *before
+            {
+                return Err(AppError::InvalidArgument(
+                    "コミットメッセージの生成中にステージ内容が変化しました。生成済みメッセージは変更後の内容を反映していないため中止します。再実行してください".to_string(),
+                ));
             }
             self.git.commit(&message)?;
             if cli.quiet {
@@ -967,6 +1006,18 @@ impl App {
 
         // 確認してsquash実行
         if cli.auto_confirm || self.confirm_squash(commit_count)? {
+            // staged 変更の有無は squash 開始前にも確認しているが、そこから
+            // AI 生成と確認プロンプトを挟むぶん時間が空く。その間に別の端末や
+            // エディタが `git add` すると、無関係な変更が squash コミットへ
+            // 巻き込まれてしまうため、reset 直前に取り直す
+            // (通常コミット経路が commit 直前に再確認しているのと同じ防御)。
+            if self.git.has_staged_changes() {
+                return Err(AppError::InvalidArgument(
+                    "squash 開始後に staged 変更が追加されました。commit、unstage、または stash してから再実行してください"
+                        .to_string(),
+                ));
+            }
+
             // soft resetしてコミット。
             // commit はフック(pre-commit/commit-msg)拒否や GPG 署名失敗で現実的に失敗するため、
             // reset 前の HEAD を控えておき、失敗時はブランチを元の位置へ復旧してから
@@ -1083,6 +1134,14 @@ impl App {
             .as_ref()
             .ok_or(AppError::InvalidRewordTarget)?
             .clone();
+
+        // 進行中の rebase はここで弾く。`GitService` 側でも守っているが、この後の
+        // マージ判定が先に位置算出を行うため、そちらに落ちると rebase 中の detached HEAD
+        // のせいで「対象が履歴上に無い」= InvalidRewordTarget という無関係な理由が
+        // 表示されてしまう。原因が分かるエラーを出すために入口で判定する。
+        if self.git.rebase_in_progress() {
+            return Err(AppError::RebaseInProgress);
+        }
 
         // 短いハッシュを取得して表示用に使用（文字境界に対応するため chars ベースで切り出す）
         let short_hash_owned: String = hash.chars().take(7).collect();

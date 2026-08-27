@@ -204,21 +204,40 @@ impl GitService {
     }
 
     /// .git-sc-ignoreファイルを読み込んでGitignoreを構築
-    fn load_ignore_patterns(&self) -> Option<Gitignore> {
-        let git_root = self.get_git_root()?;
+    ///
+    /// 返り値が `Ok(None)` なのは「除外設定そのものが無い」場合だけ。
+    /// `.git-sc-ignore` が存在するのに読めない/解釈できない場合はエラーにする(fail-closed)。
+    /// ここを fail-open にすると、除外したかったファイル(認証情報・鍵・生成物)の差分が
+    /// そのまま AI プロバイダーへ送信される。「除外設定を書いたのに効かず、しかも黙っている」
+    /// のが最悪の失敗なので、内容が確実に適用できないときは処理を止める。
+    fn load_ignore_patterns(&self) -> Result<Option<Gitignore>, AppError> {
+        let Some(git_root) = self.get_git_root() else {
+            return Ok(None);
+        };
         let ignore_path = git_root.join(".git-sc-ignore");
 
         if !ignore_path.exists() {
-            return None;
+            return Ok(None);
         }
 
         let mut builder = GitignoreBuilder::new(&git_root);
-        if builder.add(&ignore_path).is_some() {
-            // エラーがあった場合はNoneを返す
-            return None;
+        // `add` はパターン単位の部分エラーも返す。1 行でも解釈できなかったなら
+        // 除外は不完全なので、その状態で差分を送らずにエラーとして知らせる。
+        if let Some(err) = builder.add(&ignore_path) {
+            return Err(AppError::ConfigError(format!(
+                "{} を読み込めませんでした: {}。除外設定が適用できないため中止します。",
+                ignore_path.display(),
+                err
+            )));
         }
 
-        builder.build().ok()
+        builder.build().map(Some).map_err(|e| {
+            AppError::ConfigError(format!(
+                "{} のパターンを解釈できませんでした: {}。除外設定が適用できないため中止します。",
+                ignore_path.display(),
+                e
+            ))
+        })
     }
 
     /// プレフィックススクリプトを実行する基準ディレクトリを取得
@@ -512,12 +531,16 @@ impl GitService {
     }
 
     /// diffに対して全てのフィルタリングを適用
-    fn apply_all_filters(&self, diff: &str) -> String {
+    ///
+    /// `.git-sc-ignore` が存在するのに適用できない場合はエラーを返す。
+    /// 呼び出し元(diff 取得 API)はそのままエラーを伝播し、除外漏れの差分を
+    /// AI へ送らずに終了する。
+    fn apply_all_filters(&self, diff: &str) -> Result<String, AppError> {
         // 1. .git-sc-ignore パターンにマッチするファイルを除外
         //    バイナリフィルタより先に実行する必要がある。
         //    filter_binary_diff は diff --git ヘッダーをサマリー行に変換するため、
         //    先に実行するとignoreパターンがバイナリファイルに適用されなくなる。
-        let filtered = if let Some(ignore) = self.load_ignore_patterns() {
+        let filtered = if let Some(ignore) = self.load_ignore_patterns()? {
             Self::filter_ignored_files(diff, &ignore)
         } else {
             diff.to_string()
@@ -527,7 +550,7 @@ impl GitService {
         let filtered = Self::filter_binary_diff(&filtered);
 
         // 3. 文字数制限を適用
-        Self::truncate_diff(&filtered)
+        Ok(Self::truncate_diff(&filtered))
     }
 
     /// git diffの出力からバイナリファイルの詳細差分を除外し、変更種別のみを出力
@@ -627,7 +650,7 @@ impl GitService {
     /// ステージ済みのdiffを取得（バイナリファイル、.git-sc-ignore対象、空白のみの変更を除外）
     pub fn get_staged_diff(&self) -> Result<String, AppError> {
         let raw = self.run_git(&["diff", "--cached", "-w", "-U0"])?;
-        Ok(self.apply_all_filters(&raw))
+        self.apply_all_filters(&raw)
     }
 
     /// 直近のコミットメッセージを取得
@@ -825,7 +848,7 @@ impl GitService {
     /// ベースからHEADまでの差分を取得（バイナリファイル、.git-sc-ignore対象、空白のみの変更を除外）
     pub fn get_diff_from_base(&self, base: &str) -> Result<String, AppError> {
         let raw = self.run_git(&["diff", "-w", "-U0", base, "HEAD"])?;
-        Ok(self.apply_all_filters(&raw))
+        self.apply_all_filters(&raw)
     }
 
     /// 現在のHEADのコミットハッシュを取得する
@@ -833,6 +856,21 @@ impl GitService {
     /// squash の `reset --soft` 前に復旧先として控えるために使う。
     pub fn get_head_hash(&self) -> Result<String, AppError> {
         self.run_git(&["rev-parse", "HEAD"])
+    }
+
+    /// 現在の index を表す tree ハッシュを取得する
+    ///
+    /// 「AI へ渡した差分を作った時点の index」と「コミット直前の index」が同じかを
+    /// 比べるために使う。`has_staged_changes()` は有無しか見ないので、AI 生成中に
+    /// 別の端末が `git add` してもすり抜ける。tree ハッシュなら内容の変化を検出できる。
+    ///
+    /// `git write-tree` は index からツリーオブジェクトを書き出してハッシュを返す。
+    /// index と作業ツリーは変化せず、書かれたツリーはコミットから参照されなければ
+    /// gc の対象になるだけなので、検査目的で呼んでも副作用にならない。
+    /// 未解決のコンフリクトが index にあると失敗するため、呼び出し側は取得できない
+    /// 場合に検査を省略できるよう `Result` のまま扱うこと。
+    pub fn write_tree(&self) -> Result<String, AppError> {
+        self.run_git(&["write-tree"])
     }
 
     /// 指定したコミットにsoft resetする
@@ -873,6 +911,26 @@ impl GitService {
         count_str
             .parse()
             .map_err(|_| AppError::GitError("Failed to parse commit count".to_string()))
+    }
+
+    /// rebase が進行中か確認する
+    ///
+    /// `git rebase -i`(merge backend)は `rebase-merge`、`git rebase --apply` や
+    /// `git am` は `rebase-apply` を作る。どちらが残っていても新しい rebase は開始できない。
+    /// 位置は worktree ごとに変わる(linked worktree では `.git/worktrees/<name>/` 配下)ため、
+    /// `.git` を直接組み立てず `git rev-parse --git-path` に解決させる。
+    ///
+    /// 検出は「開始前の門番」として使う。開始せずに止めることで、失敗時の
+    /// `git rebase --abort` が常に自分の rebase だけを対象にできる。
+    pub fn rebase_in_progress(&self) -> bool {
+        ["rebase-merge", "rebase-apply"].iter().any(|name| {
+            self.try_run_git(&["rev-parse", "--git-path", name])
+                // `--git-path` は cwd 基準の相対パスを返すことがある。
+                // git コマンドは repo_path を cwd として実行しているので、そこを基準に解決する
+                // (絶対パスが返った場合は join がそちらを優先するため、どちらでも正しい)。
+                .map(|path| self.repo_path.join(path).exists())
+                .unwrap_or(false)
+        })
     }
 
     /// HEAD が有効なコミットを指しているか確認
@@ -922,7 +980,7 @@ impl GitService {
             "--end-of-options",
             hash,
         ])?;
-        Ok(self.apply_all_filters(&raw))
+        self.apply_all_filters(&raw)
     }
 
     /// 指定されたコミットハッシュのメッセージを取得
@@ -1009,6 +1067,13 @@ impl GitService {
 
     /// 指定されたコミットハッシュのメッセージを変更（rebase使用）
     pub fn reword_commit_by_hash(&self, hash: &str, new_message: &str) -> Result<(), AppError> {
+        // 位置算出より先に rebase 進行中を弾く。rebase 中の HEAD は detached で
+        // 別の位置を指すため、先に位置を求めると「履歴外」を意味する
+        // InvalidRewordTarget が返り、本当の原因（rebase 中）が見えなくなる。
+        if self.rebase_in_progress() {
+            return Err(AppError::RebaseInProgress);
+        }
+
         // 位置を取得
         let n = self.get_commit_position_by_hash(hash)?;
 
@@ -1020,6 +1085,18 @@ impl GitService {
     pub fn reword_commit(&self, n: usize, new_message: &str) -> Result<(), AppError> {
         if n == 0 {
             return Err(AppError::InvalidRewordTarget);
+        }
+
+        // 実行前から rebase が進行中なら何もせずに止める。
+        // この関数は rebase 失敗時に必ず `git rebase --abort` を実行するが、
+        // 既存の rebase が進行中だと git-sc 側の `git rebase -i` はそもそも
+        // 「別の rebase が進行中」として起動に失敗する。その失敗を自分の rebase の
+        // 失敗と取り違えて abort すると、ユーザーが解決作業中だった rebase
+        // (コンフリクト解決の途中経過を含む)を破棄してしまう。
+        // amend 経路(n == 1)でも rebase 中の HEAD は detached で意図しない位置を
+        // 指すため、同じくここで弾く。
+        if self.rebase_in_progress() {
+            return Err(AppError::RebaseInProgress);
         }
 
         // n=1 の場合は amend で処理。ただし HEAD がマージコミットの場合は
@@ -1084,6 +1161,15 @@ impl GitService {
             rebase_cmd.arg("--root");
         } else {
             rebase_cmd.arg(format!("HEAD~{}", n));
+        }
+
+        // 起動の直前にもう一度確認する。関数の入口で確認してから、履歴の検査と
+        // 一時ファイル作成を挟むぶん時間が空くため、その隙に別プロセスが rebase を
+        // 始めていると、後段の無条件 abort がその rebase を壊す。ここまで詰めても
+        // 「確認してから git が rebase ディレクトリを作るまで」の窓は原理的に残るが、
+        // git 側に外から取れるロックが無いのでこれが実務上の下限。
+        if self.rebase_in_progress() {
+            return Err(AppError::RebaseInProgress);
         }
 
         let output = rebase_cmd
@@ -1755,7 +1841,7 @@ index 1234567..abcdefg 100644
 
         // .git-sc-ignoreがない状態でテスト
         // この場合、apply_all_filtersはfilter_binary_diff + truncate_diffのみ適用
-        let result = service.apply_all_filters(diff);
+        let result = service.apply_all_filters(diff).unwrap();
         assert!(result.contains("src/main.rs"));
         assert!(result.contains("println"));
     }
@@ -2068,7 +2154,7 @@ index 555..666 100644
     fn test_apply_all_filters_text_only() {
         let gs = GitService::default();
         let diff = "diff --git a/src/main.rs b/src/main.rs\n--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1 +1 @@\n-old\n+new\n";
-        let result = gs.apply_all_filters(diff);
+        let result = gs.apply_all_filters(diff).unwrap();
         assert!(result.contains("src/main.rs"));
         assert!(result.contains("+new"));
     }
@@ -2077,7 +2163,7 @@ index 555..666 100644
     fn test_apply_all_filters_binary_excluded() {
         let gs = GitService::default();
         let diff = "diff --git a/image.png b/image.png\nnew file mode 100644\nBinary files /dev/null and b/image.png differ\ndiff --git a/src/main.rs b/src/main.rs\n--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1 +1 @@\n-old\n+new\n";
-        let result = gs.apply_all_filters(diff);
+        let result = gs.apply_all_filters(diff).unwrap();
         assert!(result.contains("[Binary]"));
         assert!(result.contains("+new"));
     }
@@ -2085,7 +2171,7 @@ index 555..666 100644
     #[test]
     fn test_apply_all_filters_empty() {
         let gs = GitService::default();
-        let result = gs.apply_all_filters("");
+        let result = gs.apply_all_filters("").unwrap();
         assert!(result.is_empty());
     }
 
@@ -2136,7 +2222,7 @@ index 555..666 100644
             "+new\n",
         );
 
-        let result = gs.apply_all_filters(diff);
+        let result = gs.apply_all_filters(diff).unwrap();
 
         // *.png はignoreされるべき（バイナリサマリーも含めて除外）
         assert!(
@@ -4137,12 +4223,49 @@ Binary files /dev/null and b/script.bin differ"#;
         let service = GitService {
             repo_path: repo.to_path_buf(),
         };
-        let result = service.apply_all_filters(diff);
+        let result = service.apply_all_filters(diff).unwrap();
 
         // テキストファイルは含まれる
         assert!(result.contains("src/main.rs"));
         // バイナリ+ignoreのファイルは完全に除外（[Binary]サマリーも出ない）
         assert!(!result.contains("image.png"));
+    }
+
+    #[test]
+    fn test_apply_all_filters_fails_closed_when_ignore_file_is_unreadable() {
+        // 回帰テスト: `.git-sc-ignore` が存在するのに読めないとき、以前は None を返して
+        // 「除外設定なし」と同じ扱いにしていた。その結果、除外したかったファイル
+        // (認証情報・鍵など)の差分が黙って AI プロバイダーへ送られてしまう。
+        // 適用できないと分かった時点でエラーにする(fail-closed)。
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let repo = temp_dir.path();
+        run_git_in(repo, &["init"]);
+
+        // `.git-sc-ignore` をディレクトリとして作ると読み取りは必ず失敗する。
+        // パーミッション 000 は root 実行だと読めてしまい環境依存になるため使わない。
+        std::fs::create_dir(repo.join(".git-sc-ignore")).unwrap();
+
+        let diff = "diff --git a/secret.env b/secret.env\n\
+                     --- a/secret.env\n\
+                     +++ b/secret.env\n\
+                     +TOKEN=abc";
+
+        let service = GitService {
+            repo_path: repo.to_path_buf(),
+        };
+        let result = service.apply_all_filters(diff);
+        assert!(
+            matches!(result, Err(AppError::ConfigError(_))),
+            "読めない .git-sc-ignore は ConfigError にすべき。実際: {result:?}"
+        );
+
+        // 差分そのものが返らないこと(= AI へ渡らないこと)が本題
+        assert!(
+            result.is_err(),
+            "除外設定を適用できないまま差分を返してはいけない"
+        );
     }
 
     #[test]
@@ -4163,7 +4286,7 @@ Binary files /dev/null and b/script.bin differ"#;
         let service = GitService {
             repo_path: repo.to_path_buf(),
         };
-        let result = service.apply_all_filters(diff);
+        let result = service.apply_all_filters(diff).unwrap();
         assert!(result.contains("src/main.rs"));
     }
 
@@ -4185,7 +4308,7 @@ Binary files /dev/null and b/script.bin differ"#;
         let service = GitService {
             repo_path: repo.to_path_buf(),
         };
-        let result = service.apply_all_filters(&diff);
+        let result = service.apply_all_filters(&diff).unwrap();
         assert!(result.contains("diff truncated"));
     }
 
@@ -4391,6 +4514,45 @@ Binary files /dev/null and b/script.bin differ"#;
         (temp_dir, c0, c1)
     }
 
+    // ============================================================
+    // write_tree: index スナップショットの比較
+    // ============================================================
+
+    #[test]
+    fn test_write_tree_detects_index_change_that_has_staged_changes_misses() {
+        // 回帰テスト: コミット直前の再確認が `has_staged_changes()` の有無判定だけだと、
+        // AI 生成中に別プロセスが `git add` してもすり抜け、確認していない変更まで
+        // コミットに入ってしまう。tree ハッシュなら内容の変化を検出できる。
+        let temp_dir = setup_temp_git_repo();
+        let repo = temp_dir.path();
+        std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+        run_git_in(repo, &["add", "."]);
+
+        let service = GitService::with_repo_path(repo.to_path_buf());
+        let before = service.write_tree().unwrap();
+
+        // 検査自体は index を変えないので、二度読んでも同じハッシュになる
+        assert_eq!(
+            service.write_tree().unwrap(),
+            before,
+            "write_tree は index を変更してはいけない"
+        );
+
+        // 別プロセスによる追加ステージを再現する
+        std::fs::write(repo.join("b.txt"), "b\n").unwrap();
+        run_git_in(repo, &["add", "."]);
+
+        assert!(
+            service.has_staged_changes(),
+            "有無判定は変化の前後どちらでも true なので、これだけでは検出できない"
+        );
+        assert_ne!(
+            service.write_tree().unwrap(),
+            before,
+            "ステージ内容が変わったら tree ハッシュも変わるべき"
+        );
+    }
+
     #[test]
     fn test_reword_by_hash_below_merge_returns_has_merge_commits_not_cryptic_error() {
         // 回帰テスト: マージより下の first-parent 祖先 C1 を reword しようとすると、
@@ -4435,6 +4597,127 @@ Binary files /dev/null and b/script.bin differ"#;
 
         assert_eq!(service.get_commit_position_by_hash(&c1).unwrap(), 4);
         assert_eq!(service.get_commit_position_by_hash(&c0).unwrap(), 5);
+    }
+
+    // ============================================================
+    // rebase 進行中の検出（reword が他人の rebase を壊さないこと）
+    // ============================================================
+
+    /// コンフリクトで停止した rebase を持つリポジトリを作る。
+    /// 返り値: (temp_dir, reword 対象にできるコミットハッシュ)
+    fn setup_repo_with_interrupted_rebase() -> (tempfile::TempDir, String) {
+        let temp_dir = setup_temp_git_repo();
+        let repo = temp_dir.path();
+
+        std::fs::write(repo.join("f.txt"), "base\n").unwrap();
+        run_git_in(repo, &["add", "."]);
+        run_git_in(repo, &["commit", "-m", "base"]);
+        let base_branch = git_output_in(repo, &["branch", "--show-current"]);
+
+        // side ブランチで同じファイルを書き換える
+        run_git_in(repo, &["checkout", "-b", "side"]);
+        std::fs::write(repo.join("f.txt"), "side\n").unwrap();
+        run_git_in(repo, &["commit", "-am", "side change"]);
+
+        // 元ブランチでも同じ行を書き換えて、rebase 時に必ずコンフリクトさせる
+        run_git_in(repo, &["checkout", &base_branch]);
+        std::fs::write(repo.join("f.txt"), "main\n").unwrap();
+        run_git_in(repo, &["commit", "-am", "main change"]);
+        std::fs::write(repo.join("g.txt"), "g\n").unwrap();
+        run_git_in(repo, &["add", "."]);
+        run_git_in(repo, &["commit", "-m", "second main change"]);
+        let target = git_output_in(repo, &["rev-parse", "HEAD~1"]);
+
+        // ユーザーが rebase を始めてコンフリクトで停止した状態を作る。
+        // 失敗が期待値なので run_git_in（成功を assert する）は使えない。
+        let output = Command::new("git")
+            .args(["rebase", "side"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert!(
+            !output.status.success(),
+            "コンフリクトで停止させたいので rebase は失敗するはず"
+        );
+
+        (temp_dir, target)
+    }
+
+    #[test]
+    fn test_rebase_in_progress_detects_interrupted_rebase() {
+        let (temp_dir, _target) = setup_repo_with_interrupted_rebase();
+        let service = GitService::with_repo_path(temp_dir.path().to_path_buf());
+
+        assert!(
+            service.rebase_in_progress(),
+            "コンフリクトで停止した rebase を検出できるべき"
+        );
+    }
+
+    #[test]
+    fn test_rebase_in_progress_false_on_clean_repo() {
+        let temp_dir = setup_temp_git_repo();
+        let repo = temp_dir.path();
+        std::fs::write(repo.join("f.txt"), "a\n").unwrap();
+        run_git_in(repo, &["add", "."]);
+        run_git_in(repo, &["commit", "-m", "c1"]);
+
+        let service = GitService::with_repo_path(repo.to_path_buf());
+        assert!(
+            !service.rebase_in_progress(),
+            "rebase していないリポジトリで true になってはいけない"
+        );
+    }
+
+    #[test]
+    fn test_reword_refuses_when_another_rebase_is_in_progress() {
+        // 回帰テスト: reword は rebase 失敗時に必ず `git rebase --abort` を実行する。
+        // 実行前から別の rebase が進行中だと `git rebase -i` の起動自体が失敗するため、
+        // その失敗を自分の rebase の失敗と取り違えて abort すると、ユーザーが解決中だった
+        // rebase（コンフリクトの途中経過を含む）を破棄してしまう。開始前に弾くこと。
+        let (temp_dir, target) = setup_repo_with_interrupted_rebase();
+        let service = GitService::with_repo_path(temp_dir.path().to_path_buf());
+
+        let result = service.reword_commit(2, "新しいメッセージ");
+        assert!(
+            matches!(result, Err(AppError::RebaseInProgress)),
+            "rebase 進行中は RebaseInProgress で止まるべき。実際: {result:?}"
+        );
+
+        // ユーザーの rebase が生き残っていること（abort されていないこと）が本題
+        assert!(
+            service.rebase_in_progress(),
+            "git-sc がユーザーの進行中 rebase を破棄してはいけない"
+        );
+
+        // ハッシュ指定の入口からも同じ保証が効く
+        let by_hash = service.reword_commit_by_hash(&target, "新しいメッセージ");
+        assert!(
+            matches!(by_hash, Err(AppError::RebaseInProgress)),
+            "reword_commit_by_hash でも RebaseInProgress で止まるべき。実際: {by_hash:?}"
+        );
+        assert!(
+            service.rebase_in_progress(),
+            "ハッシュ指定経路でもユーザーの rebase を破棄してはいけない"
+        );
+    }
+
+    #[test]
+    fn test_reword_head_refuses_when_another_rebase_is_in_progress() {
+        // n == 1 は amend 経路に分岐するが、rebase 中の HEAD は detached で
+        // 意図しないコミットを指すため、こちらも開始前に弾く。
+        let (temp_dir, _target) = setup_repo_with_interrupted_rebase();
+        let service = GitService::with_repo_path(temp_dir.path().to_path_buf());
+
+        let result = service.reword_commit(1, "新しいメッセージ");
+        assert!(
+            matches!(result, Err(AppError::RebaseInProgress)),
+            "amend 経路でも RebaseInProgress で止まるべき。実際: {result:?}"
+        );
+        assert!(
+            service.rebase_in_progress(),
+            "amend 経路でもユーザーの rebase を破棄してはいけない"
+        );
     }
 
     // ============================================================

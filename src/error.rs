@@ -50,6 +50,11 @@ pub enum AppError {
     #[error("rebase中にコンフリクトが発生しました。rebaseを中止しました。")]
     RebaseConflict,
 
+    #[error(
+        "rebaseが進行中です。'git rebase --continue' または 'git rebase --abort' で解決してから再実行してください。"
+    )]
+    RebaseInProgress,
+
     #[error("無効なreword対象です。有効なコミットハッシュを指定してください。")]
     InvalidRewordTarget,
 
@@ -187,6 +192,16 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "rebase中にコンフリクトが発生しました。rebaseを中止しました。"
+        );
+    }
+
+    #[test]
+    fn test_error_rebase_in_progress() {
+        // 進行中の rebase をユーザー自身が解決できるよう、次に打つコマンドまで示す
+        let err = AppError::RebaseInProgress;
+        assert_eq!(
+            err.to_string(),
+            "rebaseが進行中です。'git rebase --continue' または 'git rebase --abort' で解決してから再実行してください。"
         );
     }
 

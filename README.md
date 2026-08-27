@@ -32,7 +32,7 @@
 
 ## Features
 
-- **Multi-Provider Support**: Supports Antigravity CLI (`agy`, the successor of Gemini CLI), Codex CLI, Claude Code, opencode, and Apple Intelligence with automatic fallback. The same provider can appear multiple times with different models or accounts (see "Advanced: Provider Fallback Chain" below).
+- **Multi-Provider Support**: Supports Antigravity CLI (`agy`, the successor of Gemini CLI), Codex CLI, Claude Code, opencode, Grok CLI, and Apple Intelligence with automatic fallback. The same provider can appear multiple times with different models or accounts (see "Advanced: Provider Fallback Chain" below).
 - **Smart Cooldown**: Automatically demotes failed steps for 1 hour (configurable), keyed per provider+model+account so one rate-limited account or model does not block the others
 - **Format Detection**: Detects commit format from recent commits (Conventional, Bracket, Emoji, etc.)
 - **Empty Repo Safe**: Auto format detection falls back cleanly even when the repository has no commits and Git outputs localized messages
@@ -53,6 +53,7 @@
   - Codex CLI: `npm install -g @openai/codex`
   - Claude Code: `curl -fsSL https://claude.ai/install.sh | bash`
   - opencode: `curl -fsSL https://opencode.ai/install | bash`
+  - Grok CLI (`grok`, xAI): bundled with [cmux](https://github.com/manaflow-ai/cmux) at `/Applications/cmux.app/Contents/Resources/bin/grok`. If `grok` is not on `PATH`, the step is skipped and the chain moves on.
   - Apple Intelligence: Built-in on macOS (macOS 26+ with Apple Silicon required)
 
 ## Installation
@@ -134,6 +135,11 @@ git-sc -n
 | `git-sc --reword <HASH>` | Regenerate message for specific commit |
 | `git-sc -g <HASH>` | Generate from existing commit (output only) |
 
+Concurrency guards worth knowing about:
+
+- `--reword` refuses to run while a rebase is in progress. It ends every failed rebase with `git rebase --abort`, so starting one on top of yours would discard your in-progress conflict resolution. Finish or abort your rebase first.
+- Committing aborts if the staged content changed while the message was being generated (git-sc compares the index tree before and after). The generated message describes the old content, so committing the new one would be wrong. Just re-run. `--squash` re-checks for newly staged changes the same way, right before it resets.
+
 ### Options
 
 #### Basic Options
@@ -177,7 +183,7 @@ Operation modes (`--amend`, `--squash`, `--reword`, `--generate-for`) are mutual
 
 | Option | Short | Description |
 |--------|-------|-------------|
-| `--provider` | `-p` | Use specific AI provider (antigravity, codex, claude, opencode, apple-intelligence). The legacy name `gemini` is accepted as a backward-compatible alias for `antigravity`. |
+| `--provider` | `-p` | Use specific AI provider (antigravity, codex, claude, opencode, grok, apple-intelligence). The legacy name `gemini` is accepted as a backward-compatible alias for `antigravity`. |
 | `--lang` | `-l` | Override commit message language |
 
 #### Debug & Info
@@ -252,7 +258,7 @@ Project settings override global settings. Fields not specified in project confi
 # AI provider priority
 # "antigravity" is the successor of the legacy Gemini CLI (`agy` command).
 # Writing "gemini" instead is still accepted as a backward-compatible alias.
-providers = ["opencode", "antigravity", "codex", "claude", "apple-intelligence"]
+providers = ["opencode", "grok", "antigravity", "codex", "claude", "apple-intelligence"]
 
 # Commit message language
 language = "Japanese"
@@ -278,11 +284,14 @@ codex_reasoning_effort = "low"
 # fails the step. An empty string omits `--model` and lets agy pick its own default. A legacy `gemini = "..."` key is still
 # accepted as an input alias and is promoted to `antigravity` (an explicit `antigravity`
 # value wins if both are present).
+# Grok CLI supports `-m`: pass a model ID from `grok models` (e.g. "grok-4.5").
+# An empty string omits `-m` and lets grok pick its own default.
 [models]
 antigravity = "GPT-OSS 120B (Medium)"
 codex = "gpt-5.4-mini"
 claude = "haiku"
 opencode = ""
+grok = ""
 
 # Provider cooldown (minutes)
 provider_cooldown_minutes = 60
@@ -295,7 +304,7 @@ provider_timeout_seconds = 60
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `providers` | Provider fallback chain — each entry is a provider name string **or** a `{provider, model, command, env, name}` table (see "Advanced: Provider Fallback Chain" below; `antigravity` recommended, `gemini` accepted as an alias) | `["opencode", "antigravity", "codex", "claude", "apple-intelligence"]` |
+| `providers` | Provider fallback chain — each entry is a provider name string **or** a `{provider, model, command, env, name}` table (see "Advanced: Provider Fallback Chain" below; `antigravity` recommended, `gemini` accepted as an alias) | `["opencode", "grok", "antigravity", "codex", "claude", "apple-intelligence"]` (`apple-intelligence` only on macOS builds with the `apple-ai` feature) |
 | `language` | Commit message language | `"Japanese"` |
 | `prefix_type` | Commit prefix format | Auto-detect |
 | `auto_push` | Auto-push after commit | `false` |
@@ -333,7 +342,7 @@ Per-step fields:
 
 | Field | Description |
 |-------|-------------|
-| `provider` | Required. Provider type that decides the CLI argument convention (`codex`, `antigravity`, `claude`, `opencode`, `apple-intelligence`; `gemini`/`agy` accepted as aliases). |
+| `provider` | Required. Provider type that decides the CLI argument convention (`codex`, `antigravity`, `claude`, `opencode`, `grok`, `apple-intelligence`; `gemini`/`agy` accepted as aliases). |
 | `model` | Optional. Model for this step. If omitted, falls back to `[models].<provider>`, then the CLI's own default. |
 | `command` | Optional. Executable (and fixed args) to run instead of the provider's default binary — e.g. a wrapper script. `~` is expanded. The provider's standard arguments (`--disable hooks` etc. for codex) are still applied. |
 | `env` | Optional. Environment variables set explicitly via `Command::env()` when launching this step. `~` in values is expanded; the key must be a valid POSIX name. Dynamic-loader / interpreter pre-load keys (`LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, `NODE_OPTIONS`, `PYTHONPATH` etc.) are rejected case-insensitively with a config error to prevent code-injection via project-level `.git-sc`. |
@@ -404,6 +413,9 @@ echo "conventional"
 
 - AI prompts may contain staged diff content. When git-sc needs a temporary prompt file for providers such as opencode, or a final-output file for Codex, it creates the file with no group/other permissions on Unix/macOS and removes it automatically after use.
 - Reword message temporary files use the same private-file behavior.
+- The provider cooldown state file (`~/.config/git-sc/.providers-state`) is also created with no group/other permissions, because its cooldown keys embed each step's `env` values verbatim.
+- **`.git-sc-ignore` failures stop the run.** If the file exists but cannot be read or parsed, git-sc exits with an error instead of continuing without exclusions. A malformed ignore file would otherwise silently send the very files you meant to withhold to the AI provider.
+- **A project-level `.git-sc` can run code.** `providers[].command`, `prefix_scripts[].script`, and `ai_usage.command` name executables that git-sc launches, and a repository-local `.git-sc` is merged in like any other config. Cloning an untrusted repository and running git-sc in it — including automatically, via an agent stop hook — therefore executes whatever those fields point at. `env` keys are validated and dynamic-loader / interpreter pre-load names are rejected, but that does not constrain these three fields. Review a repository's `.git-sc` before running git-sc inside it, the same way you would review a `Makefile` or a git hook.
 
 ### .git-sc-ignore
 
@@ -488,6 +500,23 @@ flowchart LR
 5. **Generate**: Send to AI with fallback
 6. **Commit**: Confirm and create commit
 
+## Grok CLI
+
+The Grok provider drives the Grok Build TUI (`grok`, xAI). That CLI is a full coding agent — plan mode, cross-session memory, web search, and tool execution are all on by default — so git-sc constrains it to behave as a single-turn pure function:
+
+| Flag | Why |
+|------|-----|
+| `--output-format plain` | Headless text output instead of the interactive TUI |
+| `--sandbox read-only` | Forbids filesystem writes and network, like Codex's sandbox |
+| `--no-plan` / `--no-memory` | Blocks plan mode and cross-session memory (both default on) |
+| `--disable-web-search` | Cuts web fetch/search |
+| `--max-turns 1` | Stops any tool loop after one turn |
+| `--verbatim` | Prevents the CLI from rewriting the prompt |
+| `--prompt-file <temp file>` | Avoids `ARG_MAX` limits and cmd.exe metacharacter issues for large diffs |
+
+- **Model**: resolved as `model` on the step > `[models].grok` > empty (defer to grok's own default). When non-empty, the ID from `grok models` (currently only `grok-4.5`) is passed as `-m "<id>"`. The shipped default for `[models].grok` is left empty so a cheaper model added later is picked up without a git-sc release.
+- **Availability**: the Grok CLI ships bundled with [cmux](https://github.com/manaflow-ai/cmux) at `/Applications/cmux.app/Contents/Resources/bin/grok`. If `grok` is not on `PATH`, this step is skipped and the chain moves on to the next provider.
+
 ## Apple Intelligence
 
 Apple Intelligence provider uses [fm-rs](https://github.com/blacktop/fm-rs) (Rust bindings for Apple's [Foundation Models](https://developer.apple.com/documentation/foundationmodels) framework) for fully on-device inference. No API key or network connection is required.
@@ -499,7 +528,7 @@ Apple Intelligence provider uses [fm-rs](https://github.com/blacktop/fm-rs) (Rus
 
 ## Platform Notes
 
-- **Windows**: the Antigravity CLI (`agy`) provider is skipped with an explicit error. All providers launch through `cmd /C` on Windows (to support npm-installed `.cmd` shims), but cmd.exe cannot safely receive a multi-line diff prompt as a command-line argument, so passing it would corrupt the command (and is a known command-injection vector class, CVE-2024-24576). The fallback chain simply moves on to the next provider. Providers that read the prompt from stdin or a temp file (codex, claude, opencode) are unaffected.
+- **Windows**: the Antigravity CLI (`agy`) provider is skipped with an explicit error. All providers launch through `cmd /C` on Windows (to support npm-installed `.cmd` shims), but cmd.exe cannot safely receive a multi-line diff prompt as a command-line argument, so passing it would corrupt the command (and is a known command-injection vector class, CVE-2024-24576). The fallback chain simply moves on to the next provider. Providers that read the prompt from stdin or a temp file (codex, claude, opencode, grok) are unaffected.
 
 ## Build Commands
 

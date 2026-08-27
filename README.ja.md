@@ -32,7 +32,7 @@
 
 ## 特徴
 
-- **マルチプロバイダー対応**: Antigravity CLI (`agy`、Gemini CLI の後継)、Codex CLI、Claude Code、opencode、Apple Intelligence を自動フォールバック付きでサポート。同じプロバイダーを異なるモデル・アカウントで複数回並べられる（下記「応用: プロバイダーフォールバックチェーン」参照）
+- **マルチプロバイダー対応**: Antigravity CLI (`agy`、Gemini CLI の後継)、Codex CLI、Claude Code、opencode、Grok CLI、Apple Intelligence を自動フォールバック付きでサポート。同じプロバイダーを異なるモデル・アカウントで複数回並べられる（下記「応用: プロバイダーフォールバックチェーン」参照）
 - **スマートクールダウン**: 失敗したステップを1時間（設定可能）優先度を下げて連続失敗を回避。provider+model+アカウント単位のキーなので、レート制限中の1アカウント/モデルが他をブロックしない
 - **フォーマット自動検出**: 過去のコミットから形式を自動判断（Conventional、Bracket、Emoji等）
 - **空リポジトリ対応**: コミットがまだないリポジトリでも、Git のロケールに依存せず自動判定を安全にフォールバック
@@ -53,6 +53,7 @@
   - Codex CLI: `npm install -g @openai/codex`
   - Claude Code: `curl -fsSL https://claude.ai/install.sh | bash`
   - opencode: `curl -fsSL https://opencode.ai/install | bash`
+  - Grok CLI (`grok`、xAI): [cmux](https://github.com/manaflow-ai/cmux) に同梱 (`/Applications/cmux.app/Contents/Resources/bin/grok`)。`grok` が `PATH` に無い場合、このステップはスキップされて次のプロバイダーへ進みます
   - Apple Intelligence: macOS版に内蔵（macOS 26+、Apple Silicon必須）
 
 ## インストール
@@ -134,6 +135,11 @@ git-sc -n
 | `git-sc --reword <HASH>` | 特定コミットのメッセージを再生成 |
 | `git-sc -g <HASH>` | 既存コミットからメッセージ生成（出力のみ） |
 
+競合に対する保護:
+
+- `--reword` は rebase が進行中のときは実行を拒否します。reword は失敗した rebase を必ず `git rebase --abort` で終わらせるため、進行中の rebase の上に重ねると解決作業中の内容を破棄してしまうためです。先に rebase を完了するか中止してください。
+- メッセージ生成中にステージ内容が変化した場合、コミットを中止します（生成前後の index の tree を比較します）。生成済みメッセージは変更前の内容を説明したものなので、変更後の内容をそのままコミットするのは誤りだからです。そのまま再実行してください。`--squash` も reset の直前に同じ確認を行います。
+
 ### オプション
 
 #### 基本オプション
@@ -177,7 +183,7 @@ git-sc -n
 
 | オプション | 短縮 | 説明 |
 |-----------|------|------|
-| `--provider` | `-p` | AIプロバイダーを指定 (antigravity, codex, claude, opencode, apple-intelligence)。旧名 `gemini` も後方互換のため `antigravity` として受理 |
+| `--provider` | `-p` | AIプロバイダーを指定 (antigravity, codex, claude, opencode, grok, apple-intelligence)。旧名 `gemini` も後方互換のため `antigravity` として受理 |
 | `--lang` | `-l` | コミットメッセージの言語を上書き |
 
 #### デバッグ・情報
@@ -251,7 +257,7 @@ git-sc はプロジェクトレベルでの上書きが可能な階層的設定�
 ```toml
 # AIプロバイダーの優先順位
 # "antigravity" は旧 Gemini CLI の後継 (`agy`)。"gemini" と書いても後方互換のため同じプロバイダーとして扱う
-providers = ["opencode", "antigravity", "codex", "claude", "apple-intelligence"]
+providers = ["opencode", "grok", "antigravity", "codex", "claude", "apple-intelligence"]
 
 # コミットメッセージの言語
 language = "Japanese"
@@ -278,11 +284,14 @@ codex_reasoning_effort = "low"
 # 空文字列なら `--model` を省略し agy 自身の既定モデルに委ねます。
 # 旧 `gemini = "..."` キーは後方互換の入力エイリアスとして受理され、`antigravity` に
 # 昇格します(両方指定した場合は `antigravity` が優先)。
+# Grok CLI は `-m` に対応。`grok models` が返す ID (例: "grok-4.5") をそのまま指定します。
+# 空文字列なら `-m` を省略し grok 自身の既定モデルに委ねます。
 [models]
 antigravity = "GPT-OSS 120B (Medium)"
 codex = "gpt-5.4-mini"
 claude = "haiku"
 opencode = ""
+grok = ""
 
 # プロバイダークールダウン（分）
 provider_cooldown_minutes = 60
@@ -404,6 +413,9 @@ echo "conventional"
 
 - AI プロンプトには staged diff の内容が含まれる場合があります。opencode などのプロバイダー向けに一時プロンプトファイルが必要な場合や Codex の最終応答ファイルを使う場合、Unix/macOS では group/other 権限を付けずに作成し、使用後に自動削除します。
 - reword 用コミットメッセージの一時ファイルも同じ権限で作成します。
+- プロバイダーのクールダウン状態ファイル (`~/.config/git-sc/.providers-state`) も group/other 権限を付けずに作成します。クールダウンキーには各ステップの `env` の値がそのまま含まれるためです。
+- **`.git-sc-ignore` の読み込みに失敗した場合は処理を中止します。** ファイルが存在するのに読めない・解釈できない場合、除外なしで続行せずエラーで終了します。そのまま続行すると、除外したかったファイルが黙って AI プロバイダーへ送られてしまうためです。
+- **プロジェクトの `.git-sc` はコードを実行できます。** `providers[].command`、`prefix_scripts[].script`、`ai_usage.command` は git-sc が起動する実行ファイルを指定するもので、リポジトリ内の `.git-sc` は他の設定と同様にマージされます。信頼できないリポジトリを clone してその中で git-sc を実行すると (エージェントの stop hook 経由の自動実行を含む)、これらが指す実行ファイルが動きます。`env` のキーは検証され動的ローダー/インタープリタの事前ロード系は拒否されますが、この 3 つのフィールドはその対象外です。`Makefile` や git hook と同じように、実行前にそのリポジトリの `.git-sc` を確認してください。
 
 ### .git-sc-ignore
 
@@ -488,6 +500,23 @@ flowchart LR
 5. **生成**: AIに送信（フォールバック付き）
 6. **コミット**: 確認してコミットを作成
 
+## Grok CLI
+
+Grok プロバイダーは Grok Build TUI (`grok`、xAI) を利用します。この CLI は plan モード・セッションをまたぐ memory・web 検索・ツール実行が既定で有効なコーディングエージェントであるため、git-sc は 1 ターンの純粋関数として振る舞うように制約をかけて起動します。
+
+| フラグ | 目的 |
+|--------|------|
+| `--output-format plain` | 対話 TUI ではなく headless のテキスト出力にする |
+| `--sandbox read-only` | Codex のサンドボックスと同様にファイル書き込みとネットワークを禁止する |
+| `--no-plan` / `--no-memory` | plan モードとセッションをまたぐ memory を無効化する（どちらも既定で有効） |
+| `--disable-web-search` | web fetch / 検索を無効化する |
+| `--max-turns 1` | ツールのループを 1 ターンで打ち切る |
+| `--verbatim` | CLI 側でプロンプトを書き換えさせない |
+| `--prompt-file <一時ファイル>` | 大きな diff で `ARG_MAX` や cmd.exe のメタ文字問題を避ける |
+
+- **モデル**: ステップの `model` > `[models].grok` > 空（grok 自身の既定に委ねる）の順で解決します。非空の場合は `grok models` が返す ID（現在は `grok-4.5` のみ）を `-m "<id>"` として渡します。同梱の既定値は空にしてあり、将来より安価なモデルが追加されても git-sc のリリースなしで追随できます。
+- **入手**: Grok CLI は [cmux](https://github.com/manaflow-ai/cmux) に同梱されています (`/Applications/cmux.app/Contents/Resources/bin/grok`)。`grok` が `PATH` に無い場合、このステップはスキップされて次のプロバイダーへ進みます。
+
 ## Apple Intelligence
 
 Apple Intelligence プロバイダーは、[fm-rs](https://github.com/blacktop/fm-rs)（Appleの [Foundation Models](https://developer.apple.com/documentation/foundationmodels) フレームワークのRustバインディング）を使用し、完全オンデバイス推論を行います。APIキーやネットワーク接続は不要です。
@@ -499,7 +528,7 @@ Apple Intelligence プロバイダーは、[fm-rs](https://github.com/blacktop/f
 
 ## プラットフォームの注意
 
-- **Windows**: Antigravity CLI (`agy`) プロバイダーは明示エラーでスキップされます。Windows では全プロバイダーを `cmd /C` 経由で起動します（npm でインストールされる `.cmd` シム対応のため）が、cmd.exe は複数行の diff を含むプロンプトをコマンドライン引数として安全に受け取れず、渡すとコマンドラインが破損します（CVE-2024-24576 と同クラスのコマンドインジェクション経路でもあります）。フォールバックチェーンは次のプロバイダーへ進みます。プロンプトを stdin や一時ファイルで受け取るプロバイダー（codex、claude、opencode）は影響を受けません。
+- **Windows**: Antigravity CLI (`agy`) プロバイダーは明示エラーでスキップされます。Windows では全プロバイダーを `cmd /C` 経由で起動します（npm でインストールされる `.cmd` シム対応のため）が、cmd.exe は複数行の diff を含むプロンプトをコマンドライン引数として安全に受け取れず、渡すとコマンドラインが破損します（CVE-2024-24576 と同クラスのコマンドインジェクション経路でもあります）。フォールバックチェーンは次のプロバイダーへ進みます。プロンプトを stdin や一時ファイルで受け取るプロバイダー（codex、claude、opencode、grok）は影響を受けません。
 
 ## ビルドコマンド
 

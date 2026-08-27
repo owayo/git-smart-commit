@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -134,7 +135,25 @@ impl State {
             .unwrap_or(0);
         let counter = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         let tmp_path = path.with_extension(format!("tmp.{}.{}.{}", pid, nanos, counter));
-        if let Err(e) = fs::write(&tmp_path, &content) {
+
+        // 状態ファイルには cooldown_key が入り、そのキーは step の env 値
+        // (CODEX_HOME などのパス、設定次第では資格情報)から導出される。
+        // `fs::write` は umask 任せで 0644 になりうるので、明示的に 0600 で作る。
+        // rename 後のファイルはこの権限を引き継ぐため、最終的な状態ファイルも 0600 になる。
+        // `create_new(true)` はシンボリックリンク経由の書き込みも防ぐ(tmp 名は毎回一意)。
+        let write_result = (|| -> std::io::Result<()> {
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(&tmp_path)?;
+            file.write_all(content.as_bytes())?;
+            file.sync_all()
+        })();
+        if let Err(e) = write_result {
             // create 成功後の write 失敗(ENOSPC等)でも一時ファイルを残さない。
             // tmp 名は毎回ユニークで再利用されないため、ここで消さないと永久に蓄積する。
             let _ = fs::remove_file(&tmp_path);
@@ -741,6 +760,28 @@ mod tests {
         let reordered = state.reorder_steps(steps, 60);
         // 降格されても1つしかないのでそのまま
         assert_eq!(reordered, vec![step("gemini")]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_save_to_path_creates_file_not_readable_by_group_or_others() {
+        // 状態ファイルには cooldown_key が入り、そのキーは step の env 値
+        // (CODEX_HOME 等のパス、設定次第では資格情報)から導出される。
+        // umask 任せの 0644 では他ユーザーに読まれるため、0600 で作る。
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join(".providers-state");
+
+        let mut state = State::default();
+        state.record_failure(&step_with_env("codex", "CODEX_HOME", "/tmp/secret-account"));
+        state.save_to_path(&target).unwrap();
+
+        let mode = fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "状態ファイルは所有者のみ読み書き可能であるべき (実際: {mode:o})"
+        );
     }
 
     #[test]

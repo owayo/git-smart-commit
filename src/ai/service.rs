@@ -1309,6 +1309,13 @@ mod tests {
     // Conventional Commits の scope が閉じずに切れている
     #[case("feat(mise", true)]
     #[case("feat(mise): ツールバージョン固定を追加", false)]
+    // 半角括弧の判定は件名全体が ASCII のときだけ。閉じていれば正常、
+    // 開き数を超えて閉じているだけの件名も打ち切りではない
+    #[case("feat(api): add endpoint", false)]
+    #[case("fix: handle the closing paren )", false)]
+    // 絵文字プレフィックス(prefix_type = "emoji")でも日本語の助詞判定は効く
+    #[case("✨ 新機能を追加", false)]
+    #[case("✨ 新機能を", true)]
     // 空文字は別のエラーとして扱うため、ここでは打ち切り扱いしない
     #[case("", false)]
     #[case("   ", false)]
@@ -1355,6 +1362,15 @@ mod tests {
         false
     )]
     #[case("fix: URL を http: から https: に変更", false)]
+    // type の大文字小文字は無視して数える(モデルが `Feat:` を返すことがある)
+    #[case("FEAT: 追加 FIX: 修正", true)]
+    #[case("Feat: 追加 Docs: 更新", true)]
+    // 同じ type が 2 回現れる連結も検出する
+    #[case("revert: 取り消し revert: 再度取り消し", true)]
+    // 標準 type 以外のプレフィックス様式は数えない(bracket / colon 形式の複数連結は
+    // この判定の対象外。Conventional 以外の様式では誤検出を避けることを優先する)
+    #[case("[Add] 機能追加 [Fix] 不具合修正", false)]
+    #[case("Add: 機能追加 Fix: 不具合修正", false)]
     #[case("", false)]
     fn test_is_concatenated_subject(#[case] subject: &str, #[case] expected: bool) {
         assert_eq!(
