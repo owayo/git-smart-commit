@@ -583,52 +583,92 @@ impl AiService {
                 );
             }
 
-            // Apple Intelligence: fm-rs feature 有効時はネイティブ呼び出し
-            #[cfg(all(target_os = "macos", feature = "apple-ai"))]
-            let result = if matches!(provider, AiProvider::AppleIntelligence) {
-                Self::call_apple_intelligence_native(
-                    &prompt,
-                    &self.language,
-                    prefix_type,
-                    !recent_commits.is_empty(),
-                )
-            } else {
-                self.call_provider(&provider, step, &model, &prompt, silent)
-            };
-            #[cfg(not(all(target_os = "macos", feature = "apple-ai")))]
-            let result = self.call_provider(&provider, step, &model, &prompt, silent);
+            // 打ち切り応答(件名が助詞・前置詞の直後で終わる)は同じステップでも確率的に
+            // 起きるため、次のステップへ落とす前にこの回数だけ引き直す。
+            const TRUNCATION_RETRIES: u32 = 1;
+            let mut retries_left = TRUNCATION_RETRIES;
 
-            match result {
-                Ok(message) => {
-                    // --body 未指定時は1行目のみ使用（AIが複数行を返した場合の対策）
-                    let message = if !with_body {
-                        message.lines().next().unwrap_or("").trim().to_string()
-                    } else {
-                        message
-                    };
-                    if message.is_empty() {
-                        last_error = Some(AppError::AiProviderError(format!(
-                            "{} returned an empty first line",
-                            provider.name()
-                        )));
-                        continue;
+            loop {
+                // Apple Intelligence: fm-rs feature 有効時はネイティブ呼び出し
+                #[cfg(all(target_os = "macos", feature = "apple-ai"))]
+                let result = if matches!(provider, AiProvider::AppleIntelligence) {
+                    Self::call_apple_intelligence_native(
+                        &prompt,
+                        &self.language,
+                        prefix_type,
+                        !recent_commits.is_empty(),
+                    )
+                } else {
+                    self.call_provider(&provider, step, &model, &prompt, silent)
+                };
+                #[cfg(not(all(target_os = "macos", feature = "apple-ai")))]
+                let result = self.call_provider(&provider, step, &model, &prompt, silent);
+
+                match result {
+                    Ok(message) => {
+                        // --body 未指定時は1行目のみ使用（AIが複数行を返した場合の対策）
+                        let message = if !with_body {
+                            message.lines().next().unwrap_or("").trim().to_string()
+                        } else {
+                            message
+                        };
+                        if message.is_empty() {
+                            last_error = Some(AppError::AiProviderError(format!(
+                                "{} returned an empty first line",
+                                provider.name()
+                            )));
+                            break;
+                        }
+                        // 生成が途中で打ち切られた件名はコミットに使わない。
+                        // AI CLI 自体は成功(exit 0)を返すため、ここで弾かないと
+                        // 「... mise 設定を」のような未完成のメッセージが確定してしまう。
+                        let subject = message.lines().next().unwrap_or("").to_string();
+                        if Self::is_truncated_subject(&subject) {
+                            if retries_left > 0 {
+                                retries_left -= 1;
+                                if !silent {
+                                    eprintln!(
+                                        "  {} {} returned a truncated message ({}); retrying",
+                                        "⚠".yellow(),
+                                        Self::step_label(&provider, step),
+                                        subject.dimmed()
+                                    );
+                                }
+                                continue;
+                            }
+                            if !silent {
+                                eprintln!(
+                                    "  {} {} kept returning a truncated message ({})",
+                                    "⚠".yellow(),
+                                    Self::step_label(&provider, step),
+                                    subject.dimmed()
+                                );
+                            }
+                            last_error = Some(AppError::AiProviderError(format!(
+                                "{} returned a truncated message: {}",
+                                provider.name(),
+                                subject
+                            )));
+                            break;
+                        }
+                        return Ok((message, provider.name()));
                     }
-                    return Ok((message, provider.name()));
-                }
-                Err(e) => {
-                    if !silent {
-                        eprintln!(
-                            "  {} {} failed: {}",
-                            "⚠".yellow(),
-                            Self::step_label(&provider, step),
-                            e.to_string().red()
-                        );
+                    Err(e) => {
+                        if !silent {
+                            eprintln!(
+                                "  {} {} failed: {}",
+                                "⚠".yellow(),
+                                Self::step_label(&provider, step),
+                                e.to_string().red()
+                            );
+                        }
+                        // 手動指定時は失敗記録をスキップ
+                        if !self.provider_override {
+                            self.record_provider_failure(step);
+                        }
+                        last_error = Some(e);
+                        break;
                     }
-                    // 手動指定時は失敗記録をスキップ
-                    if !self.provider_override {
-                        self.record_provider_failure(step);
-                    }
-                    last_error = Some(e);
                 }
             }
         }
@@ -1100,6 +1140,69 @@ mod tests {
     #[test]
     fn test_clean_message_empty() {
         assert_eq!(AiService::clean_message(""), "");
+    }
+
+    /// 打ち切り検出。真陽性は agy 1.1.21 + GPT-OSS 120B (Medium) が exit 0 で返した応答と、
+    /// 実際のコミット履歴に残っていた打ち切りコミットから採取。偽陽性ケースは同じ履歴
+    /// (132 リポジトリ / 9136 コミット)で「正常なのに打ち切りと誤判定した」ものを回帰として
+    /// 固定する。誤検出は正常な件名を捨ててコミット不能に至らせるため、ここが最も重要。
+    #[rstest]
+    // 日本語: 格助詞の直後で切れている(agy の実測応答)
+    #[case("ci: GitHub Actions CIワークフローとmise設定を", true)]
+    #[case("ci: GitHub Actions workflowとmise設定ファイルを", true)]
+    #[case("refactor: state.rs のリトライ処理と", true)]
+    #[case("docs: READMEの", true)]
+    #[case("fix: 設定ファイルの読み込みが", true)]
+    // 日本語: 実際のコミット履歴に残っていた打ち切り
+    #[case("perf: 行コンテキスト取得を O(1) に最適化し LineIndex を", true)]
+    #[case("feat: 異常状態フラグで赤ベル表示を", true)]
+    #[case("ci: get-latest-tag-review と review ジョブに自動リトライ設定を", true)]
+    #[case(
+        "fix: Dockerfile に pnpm-workspace.yaml をコピーして CI ビルド失敗を",
+        true
+    )]
+    // 日本語: 読点で切れている
+    #[case("feat: mise 対応を追加、", true)]
+    // 日本語: 正常な件名(体言止め・活用語尾)は打ち切り扱いしない
+    #[case("ci: GitHub Actions CIワークフローとmise設定を追加", false)]
+    #[case("feat: mise でツールバージョンを固定する", false)]
+    #[case("fix: 競合状態を修正", false)]
+    #[case("chore: 依存を更新", false)]
+    // 日本語: 「〜に」「〜へ」で終わる体言止めは正常。実際のコミット履歴からの回帰ケースで、
+    // これらを打ち切り扱いすると通常のコミットが弾かれてしまう
+    #[case("feat: 再生速度をスライダーで調整可能に", false)]
+    #[case("build: cc と biome のバージョンを最新へ", false)]
+    #[case("fix: Gitステータス取得失敗でfail-closedに", false)]
+    #[case("fix: X プロバイダ名を twitter から x に", false)]
+    #[case("style: 日付横バッジ間隔を gap-3 に", false)]
+    #[case("docs: READMEにmise手順を追記", false)]
+    #[case("fix: 推奨の剣を名前の後ろへ、丸を SVG に", false)]
+    // 日本語の件名に含まれる単独の英字を冠詞と読み違えない(実際のコミット履歴からの回帰ケース)
+    #[case(
+        "fix(lint): 構文ゲートの残り 2 件を「1 件目だけ出す」で塞ぐ (#57 案 A)",
+        false
+    )]
+    // 全角括弧は日本語の注釈で非対称に使われるため打ち切り扱いしない
+    #[case("docs: 調査結果（端末3912 の PC 側オーディオデバイス不安定", false)]
+    // 英語: 前置詞・接続詞の直後で切れている
+    #[case("feat: add mise support for", true)]
+    #[case("fix: resolve race condition in the", true)]
+    #[case("refactor: split provider command and", true)]
+    // 英語: 正常な件名
+    #[case("feat: add mise support for tool versions", false)]
+    #[case("fix: resolve race condition in state file", false)]
+    // Conventional Commits の scope が閉じずに切れている
+    #[case("feat(mise", true)]
+    #[case("feat(mise): ツールバージョン固定を追加", false)]
+    // 空文字は別のエラーとして扱うため、ここでは打ち切り扱いしない
+    #[case("", false)]
+    #[case("   ", false)]
+    fn test_is_truncated_subject(#[case] subject: &str, #[case] expected: bool) {
+        assert_eq!(
+            AiService::is_truncated_subject(subject),
+            expected,
+            "subject: {subject:?}"
+        );
     }
 
     #[test]

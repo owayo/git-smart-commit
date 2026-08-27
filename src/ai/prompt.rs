@@ -149,6 +149,65 @@ Instructions:
         Self::ensure_body_separator(&message)
     }
 
+    /// 件名が文の途中で打ち切られているかを判定する
+    ///
+    /// AI CLI が exit 0(Antigravity なら status=SUCCESS)を返しながら、応答本文だけが
+    /// 助詞や前置詞の直後で終わることがある。空でも異常終了でもないため既存の検証を
+    /// すべて通過してしまい、「... mise 設定を」のような未完成の件名がそのまま
+    /// コミットされる。実測(2026-08-27, agy 1.1.21 + GPT-OSS 120B (Medium), 同一
+    /// プロンプト 12 回)では 4 回が助詞「を」の直後で終了した。
+    ///
+    /// 打ち切りは確率的に起きるため、検出したら同じステップを引き直すか、次のステップへ
+    /// フォールバックする。誤検出は「正常な件名が捨てられ、全ステップで同じ判定が続けば
+    /// コミット自体ができなくなる」という重い失敗につながるので、判定は実在するコミット
+    /// 履歴で誤検出が出なかった条件だけに絞る(下記の実測を参照)。
+    pub(super) fn is_truncated_subject(subject: &str) -> bool {
+        let subject = subject.trim();
+        // 空文字は呼び出し側が別のエラーとして扱うため、ここでは判定しない
+        if subject.is_empty() {
+            return false;
+        }
+
+        // 日本語: 格助詞・読点で終わる(接続の途中で切れている)。
+        // 「に」「へ」「は」「も」「で」「や」は *入れない*: 「再生速度をスライダーで調整可能に」
+        // 「バージョンを最新へ」のような体言止めが正常な件名として多用されるため
+        // (実測で 20 件以上が該当し、含めると全部を打ち切りと誤判定する)。
+        // 活用語尾「る」「し」「て」も通常の文末に現れるため対象にしない。
+        const TRAILING_PARTICLES: [char; 6] = ['を', 'と', 'が', 'の', '、', '，'];
+        if let Some(last) = subject.chars().last()
+            && TRAILING_PARTICLES.contains(&last)
+        {
+            return true;
+        }
+
+        // 英語の判定は件名全体が ASCII のときだけ行う。日本語の件名に含まれる単独の
+        // 英字(例: 「... で塞ぐ (#57 案 A)」)を冠詞と読み違えるのを避けるため。
+        // 同じ理由で冠詞 "a"/"an" は語彙から外す。
+        if subject.is_ascii() {
+            // 前置詞・接続詞で終わる(後続の名詞句が欠けている)
+            const TRAILING_WORDS: [&str; 14] = [
+                "to", "for", "and", "or", "with", "in", "on", "at", "of", "the", "from", "by",
+                "into", "via",
+            ];
+            if let Some(last_word) = subject.split_whitespace().next_back() {
+                let normalized = last_word
+                    .trim_matches(|c: char| !c.is_alphanumeric())
+                    .to_lowercase();
+                if TRAILING_WORDS.contains(&normalized.as_str()) {
+                    return true;
+                }
+            }
+
+            // 開いた括弧が閉じていない(例: scope が "feat(mise" で切れている)。
+            // 全角括弧は日本語の注釈で入れ子・非対称に使われるため対象にしない。
+            if subject.matches('(').count() > subject.matches(')').count() {
+                return true;
+            }
+        }
+
+        false
+    }
+
     /// 件名と本文の間に空行があることを保証する
     pub(super) fn ensure_body_separator(message: &str) -> String {
         let lines: Vec<&str> = message.lines().collect();
