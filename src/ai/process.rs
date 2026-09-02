@@ -13,6 +13,7 @@ use colored::Colorize;
 
 use crate::error::AppError;
 
+use super::prompt::CleanedResponse;
 use super::service::{AiProvider, AiService};
 
 /// 一時ファイルの RAII ガード。Drop 時に自動でクリーンアップする。
@@ -307,6 +308,17 @@ impl AiService {
         stdout_str: &str,
         stderr_str: &str,
     ) -> Result<String, AppError> {
+        Self::process_provider_output_detailed(provider, exit_status, stdout_str, stderr_str)
+            .map(|cleaned| cleaned.message)
+    }
+
+    /// `process_provider_output` に、応答を包んでいたタグ名を添えた版
+    pub(super) fn process_provider_output_detailed(
+        provider: &AiProvider,
+        exit_status: ExitStatus,
+        stdout_str: &str,
+        stderr_str: &str,
+    ) -> Result<CleanedResponse, AppError> {
         if !exit_status.success() {
             let error_msg = Self::extract_error(stderr_str, provider);
             // Claude Code はエラーメッセージを stdout に出力することがあるため、
@@ -340,8 +352,8 @@ impl AiService {
             }
         }
 
-        let message = stdout_str.trim().to_string();
-        let message = Self::clean_message(&message);
+        let cleaned = Self::clean_message_detailed(stdout_str.trim());
+        let message = cleaned.message;
 
         if message.is_empty() {
             // stderr にヒントがあればそれも含める
@@ -358,7 +370,10 @@ impl AiService {
             )));
         }
 
-        Ok(message)
+        Ok(CleanedResponse {
+            message,
+            envelope_tag: cleaned.envelope_tag,
+        })
     }
 
     /// stderrからエラーメッセージを抽出

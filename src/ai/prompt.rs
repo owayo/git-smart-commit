@@ -5,6 +5,23 @@
 
 use super::service::AiService;
 
+/// Conventional Commits の標準 type
+pub(super) const CONVENTIONAL_TYPES: [&str; 11] = [
+    "feat", "fix", "docs", "style", "refactor", "perf", "test", "build", "ci", "chore", "revert",
+];
+
+/// `clean_message_detailed` の結果
+///
+/// `envelope_tag` は応答全体を包んでいたタグ名のうち `commit` 以外のもの。
+/// プロンプトは `<commit>` で囲むよう指示しているが、モデルがタグ名をコミット種別と
+/// 取り違えて `<test>…</test>` を返すことが実際にあり(実測 1 件)、この名前は
+/// 「モデルが意図した形式」のヒントとして上位層が使う。本文自体には手を加えない。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct CleanedResponse {
+    pub(super) message: String,
+    pub(super) envelope_tag: Option<String>,
+}
+
 /// Conventional Commits プレフィックスの詳細説明
 pub(super) const CONVENTIONAL_COMMITS_GUIDE: &str = "\
 Use Conventional Commits format. Choose the prefix that best matches the change:\n\
@@ -128,6 +145,11 @@ Instructions:
 
     /// 生成されたメッセージをクリーンアップ
     pub(super) fn clean_message(message: &str) -> String {
+        Self::clean_message_detailed(message).message
+    }
+
+    /// クリーンアップ結果に、応答全体を包んでいたタグ名を添えて返す
+    pub(super) fn clean_message_detailed(message: &str) -> CleanedResponse {
         let message = message.trim();
 
         // マークダウンのコードブロックがある場合は削除
@@ -142,8 +164,19 @@ Instructions:
             message.to_string()
         };
 
-        // <commit>...</commit> で囲まれている場合は中身を取り出す
-        let message = Self::strip_commit_tags(&message);
+        // 応答全体が 1 組の対称タグで包まれていれば、タグ名を問わずまず 1 段剥がす。
+        // 全体ラップに該当しない場合だけ、`<commit>` 専用の寛容な取り出しを行う。
+        // この順序は入れ替えられない: 先に「どこかにある `<commit>`」を拾うと、
+        // `<wrapper>説明 <commit>本文</commit></wrapper>` のような応答から
+        // 内側だけを抜き出して外側の説明を見落とす。
+        let (message, envelope_tag) = match Self::split_full_tag_envelope(&message) {
+            Some((name, body)) => {
+                // `<commit>` は指示どおりの形なのでヒントにはしない
+                let tag = (name != "commit").then(|| name.to_string());
+                (body.to_string(), tag)
+            }
+            None => (Self::strip_commit_tags(&message), None),
+        };
 
         // 先頭と末尾の引用符がある場合は削除
         let message = message.trim_matches('"').trim_matches('\'');
@@ -151,7 +184,60 @@ Instructions:
         let message = message.trim().to_string();
 
         // 件名と本文の間に空行を保証
-        Self::ensure_body_separator(&message)
+        CleanedResponse {
+            message: Self::ensure_body_separator(&message),
+            envelope_tag,
+        }
+    }
+
+    /// 応答全体が属性なしの同名タグ 1 組で包まれていれば、その名前と中身を返す
+    ///
+    /// プロンプトの `<commit>` 指示に従わず、コミット種別をタグ名にして
+    /// `<test>OAuthスコープの狭さとdirectory.readonlyを検証</test>` を返すモデルが
+    /// 実際にあり、そのまま山括弧ごとコミットされた(2026-09-02)。
+    ///
+    /// 剥がす条件は「応答全体を包む 1 組」「開始・終了のタグ名が完全一致」「属性なし」
+    /// 「1 段だけ」に限る。途中にあるタグや片側だけのタグまで救うと、
+    /// `fix: レビュー結果の<details>内チェックボックス誤検出修正` のような正常な件名と
+    /// 区別できなくなる(ローカル 132 リポジトリ・8315 コミットの実測で、山括弧を含む
+    /// 件名 6 件のうち 5 件は先頭がタグではない通常の件名だった。全体ラップに限れば
+    /// 誤検出 0 件)。
+    fn split_full_tag_envelope(message: &str) -> Option<(&str, &str)> {
+        let message = message.trim();
+
+        let after_open = message.strip_prefix('<')?;
+        let name_end = after_open.find('>')?;
+        let name = &after_open[..name_end];
+
+        // 属性なしの ASCII タグ名だけを受け付ける(`<commit foo="bar">` は対象外)
+        let mut chars = name.chars();
+        let first = chars.next()?;
+        if !first.is_ascii_alphabetic()
+            || !chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return None;
+        }
+
+        // `<` + name + `>` の次から本文が始まる。タグ名は ASCII なので境界は安全
+        let body_start = name_end + 2;
+        let close_start = message.len().checked_sub(name.len() + 3)?;
+        if close_start < body_start {
+            return None;
+        }
+
+        // 本文がマルチバイトで終わる場合、末尾から数えた位置が文字境界とは限らない。
+        // `get` は境界でなければ None を返すのでスライスの panic を避けられる
+        let close = message.get(close_start..)?;
+        if close.strip_prefix("</")?.strip_suffix('>')? != name {
+            return None;
+        }
+
+        let body = message.get(body_start..close_start)?;
+        if body.trim().is_empty() {
+            return None;
+        }
+
+        Some((name, body))
     }
 
     /// `<commit>...</commit>` で囲まれた本文を取り出す
@@ -210,30 +296,104 @@ Instructions:
     /// 正常な件名を巻き込む(実在するコミット履歴 9139 件で 5 件の誤検出)。標準 type に
     /// 絞ると同じ履歴で誤検出は 0 件だった。
     pub(super) fn is_concatenated_subject(subject: &str) -> bool {
-        const CONVENTIONAL_TYPES: [&str; 11] = [
-            "feat", "fix", "docs", "style", "refactor", "perf", "test", "build", "ci", "chore",
-            "revert",
-        ];
-
-        let count = subject
+        subject
             .split_whitespace()
-            .filter(|token| {
-                // `type:` / `type(scope):` / `type!:` の形をした語だけを数える。
-                // 末尾がコロンであることを要求するので、`http://…` のような
-                // 文中の URL や `観点 B:` のような注釈は数えない。
-                let Some(head) = token.strip_suffix(':') else {
-                    return false;
-                };
-                let head = head.strip_suffix('!').unwrap_or(head);
-                let base = match (head.find('('), head.ends_with(')')) {
-                    (Some(paren), true) => &head[..paren],
-                    _ => head,
-                };
-                CONVENTIONAL_TYPES.contains(&base.to_ascii_lowercase().as_str())
-            })
-            .count();
+            .filter(|token| Self::is_conventional_type_token(token))
+            .count()
+            >= 2
+    }
 
-        count >= 2
+    /// 語が `type:` / `type(scope):` / `type!:` の形をした標準 type かを判定する
+    ///
+    /// 末尾がコロンであることを要求するので、`http://…` のような文中の URL や
+    /// `観点 B:` のような注釈は該当しない。
+    fn is_conventional_type_token(token: &str) -> bool {
+        let Some(head) = token.strip_suffix(':') else {
+            return false;
+        };
+        let head = head.strip_suffix('!').unwrap_or(head);
+        let base = match (head.find('('), head.ends_with(')')) {
+            (Some(paren), true) => &head[..paren],
+            _ => head,
+        };
+        CONVENTIONAL_TYPES.contains(&base.to_ascii_lowercase().as_str())
+    }
+
+    /// 件名が既に Conventional Commits の type プレフィックスを持つかを判定する
+    fn has_conventional_prefix(message: &str) -> bool {
+        message
+            .lines()
+            .next()
+            .and_then(|subject| subject.split_whitespace().next())
+            .is_some_and(Self::is_conventional_type_token)
+    }
+
+    /// 応答を包んでいたタグ名が標準 type だったときに、その prefix を件名へ復元する
+    ///
+    /// `<test>OAuthスコープの狭さとdirectory.readonlyを検証</test>` は、モデルが
+    /// `test:` を書くつもりでタグ名にしてしまった形と読める。タグを剥がしただけでは
+    /// プレフィックスが失われるので、次をすべて満たすときに限り復元する:
+    ///
+    /// - タグ名が標準 type と小文字で完全一致する(`<TEST>` は復元しない。
+    ///   大文字はモデルが type を書いた証拠として弱い)
+    /// - 件名にまだ type プレフィックスが無い(`<test>fix: …</test>` は二重にしない)
+    /// - 呼び出し側が「Conventional Commits を期待している」と判断している
+    ///   (この関数はその判断をしない。`prefix_type = plain` の設定を上書きしないため)
+    ///
+    /// 復元は件名行だけに行い、本文の行はそのまま残す。
+    pub(super) fn restore_conventional_prefix(message: &str, tag: &str) -> Option<String> {
+        if !CONVENTIONAL_TYPES.contains(&tag) {
+            return None;
+        }
+        if Self::has_conventional_prefix(message) {
+            return None;
+        }
+        let mut lines = message.lines();
+        let subject = lines.next()?;
+        if subject.trim().is_empty() {
+            return None;
+        }
+        let restored = format!("{tag}: {subject}");
+        let rest: Vec<&str> = lines.collect();
+        if rest.is_empty() {
+            Some(restored)
+        } else {
+            Some(format!("{restored}\n{}", rest.join("\n")))
+        }
+    }
+
+    /// 件名にタグの残骸が残っているかを判定する
+    ///
+    /// `split_full_tag_envelope` が剥がせるのは「属性なしの同名タグが全体を包む」形だけで、
+    /// 開始と終了でタグ名が違う・属性が付く・片側しか無い応答は素通しになる。そのまま
+    /// コミットすると山括弧が件名に残るので、打ち切りや連結と同じく引き直しの対象にする。
+    ///
+    /// 判定は件名の先頭が `<name>` か、末尾が `</name>` の場合だけ。ローカル 132 リポジトリ・
+    /// 8315 コミットの実測では、この条件に該当する正常な件名は 1 件も無かった
+    /// (`fix: レビュー結果の<details>内…` のように途中に山括弧を持つ件名は該当しない)。
+    pub(super) fn has_leftover_markup(subject: &str) -> bool {
+        let subject = subject.trim();
+
+        let starts_with_tag = subject
+            .strip_prefix('<')
+            .and_then(|rest| rest.split_once('>'))
+            .is_some_and(|(name, _)| Self::is_bare_tag_name(name));
+
+        let ends_with_tag = subject
+            .strip_suffix('>')
+            .and_then(|rest| rest.rfind("</").map(|at| &rest[at + 2..]))
+            .is_some_and(Self::is_bare_tag_name);
+
+        starts_with_tag || ends_with_tag
+    }
+
+    /// 属性を持たない ASCII のタグ名かを判定する
+    fn is_bare_tag_name(name: &str) -> bool {
+        let mut chars = name.chars();
+        chars
+            .next()
+            .is_some_and(|first| first.is_ascii_alphabetic())
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
     }
 
     /// 件名が文の途中で打ち切られているかを判定する
