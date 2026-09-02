@@ -301,7 +301,11 @@ impl AiService {
         Ok((exit_status, stdout_str, stderr_str))
     }
 
-    /// プロバイダーの出力を検証し、クリーンアップ済みのメッセージを返す
+    /// プロバイダーの出力を検証し、クリーンアップ済みのメッセージを返す(テスト用)
+    ///
+    /// 本体は `process_provider_output_detailed`。応答を包んでいたタグ名を見ない
+    /// 既存テストのために、メッセージだけを返す薄いラッパを残している。
+    #[cfg(test)]
     pub(super) fn process_provider_output(
         provider: &AiProvider,
         exit_status: ExitStatus,

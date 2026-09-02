@@ -143,7 +143,11 @@ Instructions:
         )
     }
 
-    /// 生成されたメッセージをクリーンアップ
+    /// 生成されたメッセージをクリーンアップ(テストからの呼び出し用)
+    ///
+    /// 本体は `clean_message_detailed` に一本化されているが、応答を包んでいたタグ名を
+    /// 見ない既存テストが多いため、メッセージだけを返す薄いラッパを残している。
+    #[cfg(test)]
     pub(super) fn clean_message(message: &str) -> String {
         Self::clean_message_detailed(message).message
     }
@@ -320,7 +324,7 @@ Instructions:
     }
 
     /// 件名が既に Conventional Commits の type プレフィックスを持つかを判定する
-    fn has_conventional_prefix(message: &str) -> bool {
+    pub(super) fn has_conventional_prefix(message: &str) -> bool {
         message
             .lines()
             .next()
@@ -368,16 +372,19 @@ Instructions:
     /// 開始と終了でタグ名が違う・属性が付く・片側しか無い応答は素通しになる。そのまま
     /// コミットすると山括弧が件名に残るので、打ち切りや連結と同じく引き直しの対象にする。
     ///
-    /// 判定は件名の先頭が `<name>` か、末尾が `</name>` の場合だけ。ローカル 132 リポジトリ・
+    /// 判定は件名の先頭が開きタグか、末尾が `</name>` の場合だけ。ローカル 132 リポジトリ・
     /// 8315 コミットの実測では、この条件に該当する正常な件名は 1 件も無かった
     /// (`fix: レビュー結果の<details>内…` のように途中に山括弧を持つ件名は該当しない)。
+    ///
+    /// 先頭側はタグ名の形を問わない。`<commit foo="bar">…</commit>` のような属性付きの
+    /// 応答は `strip_commit_tags` の片側救済で閉じタグだけが落ち、`<commit foo="bar">…`
+    /// という半端な形で残る。タグ名が妥当な識別子かどうかで絞ると、この形を見逃す。
     pub(super) fn has_leftover_markup(subject: &str) -> bool {
         let subject = subject.trim();
 
         let starts_with_tag = subject
             .strip_prefix('<')
-            .and_then(|rest| rest.split_once('>'))
-            .is_some_and(|(name, _)| Self::is_bare_tag_name(name));
+            .is_some_and(|rest| rest.contains('>'));
 
         let ends_with_tag = subject
             .strip_suffix('>')

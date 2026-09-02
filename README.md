@@ -314,6 +314,7 @@ provider_timeout_seconds = 60
 | `provider_timeout_seconds` | Provider call timeout | `60` |
 | `prefix_rules` | URL-based prefix format | `[]` |
 | `prefix_scripts` | External prefix scripts | `[]` |
+| `dev_log` | Developer generation log (global config only; see "Developer Generation Log") | disabled |
 
 Existing global config files are not rewritten automatically. The current Codex default is `gpt-5.4-mini`; to use it in an existing setup, update `models.codex` in `~/.config/git-sc/config.toml`. This default was reselected on June 9, 2026 (JST) by comparing `input_tokens` for Codex models that are API-visible, listed, and support `medium` reasoning, and re-verified on June 29, 2026 (JST). The latest measurement used `Reply ok.` in an empty directory with `--ignore-user-config --ignore-rules --ephemeral --sandbox read-only` and `model_reasoning_effort='medium'`: `gpt-5.5` = 17593, `gpt-5.4` = 16206, `gpt-5.4-mini` = 15856. All accepted runs produced `ok` and no tool calls, so the ranking is stable and the default is unchanged.
 
@@ -441,6 +442,35 @@ auto_push = true
 ```
 
 When enabled, `git-sc` will run `git push` after a successful commit or squash.
+
+### Developer Generation Log
+
+Records what prompt was sent and what came back, so prompt changes can be evaluated against real data instead of guesswork. Disabled by default.
+
+```toml
+# ~/.config/git-sc/config.toml only — a project .git-sc cannot enable this
+[dev_log]
+enabled = true
+content = "metadata"   # metadata | full
+retention_days = 14
+max_total_mb = 500
+```
+
+Each run writes one JSON file to `~/.config/git-sc/logs/YYYY-MM-DD/`, containing the prompt digest and diff statistics, every provider attempt (raw response before cleanup, model, duration, quality findings, and whether it was accepted, retried, or fell through), and the outcome — including the commit hash when one was made. Files are written to a temporary name and renamed into place, so concurrent `git-sc` runs never interleave, and partially written records never appear as finished ones.
+
+Analyze them by streaming the files into JSONL:
+
+```bash
+find ~/.config/git-sc/logs -name '*.json' | sort | xargs jq -c .
+
+# e.g. how often each provider produced a defective subject
+find ~/.config/git-sc/logs -name '*.json' | xargs jq -r \
+  '.attempts[] | select(.findings | length > 0) | "\(.provider)\t\(.findings[0])"' | sort | uniq -c
+```
+
+**Privacy.** `content = "metadata"` (the default) keeps prompt statistics and a digest but not the prompt itself, and drops provider stderr as well — Codex echoes the prompt there, so keeping it would put your diff in the log by another route. `content = "full"` stores the exact prompt, which means your staged diff is written to disk in plain text. Raw provider responses are kept at both levels, since a cleaned-up message alone is not enough to diagnose a bad generation. Environment overrides are recorded by name only, never by value. Logs are created mode `0600` inside `0700` directories, are removed after `retention_days`, and are trimmed oldest-first once they exceed `max_total_mb`. Cleanup runs at most once a day. If a log cannot be written, `git-sc` prints one warning (suppressed under `--quiet`) and commits anyway.
+
+This setting is global-only on purpose: a cloned repository's `.git-sc` must not be able to turn on logging or choose where your code gets written. A project-level `[dev_log]` is ignored with a warning.
 
 ## VS Code Extension
 

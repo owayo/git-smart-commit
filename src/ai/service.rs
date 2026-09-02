@@ -1,10 +1,14 @@
 use std::fs;
 use std::path::Path;
+use std::rc::Rc;
+use std::time::Instant;
 
 use colored::Colorize;
 
 use super::process::TempFile;
+use super::prompt::CleanedResponse;
 use crate::config::{Config, ModelsConfig, ProviderStep, canonical_provider_key};
+use crate::devlog::{AttemptRecord, DevLog, Input};
 use crate::error::AppError;
 use crate::state::State;
 
@@ -78,6 +82,16 @@ impl AiProvider {
     }
 }
 
+/// プロバイダー呼び出しの生出力(生成ログ用)
+///
+/// 呼び出しがエラーで終わっても、そこまでに読めた出力は残したいので、
+/// 戻り値ではなく出力引数で受け取る。
+#[derive(Debug, Default)]
+pub(super) struct CapturedOutput {
+    pub(super) stdout: String,
+    pub(super) stderr: String,
+}
+
 /// フォールバック機能付きのAIサービス
 pub struct AiService {
     /// フォールバックチェーン。各ステップは provider/model/command/env を持つ。
@@ -101,6 +115,9 @@ pub struct AiService {
     /// `verify_installation` で `AppError::AiUsageError` として上位に伝える。
     /// snapshot 取得失敗(fail-open)や、そもそも入力 step が 0 件のケースは含まない。
     ai_usage_gate_blocked: bool,
+    /// 開発者向け生成ログ(`[dev_log] enabled = true` のときだけ Some)。
+    /// App と共有し、プロバイダー呼び出しごとに試行を記録する。
+    dev_log: Option<Rc<DevLog>>,
 }
 
 impl AiService {
@@ -174,6 +191,7 @@ impl AiService {
             legacy_gemini_alias_detected,
             ai_usage_notes,
             ai_usage_gate_blocked,
+            dev_log: None,
         }
     }
 
@@ -287,6 +305,7 @@ impl AiService {
             legacy_gemini_alias_detected: false,
             ai_usage_notes: Vec::new(),
             ai_usage_gate_blocked: false,
+            dev_log: None,
         }
     }
 
@@ -314,6 +333,84 @@ impl AiService {
             }
             self.ai_usage_notes.clear();
         }
+    }
+
+    /// 生成ログを紐付ける(App と共有し、プロバイダー呼び出しごとに試行を記録する)
+    pub fn set_dev_log(&mut self, dev_log: Rc<DevLog>) {
+        self.dev_log = Some(dev_log);
+    }
+
+    /// 生成ログの `provider_plan` に載せる step のラベル
+    ///
+    /// `name` があればそれを、無ければ provider(+ 設定されたモデル)を使う。
+    /// `cooldown_key` は env の値まで含む(資格情報が混ざりうる)ので使わない。
+    fn step_plan_label(step: &ProviderStep) -> String {
+        if let Some(name) = &step.name {
+            return name.clone();
+        }
+        let provider = canonical_provider_key(&step.provider);
+        match step
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+        {
+            Some(model) => format!("{provider}({model})"),
+            None => provider.to_string(),
+        }
+    }
+
+    /// 直前の試行の判定結果と採否を生成ログへ書き戻す(ログ無効なら何もしない)
+    fn update_dev_log_attempt(
+        &self,
+        message: Option<String>,
+        findings: Vec<String>,
+        decision: &str,
+    ) {
+        if let Some(dev_log) = &self.dev_log {
+            dev_log.update_last_attempt(message, findings, decision);
+        }
+    }
+
+    /// Apple Intelligence のネイティブ呼び出しを試行として記録する
+    ///
+    /// サブプロセスを介さないので生の応答は捕捉できない。整形後のメッセージと
+    /// 所要時間だけを、他プロバイダーと同じ形で残す。
+    #[cfg(all(target_os = "macos", feature = "apple-ai"))]
+    fn record_native_attempt(
+        &self,
+        provider: &AiProvider,
+        step: &ProviderStep,
+        model: &str,
+        retry: u32,
+        duration_ms: u64,
+        result: &Result<CleanedResponse, AppError>,
+    ) {
+        let Some(dev_log) = &self.dev_log else {
+            return;
+        };
+        dev_log.record_attempt(AttemptRecord {
+            index: dev_log.attempt_count(),
+            provider: canonical_provider_key(&step.provider).to_string(),
+            step_label: Self::step_label(provider, step),
+            model: model.to_string(),
+            env_keys: step.env.keys().cloned().collect(),
+            retry,
+            duration_ms,
+            raw_stdout: None,
+            raw_stdout_bytes: 0,
+            raw_stdout_truncated_by_logger: false,
+            stderr_excerpt: None,
+            stderr_bytes: 0,
+            envelope_tag: result
+                .as_ref()
+                .ok()
+                .and_then(|cleaned| cleaned.envelope_tag.clone()),
+            message: result.as_ref().ok().map(|cleaned| cleaned.message.clone()),
+            findings: Vec::new(),
+            decision: if result.is_ok() { "pending" } else { "error" }.to_string(),
+            error: result.as_ref().err().map(|e| e.to_string()),
+        });
     }
 
     /// プロバイダーを手動指定で上書き（フォールバックなし、失敗記録スキップ）
@@ -563,6 +660,46 @@ impl AiService {
         );
         let mut last_error = None;
 
+        // 生成ログ: プロンプトと、その素材の特徴を残す。プロンプト全文を保存するかは
+        // 詳細度設定が決めるので、ここでは常に渡す。
+        if let Some(dev_log) = &self.dev_log {
+            dev_log.set_generation_input(
+                Input {
+                    diff_bytes: diff.len(),
+                    diff_lines: diff.lines().count(),
+                    files_changed: diff.matches("diff --git ").count(),
+                    diff_digest: crate::devlog::digest(diff),
+                    language: self.language.clone(),
+                    prefix_mode: prefix_type.unwrap_or("auto").to_string(),
+                    recent_commits: recent_commits.to_vec(),
+                    agent_context_bytes: agent_context.map_or(0, str::len),
+                },
+                &prompt,
+                // 予定していたチェーン。どの step まで到達したかを attempts と
+                // 突き合わせられるようにする(env の値は資格情報を含みうるので入れない)
+                self.steps.iter().map(Self::step_plan_label).collect(),
+            );
+        }
+
+        // 応答を包んでいたタグ名を prefix として復元してよいのは、Conventional Commits
+        // 形式を期待しているときだけ。`prefix_type` に plain/none/bracket/emoji が
+        // 指定されている設定を、モデルの書き癖で上書きしてはいけない。
+        // Auto(prefix_type = None)では、プロンプトが直近のコミットに合わせるよう
+        // 指示しているので、その履歴の過半数が Conventional 形式かどうかで決める。
+        // 履歴が無い Auto はプロンプト側も Conventional Commits を指示するため true。
+        let expects_conventional = match prefix_type {
+            Some(prefix_type) => prefix_type.eq_ignore_ascii_case("conventional"),
+            None => {
+                recent_commits.is_empty()
+                    || recent_commits
+                        .iter()
+                        .filter(|commit| Self::has_conventional_prefix(commit))
+                        .count()
+                        * 2
+                        > recent_commits.len()
+            }
+        };
+
         for step in &self.steps {
             // provider が解決できないステップはスキップ(from_config で除外済みだが念のため)。
             let provider = match AiProvider::from_str(&step.provider) {
@@ -589,23 +726,40 @@ impl AiService {
             let mut retries_left = TRUNCATION_RETRIES;
 
             loop {
+                let retry = TRUNCATION_RETRIES - retries_left;
+
                 // Apple Intelligence: fm-rs feature 有効時はネイティブ呼び出し
                 #[cfg(all(target_os = "macos", feature = "apple-ai"))]
                 let result = if matches!(provider, AiProvider::AppleIntelligence) {
-                    Self::call_apple_intelligence_native(
+                    let started = Instant::now();
+                    let result = Self::call_apple_intelligence_native(
                         &prompt,
                         &self.language,
                         prefix_type,
                         !recent_commits.is_empty(),
-                    )
+                    );
+                    // ネイティブ呼び出しはサブプロセスを介さないため生の応答を捕捉できない。
+                    // 整形後のメッセージだけでも試行として残す
+                    self.record_native_attempt(
+                        &provider,
+                        step,
+                        &model,
+                        retry,
+                        started.elapsed().as_millis() as u64,
+                        &result,
+                    );
+                    result
                 } else {
-                    self.call_provider(&provider, step, &model, &prompt, silent)
+                    self.call_provider(&provider, step, &model, &prompt, silent, retry)
                 };
                 #[cfg(not(all(target_os = "macos", feature = "apple-ai")))]
-                let result = self.call_provider(&provider, step, &model, &prompt, silent);
+                let result = self.call_provider(&provider, step, &model, &prompt, silent, retry);
 
                 match result {
-                    Ok(message) => {
+                    Ok(CleanedResponse {
+                        message,
+                        envelope_tag,
+                    }) => {
                         // --body 未指定時は1行目のみ使用（AIが複数行を返した場合の対策）
                         let message = if !with_body {
                             message.lines().next().unwrap_or("").trim().to_string()
@@ -613,6 +767,11 @@ impl AiService {
                             message
                         };
                         if message.is_empty() {
+                            self.update_dev_log_attempt(
+                                None,
+                                vec!["empty".to_string()],
+                                "fallback",
+                            );
                             last_error = Some(AppError::AiProviderError(format!(
                                 "{} returned an empty first line",
                                 provider.name()
@@ -623,17 +782,36 @@ impl AiService {
                         // 返すため、ここで弾かないと「... mise 設定を」のような未完成の
                         // メッセージや、複数のメッセージを 1 行に詰め込んだものが確定してしまう。
                         // どちらも確率的に起きるので、まず同じステップを引き直す。
+                        // `<commit>` の代わりに `<test>…</test>` のようなタグで返された
+                        // 場合、そのタグ名はモデルが書こうとしたコミット種別と読める。
+                        // 期待形式が Conventional Commits のときだけ prefix へ戻す。
+                        let message = match envelope_tag.as_deref() {
+                            Some(tag) if expects_conventional => {
+                                Self::restore_conventional_prefix(&message, tag).unwrap_or(message)
+                            }
+                            _ => message,
+                        };
+
                         let subject = message.lines().next().unwrap_or("").to_string();
                         let defect = if Self::is_truncated_subject(&subject) {
                             Some("truncated")
                         } else if Self::is_concatenated_subject(&subject) {
                             Some("multi-message")
+                        } else if Self::has_leftover_markup(&subject) {
+                            // 剥がせなかったタグ(開始と終了で名前が違う・属性付き・片側だけ)
+                            // が件名に残っている。そのままコミットすると山括弧が混入する
+                            Some("markup")
                         } else {
                             None
                         };
                         if let Some(defect) = defect {
                             if retries_left > 0 {
                                 retries_left -= 1;
+                                self.update_dev_log_attempt(
+                                    Some(message),
+                                    vec![defect.to_string()],
+                                    "retry",
+                                );
                                 if !silent {
                                     eprintln!(
                                         "  {} {} returned a {} message ({}); retrying",
@@ -645,6 +823,11 @@ impl AiService {
                                 }
                                 continue;
                             }
+                            self.update_dev_log_attempt(
+                                Some(message),
+                                vec![defect.to_string()],
+                                "fallback",
+                            );
                             if !silent {
                                 eprintln!(
                                     "  {} {} kept returning a {} message ({})",
@@ -662,6 +845,7 @@ impl AiService {
                             )));
                             break;
                         }
+                        self.update_dev_log_attempt(Some(message.clone()), Vec::new(), "accepted");
                         return Ok((message, provider.name()));
                     }
                     Err(e) => {
@@ -687,10 +871,11 @@ impl AiService {
         Err(last_error.unwrap_or(AppError::NoAiProviderInstalled))
     }
 
-    /// 特定のAIプロバイダーを呼び出し
+    /// 特定のAIプロバイダーを呼び出し、生成ログが有効なら試行を記録する
     ///
-    /// silent: --generate-for のように stdout を生成メッセージ専用に保つモード。
-    /// デバッグ出力(コマンド表示・ストリーミング)を stderr へ逃がす。
+    /// 記録は呼び出しの外側で行う。整形後のメッセージだけでは事故を追えない
+    /// (`<test>fix: x</test>` と `fix: x` は整形後に同じ文字列になる)ので、
+    /// 生の stdout を `CapturedOutput` で受け取ってから残す。
     fn call_provider(
         &self,
         provider: &AiProvider,
@@ -698,7 +883,69 @@ impl AiService {
         model: &str,
         prompt: &str,
         silent: bool,
-    ) -> Result<String, AppError> {
+        retry: u32,
+    ) -> Result<CleanedResponse, AppError> {
+        let Some(dev_log) = self.dev_log.clone() else {
+            let mut captured = CapturedOutput::default();
+            return self.call_provider_inner(provider, step, model, prompt, silent, &mut captured);
+        };
+
+        let mut captured = CapturedOutput::default();
+        let started = Instant::now();
+        let result = self.call_provider_inner(provider, step, model, prompt, silent, &mut captured);
+        let duration_ms = started.elapsed().as_millis() as u64;
+
+        let (raw_stdout, stdout_truncated) = crate::devlog::capture(&captured.stdout);
+        // stderr にはプロンプトがそのままエコーされることがある(Codex は
+        // "Reading prompt from stdin..." に続けて diff を含む全文を出す)。
+        // 差分を残さない詳細度では、ここから漏れないよう本文ごと落とす。
+        // 失敗の理由は `error` に 1 行で残るので、原因追跡はそちらで足りる。
+        let (stderr_excerpt, _) = match dev_log.content_level() {
+            crate::devlog::ContentLevel::Full => crate::devlog::capture(&captured.stderr),
+            crate::devlog::ContentLevel::Metadata => (String::new(), false),
+        };
+
+        dev_log.record_attempt(AttemptRecord {
+            index: dev_log.attempt_count(),
+            provider: canonical_provider_key(&step.provider).to_string(),
+            step_label: Self::step_label(provider, step),
+            model: model.to_string(),
+            // 値は資格情報を含みうるので名前だけ残す
+            env_keys: step.env.keys().cloned().collect(),
+            retry,
+            duration_ms,
+            raw_stdout: Some(raw_stdout),
+            raw_stdout_bytes: captured.stdout.len(),
+            raw_stdout_truncated_by_logger: stdout_truncated,
+            stderr_excerpt: (!stderr_excerpt.trim().is_empty()).then_some(stderr_excerpt),
+            stderr_bytes: captured.stderr.len(),
+            envelope_tag: result
+                .as_ref()
+                .ok()
+                .and_then(|cleaned| cleaned.envelope_tag.clone()),
+            message: result.as_ref().ok().map(|cleaned| cleaned.message.clone()),
+            // 品質判定は呼び出し元で走るので、ここでは未確定にしておく
+            findings: Vec::new(),
+            decision: if result.is_ok() { "pending" } else { "error" }.to_string(),
+            error: result.as_ref().err().map(|e| e.to_string()),
+        });
+
+        result
+    }
+
+    /// プロバイダー呼び出しの本体
+    ///
+    /// silent: --generate-for のように stdout を生成メッセージ専用に保つモード。
+    /// デバッグ出力(コマンド表示・ストリーミング)を stderr へ逃がす。
+    fn call_provider_inner(
+        &self,
+        provider: &AiProvider,
+        step: &ProviderStep,
+        model: &str,
+        prompt: &str,
+        silent: bool,
+        captured: &mut CapturedOutput,
+    ) -> Result<CleanedResponse, AppError> {
         // opencode / grok は一時ファイル経由でプロンプトを渡す。
         // opencode は stdin サポートが不明確なため、grok は `--prompt-file` を使うと
         // `-p <PROMPT>` で長大な diff を渡すより堅牢(引数長制限や cmd.exe 経由の
@@ -763,8 +1010,14 @@ impl AiService {
             stdout_str
         };
 
+        // 生成ログ用に生出力を控える(ログ無効時は捨てられるので複製しない)
+        if self.dev_log.is_some() {
+            captured.stdout = stdout_str.clone();
+            captured.stderr = stderr_str.clone();
+        }
+
         // 出力を検証してメッセージを返す
-        Self::process_provider_output(provider, exit_status, &stdout_str, &stderr_str)
+        Self::process_provider_output_detailed(provider, exit_status, &stdout_str, &stderr_str)
     }
 }
 
@@ -1254,6 +1507,138 @@ mod tests {
         assert_eq!(
             AiService::clean_message("```\n<commit>feat: 機能を追加</commit>\n```"),
             "feat: 機能を追加"
+        );
+    }
+
+    /// `<commit>` 以外のタグで応答全体が包まれていた場合の扱い。
+    ///
+    /// 実測(2026-09-02): モデルがタグ名をコミット種別と取り違えて
+    /// `<test>OAuthスコープの狭さとdirectory.readonlyを検証</test>` を返し、
+    /// 山括弧ごとコミットされた。剥がす条件は全体ラップ・同名・属性なし・1 段だけ。
+    #[rstest]
+    // 事故そのもの。本文だけを採り、タグ名はヒントとして返す
+    #[case(
+        "<test>OAuthスコープの狭さとdirectory.readonlyを検証</test>",
+        "OAuthスコープの狭さとdirectory.readonlyを検証",
+        Some("test")
+    )]
+    // `<commit>` は指示どおりの形なのでヒントにしない
+    #[case("<commit>feat: 機能を追加</commit>", "feat: 機能を追加", None)]
+    // 大文字・ハイフン・アンダースコアを含むタグ名も剥がす(復元するかは別判断)
+    #[case("<TEST>メッセージ</TEST>", "メッセージ", Some("TEST"))]
+    #[case("<foo-bar>メッセージ</foo-bar>", "メッセージ", Some("foo-bar"))]
+    #[case("<foo_bar>メッセージ</foo_bar>", "メッセージ", Some("foo_bar"))]
+    // 外側の空白は許容する
+    #[case("  <test>メッセージ</test>  ", "メッセージ", Some("test"))]
+    // 本文が複数行でも中身は保持する(件名と本文の空行は既存処理が保証)
+    #[case("<test>件名\n\n本文</test>", "件名\n\n本文", Some("test"))]
+    // 剥がすのは 1 段だけ。内側のタグには触らない
+    #[case("<test><b>メッセージ</b></test>", "<b>メッセージ</b>", Some("test"))]
+    // 本文が既にプレフィックスを持つ場合もタグだけ外す(復元は別途判断)
+    #[case("<test>fix: メッセージ</test>", "fix: メッセージ", Some("test"))]
+    // --- ここから下は剥がさない ---
+    // 開始と終了でタグ名が違う
+    #[case("<foo>メッセージ</bar>", "<foo>メッセージ</bar>", None)]
+    // 属性付き。全体ラップとしては剥がさないが、`<commit>` 側の片側救済が働いて
+    // 閉じタグだけ落ちる。残骸は has_leftover_markup が捕まえて引き直しになる
+    #[case(
+        "<commit foo=\"bar\">メッセージ</commit>",
+        "<commit foo=\"bar\">メッセージ",
+        None
+    )]
+    // 本文が空
+    #[case("<foo></foo>", "<foo></foo>", None)]
+    // 全体ラップではない(タグの外に文字が残る)
+    #[case(
+        "<foo>メッセージ</foo> trailing",
+        "<foo>メッセージ</foo> trailing",
+        None
+    )]
+    #[case("prefix <foo>メッセージ</foo>", "prefix <foo>メッセージ</foo>", None)]
+    // 兄弟タグが並ぶ
+    #[case(
+        "<test>メッセージ</test><fix>x</fix>",
+        "<test>メッセージ</test><fix>x</fix>",
+        None
+    )]
+    // 閉じタグを欠いたまま本文がマルチバイトで終わる。
+    // 末尾から数えた位置が文字境界に乗らないケースで、panic せず素通しすること
+    #[case("<test>日本語で終わる", "<test>日本語で終わる", None)]
+    // タグを出さないモデルの応答はそのまま
+    #[case("feat: 機能を追加", "feat: 機能を追加", None)]
+    fn test_clean_message_detailed_envelope(
+        #[case] input: &str,
+        #[case] expected: &str,
+        #[case] expected_tag: Option<&str>,
+    ) {
+        let cleaned = AiService::clean_message_detailed(input);
+        assert_eq!(cleaned.message, expected, "input: {input:?}");
+        assert_eq!(
+            cleaned.envelope_tag.as_deref(),
+            expected_tag,
+            "input: {input:?}"
+        );
+    }
+
+    /// タグ名からのプレフィックス復元。標準 type・小文字完全一致・既存プレフィックスなし
+    /// の 3 条件を満たすときだけ復元する。
+    #[rstest]
+    #[case(
+        "OAuthスコープの狭さとdirectory.readonlyを検証",
+        "test",
+        Some("test: OAuthスコープの狭さとdirectory.readonlyを検証")
+    )]
+    #[case("件名\n\n本文", "feat", Some("feat: 件名\n\n本文"))]
+    // 既にプレフィックスがある(二重にしない)
+    #[case("fix: メッセージ", "test", None)]
+    #[case("test: メッセージ", "test", None)]
+    #[case("feat(scope): メッセージ", "test", None)]
+    // 標準 type ではないタグ名
+    #[case("メッセージ", "wrapper", None)]
+    #[case("メッセージ", "commit", None)]
+    // 大文字は type を書いた証拠として弱いので復元しない
+    #[case("メッセージ", "TEST", None)]
+    // 件名が空
+    #[case("", "test", None)]
+    fn test_restore_conventional_prefix(
+        #[case] message: &str,
+        #[case] tag: &str,
+        #[case] expected: Option<&str>,
+    ) {
+        assert_eq!(
+            AiService::restore_conventional_prefix(message, tag).as_deref(),
+            expected,
+            "message: {message:?}, tag: {tag:?}"
+        );
+    }
+
+    /// 剥がせなかったタグの残骸検出。真陽性は剥がす条件から漏れた応答、
+    /// 偽陽性の確認には山括弧を含む実在のコミット件名を使う
+    /// (ローカル 132 リポジトリ・8315 コミットの走査で見つかった 5 件)。
+    #[rstest]
+    // 剥がせない形(名前不一致・属性付き・片側だけ)が件名に残った
+    #[case("<foo>メッセージ</bar>", true)]
+    #[case("<commit foo=\"bar\">メッセージ</commit>", true)]
+    // 属性付き応答から閉じタグだけが落ちた形(clean_message_detailed の実際の出力)
+    #[case("<commit foo=\"bar\">メッセージ", true)]
+    #[case("<test>日本語で終わる", true)]
+    #[case("メッセージ</test>", true)]
+    // 実在する正常な件名(山括弧は含むが先頭・末尾のタグではない)
+    #[case("fix: エスケープされた < のリンク先解釈修正", false)]
+    #[case("fix: レビュー結果の<details>内チェックボックス誤検出修正", false)]
+    #[case("fix: Poetry裸バージョンとComposer <>除外の更新漏れ修正", false)]
+    #[case(
+        "fix: Swift レンジ演算子 (..</..) のバージョントークン解析を修正",
+        false
+    )]
+    #[case("fix(seat-tier): BigQuery ARRAY<STRUCT> 型記法修正", false)]
+    #[case("feat: 機能を追加", false)]
+    #[case("", false)]
+    fn test_has_leftover_markup(#[case] subject: &str, #[case] expected: bool) {
+        assert_eq!(
+            AiService::has_leftover_markup(subject),
+            expected,
+            "subject: {subject:?}"
         );
     }
 
@@ -2458,12 +2843,10 @@ mod tests {
             return None;
         }
         let prompt = AiService::build_prompt(diff, &[], "English", prefix_type, with_body, None);
-        Some(AiService::call_apple_intelligence_native(
-            &prompt,
-            "English",
-            prefix_type,
-            false,
-        ))
+        Some(
+            AiService::call_apple_intelligence_native(&prompt, "English", prefix_type, false)
+                .map(|cleaned| cleaned.message),
+        )
     }
 
     /// Apple Intelligence テスト結果を検証して出力するヘルパー。
@@ -2858,12 +3241,10 @@ mod tests {
             return None;
         }
         let prompt = AiService::build_prompt(diff, &[], "Japanese", prefix_type, false, None);
-        Some(AiService::call_apple_intelligence_native(
-            &prompt,
-            "Japanese",
-            prefix_type,
-            false,
-        ))
+        Some(
+            AiService::call_apple_intelligence_native(&prompt, "Japanese", prefix_type, false)
+                .map(|cleaned| cleaned.message),
+        )
     }
 
     #[cfg(all(target_os = "macos", feature = "apple-ai"))]
@@ -4074,6 +4455,7 @@ mod tests {
             legacy_gemini_alias_detected: false,
             ai_usage_notes: Vec::new(),
             ai_usage_gate_blocked: false,
+            dev_log: None,
         };
         let cmd = service.format_command_for_debug(
             &AiProvider::Antigravity,
@@ -4112,6 +4494,7 @@ mod tests {
             legacy_gemini_alias_detected: false,
             ai_usage_notes: Vec::new(),
             ai_usage_gate_blocked: false,
+            dev_log: None,
         };
         let cmd = service.format_command_for_debug(
             &AiProvider::Antigravity,
@@ -4141,6 +4524,7 @@ mod tests {
             legacy_gemini_alias_detected: false,
             ai_usage_notes: Vec::new(),
             ai_usage_gate_blocked: false,
+            dev_log: None,
         };
         let cmd = service.format_command_for_debug(
             &AiProvider::Codex,
@@ -4169,6 +4553,7 @@ mod tests {
             legacy_gemini_alias_detected: false,
             ai_usage_notes: Vec::new(),
             ai_usage_gate_blocked: false,
+            dev_log: None,
         };
         let cmd = service.format_command_for_debug(
             &AiProvider::Claude,

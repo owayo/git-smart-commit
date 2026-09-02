@@ -314,6 +314,7 @@ provider_timeout_seconds = 60
 | `provider_timeout_seconds` | プロバイダー呼び出しのタイムアウト | `60` |
 | `prefix_rules` | URLベースのプレフィックス形式 | `[]` |
 | `prefix_scripts` | 外部プレフィックススクリプト | `[]` |
+| `dev_log` | 開発者向け生成ログ（グローバル設定のみ。「開発者向け生成ログ」を参照） | 無効 |
 
 既存のグローバル設定ファイルは自動では書き換えられません。現在の Codex 既定モデルは `gpt-5.4-mini` です。既存設定で使うには、`~/.config/git-sc/config.toml` の `models.codex` を更新してください。この既定値は、API で利用可能・一覧表示対象・`medium` reasoning 対応の Codex モデルについて `input_tokens` を比較し、2026年6月9日 (JST) に再選定し、2026年6月29日 (JST) に再確認したものです。最新計測は空ディレクトリで `Reply ok.` を使い、`--ignore-user-config --ignore-rules --ephemeral --sandbox read-only` と `model_reasoning_effort='medium'` を指定しました: `gpt-5.5` = 17593、`gpt-5.4` = 16206、`gpt-5.4-mini` = 15856。採用した試行はいずれも最終出力が `ok` で、ツール呼び出しはありません。ランキングは安定しているため既定値は変更ありません。
 
@@ -441,6 +442,35 @@ auto_push = true
 ```
 
 有効にすると、`git-sc` はコミットまたは squash 成功後に `git push` を実行します。
+
+### 開発者向け生成ログ
+
+どのプロンプトを渡して何が返ってきたかを記録します。プロンプトを変更したときの効果を、印象ではなく実データで比較するためのものです。既定では無効です。
+
+```toml
+# ~/.config/git-sc/config.toml のみ有効（プロジェクトの .git-sc からは有効化できません）
+[dev_log]
+enabled = true
+content = "metadata"   # metadata | full
+retention_days = 14
+max_total_mb = 500
+```
+
+1 回の実行につき 1 つの JSON ファイルを `~/.config/git-sc/logs/YYYY-MM-DD/` に書き出します。内容はプロンプトのハッシュと差分の統計、各プロバイダーの試行（整形前の生応答・モデル・所要時間・品質判定・採用/引き直し/フォールバックの別）、そして実行の結末（コミットした場合はそのハッシュを含む）です。一時ファイルに書き切ってから rename して公開するため、`git-sc` を同時に走らせても行が混ざらず、書きかけのファイルが完成品として解析対象に混ざることもありません。
+
+解析はファイル群をそのまま JSONL に流し込めます:
+
+```bash
+find ~/.config/git-sc/logs -name '*.json' | sort | xargs jq -c .
+
+# 例: プロバイダーごとに壊れた件名が出た回数を数える
+find ~/.config/git-sc/logs -name '*.json' | xargs jq -r \
+  '.attempts[] | select(.findings | length > 0) | "\(.provider)\t\(.findings[0])"' | sort | uniq -c
+```
+
+**取り扱いの注意。** 既定の `content = "metadata"` はプロンプトの統計とハッシュだけを残し、本文は残しません。プロバイダーの stderr も落とします — Codex はそこにプロンプトをエコーするため、残すと別経路で差分がログに入ってしまうためです。`content = "full"` は実際に送ったプロンプトをそのまま保存するので、ステージ済みの差分が平文でディスクに残ります。プロバイダーの生応答はどちらの詳細度でも残します。整形後のメッセージだけでは生成事故を追えないためです。環境変数の上書きは名前だけを記録し、値は残しません。ログは `0700` のディレクトリ内に `0600` で作成し、`retention_days` を過ぎたものと `max_total_mb` を超えた分（古い順）を削除します。この掃除は 1 日 1 回までです。書き込みに失敗した場合は警告を 1 行出すだけで（`--quiet` では出しません）、コミットはそのまま続行します。
+
+グローバル設定専用にしているのは意図的です。clone したリポジトリの `.git-sc` がログ出力を有効にしたり、自分のコードの書き出し先を選べたりしてはいけないためです。プロジェクト側の `[dev_log]` は警告を出して無視します。
 
 ## VS Code 拡張機能
 

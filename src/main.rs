@@ -3,6 +3,7 @@ mod ai_usage;
 mod app;
 mod cli;
 mod config;
+mod devlog;
 mod error;
 mod git;
 mod init;

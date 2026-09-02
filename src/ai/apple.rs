@@ -6,7 +6,7 @@
 
 use crate::error::AppError;
 
-use super::prompt::CONVENTIONAL_COMMITS_GUIDE;
+use super::prompt::{CONVENTIONAL_COMMITS_GUIDE, CleanedResponse};
 use super::service::AiService;
 
 impl AiService {
@@ -102,7 +102,7 @@ impl AiService {
         language: &str,
         prefix_type: Option<&str>,
         has_recent_commits: bool,
-    ) -> Result<String, AppError> {
+    ) -> Result<CleanedResponse, AppError> {
         let model = fm_rs::SystemLanguageModel::new().map_err(|e| {
             AppError::AiProviderError(format!("Failed to initialize Apple Intelligence: {}", e))
         })?;
@@ -125,15 +125,14 @@ impl AiService {
             AppError::AiProviderError(format!("Apple Intelligence generation failed: {}", e))
         })?;
 
-        let message = response.content().trim().to_string();
-        let message = Self::clean_message(&message);
+        let cleaned = Self::clean_message_detailed(response.content().trim());
 
-        if message.is_empty() {
+        if cleaned.message.is_empty() {
             return Err(AppError::AiProviderError(
                 "Apple Intelligence returned an empty response".to_string(),
             ));
         }
 
-        Ok(message)
+        Ok(cleaned)
     }
 }

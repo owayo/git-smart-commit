@@ -198,7 +198,7 @@ impl GitService {
     // ============================================================
 
     /// Gitリポジトリのルートディレクトリを取得
-    fn get_git_root(&self) -> Option<PathBuf> {
+    pub fn get_git_root(&self) -> Option<PathBuf> {
         self.try_run_git(&["rev-parse", "--show-toplevel"])
             .map(PathBuf::from)
     }

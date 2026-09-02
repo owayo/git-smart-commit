@@ -1,4 +1,5 @@
 use std::io::{self, Write};
+use std::rc::Rc;
 
 use colored::Colorize;
 use regex::Regex;
@@ -6,6 +7,7 @@ use regex::Regex;
 use crate::ai::{AiProvider, AiService};
 use crate::cli::Cli;
 use crate::config::{Config, PrefixRuleConfig, PrefixScriptConfig};
+use crate::devlog::{DevLog, Invocation, Repository, RunResult};
 use crate::error::AppError;
 use crate::git::{GitService, ScriptResult};
 
@@ -85,6 +87,9 @@ pub struct App {
     auto_push: Option<bool>,
     /// NanoBuddy連携の有効/無効
     nano_buddy: bool,
+    /// 開発者向け生成ログ(`[dev_log] enabled = true` のときだけ Some)。
+    /// AiService と共有し、試行の記録は向こうが、実行の結末はこちらが埋める。
+    dev_log: Option<Rc<DevLog>>,
 }
 
 impl App {
@@ -100,6 +105,12 @@ impl App {
         }
 
         let mut ai = AiService::from_config(&config);
+
+        // 生成ログ(既定は無効)。AiService と App で 1 つの記録を共有する
+        let dev_log = DevLog::from_config(&config, cli.quiet).map(Rc::new);
+        if let Some(dev_log) = &dev_log {
+            ai.set_dev_log(Rc::clone(dev_log));
+        }
 
         // デバッグモードを設定
         if cli.debug {
@@ -130,6 +141,7 @@ impl App {
             prefix_type: config.prefix_type.clone(),
             auto_push: config.auto_push,
             nano_buddy: cfg!(target_os = "macos") && config.nano_buddy,
+            dev_log,
         })
     }
 
@@ -665,9 +677,77 @@ impl App {
         // Gitリポジトリかどうかを確認
         self.git.verify_repository()?;
 
-        match self.dispatch_special_mode(cli, agent_context.as_deref()) {
+        if let Some(dev_log) = &self.dev_log {
+            dev_log.set_invocation(Invocation {
+                mode: Self::run_mode(cli).to_string(),
+                quiet: cli.quiet,
+                auto_confirm: cli.auto_confirm,
+                dry_run: cli.dry_run,
+                with_body: cli.with_body,
+                stage_all: cli.stage_all,
+                from_agent_hook: agent_context.is_some(),
+            });
+            dev_log.set_repository(Repository {
+                path: self
+                    .git
+                    .get_git_root()
+                    .map(|root| root.to_string_lossy().into_owned()),
+                branch: self.git.get_current_branch(),
+            });
+        }
+
+        let result = match self.dispatch_special_mode(cli, agent_context.as_deref()) {
             Some(result) => result,
             None => self.run_commit(cli, agent_context.as_deref()),
+        };
+
+        // 生成ログはここで 1 度だけ書き出す。各モードの戻り先を 1 箇所に絞ることで、
+        // 出口を増やしても記録漏れが起きないようにする。
+        if let Some(dev_log) = &self.dev_log {
+            dev_log.finish(result.as_ref().err().map(|e| e.to_string()));
+        }
+
+        result
+    }
+
+    /// 生成ログに残す実行モード名
+    fn run_mode(cli: &Cli) -> &'static str {
+        if cli.generate_for.is_some() {
+            "generate-for"
+        } else if cli.reword.is_some() {
+            "reword"
+        } else if cli.amend {
+            "amend"
+        } else if cli.squash.is_some() {
+            "squash"
+        } else {
+            "commit"
+        }
+    }
+
+    /// 生成ログへ実行の結末を記録する(ログ無効なら何もしない)
+    ///
+    /// status は `committed` / `dry-run` / `declined` / `generated` に統一する
+    /// (どのモードだったかは `invocation.mode` 側が持つ)。コミットハッシュは
+    /// 実際に履歴が動いたときだけ記録する — dry-run や中止で現在の HEAD を
+    /// 書くと、そのコミットを生成物と読み違える。
+    fn record_dev_log_result(&self, status: &str, provider: &str, message: &str) {
+        if self.dev_log.is_none() {
+            return;
+        }
+        let commit_hash = if status == "committed" {
+            self.git.get_head_hash().ok()
+        } else {
+            None
+        };
+        if let Some(dev_log) = &self.dev_log {
+            dev_log.set_result(RunResult {
+                status: status.to_string(),
+                provider: Some(provider.to_string()),
+                message: Some(message.to_string()),
+                commit_hash,
+                error: None,
+            });
         }
     }
 
@@ -779,6 +859,7 @@ impl App {
 
         // ドライランモードの処理
         if cli.dry_run {
+            self.record_dev_log_result("dry-run", provider_name, &message);
             if !cli.quiet {
                 println!("{}", "Dry run mode - no commit was made.".yellow());
             }
@@ -809,6 +890,7 @@ impl App {
                 ));
             }
             self.git.commit(&message)?;
+            self.record_dev_log_result("committed", provider_name, &message);
             if cli.quiet {
                 println!("Committed");
             } else {
@@ -828,6 +910,7 @@ impl App {
                 }
             }
         } else {
+            self.record_dev_log_result("declined", provider_name, &message);
             if !cli.quiet {
                 println!("{}", "Commit cancelled.".yellow());
             }
@@ -887,6 +970,7 @@ impl App {
 
         // ドライランモードの処理
         if cli.dry_run {
+            self.record_dev_log_result("dry-run", provider_name, &message);
             if !cli.quiet {
                 println!("{}", "Dry run mode - commit was not amended.".yellow());
             }
@@ -896,6 +980,7 @@ impl App {
         // 確認してamend
         if cli.auto_confirm || self.confirm_amend()? {
             self.git.amend_commit(&message)?;
+            self.record_dev_log_result("committed", provider_name, &message);
             if cli.quiet {
                 println!("Amended");
             } else {
@@ -905,6 +990,7 @@ impl App {
                 crate::notify::notify_commit_message(&message);
             }
         } else {
+            self.record_dev_log_result("declined", provider_name, &message);
             if !cli.quiet {
                 println!("{}", "Amend cancelled.".yellow());
             }
@@ -998,6 +1084,7 @@ impl App {
 
         // ドライランモードの処理
         if cli.dry_run {
+            self.record_dev_log_result("dry-run", provider_name, &message);
             if !cli.quiet {
                 println!("{}", "Dry run mode - no squash was performed.".yellow());
             }
@@ -1035,6 +1122,7 @@ impl App {
                 }
                 return Err(commit_err);
             }
+            self.record_dev_log_result("committed", provider_name, &message);
             if cli.quiet {
                 println!("Squashed");
             } else {
@@ -1059,6 +1147,7 @@ impl App {
                 }
             }
         } else {
+            self.record_dev_log_result("declined", provider_name, &message);
             if !cli.quiet {
                 println!("{}", "Squash cancelled.".yellow());
             }
@@ -1111,7 +1200,7 @@ impl App {
         let recent_commits = self.git.get_recent_commits(5)?;
 
         // コミットメッセージを生成（サイレントモード: 進捗抑制、デバッグ出力はstderr）
-        let (message, _provider_name) = self.generate_with_prefix(
+        let (message, provider_name) = self.generate_with_prefix(
             cli,
             &combined_diff,
             &recent_commits,
@@ -1120,6 +1209,8 @@ impl App {
             agent_context,
             true,
         )?;
+
+        self.record_dev_log_result("generated", provider_name, &message);
 
         // 標準出力にメッセージのみを出力（余計な装飾なし）
         println!("{}", message);
@@ -1214,6 +1305,7 @@ impl App {
 
         // ドライランモードの処理
         if cli.dry_run {
+            self.record_dev_log_result("dry-run", provider_name, &message);
             if !cli.quiet {
                 println!("{}", "Dry run mode - commit was not reworded.".yellow());
             }
@@ -1223,6 +1315,7 @@ impl App {
         // 確認してreword実行
         if cli.auto_confirm || self.confirm_reword(short_hash)? {
             self.git.reword_commit_by_hash(&hash, &message)?;
+            self.record_dev_log_result("committed", provider_name, &message);
             if cli.quiet {
                 println!("Reworded");
             } else {
@@ -1244,6 +1337,7 @@ impl App {
                 );
             }
         } else {
+            self.record_dev_log_result("declined", provider_name, &message);
             if !cli.quiet {
                 println!("{}", "Reword cancelled.".yellow());
             }
@@ -2168,6 +2262,7 @@ mod tests {
             prefix_type: prefix_type.map(|s| s.to_string()),
             auto_push: None,
             nano_buddy: false,
+            dev_log: None,
         }
     }
 
@@ -2237,6 +2332,7 @@ mod tests {
             prefix_type: prefix_type.map(|s| s.to_string()),
             auto_push: None,
             nano_buddy: false,
+            dev_log: None,
         }
     }
 

@@ -368,6 +368,9 @@ struct PartialConfig {
     pub nano_buddy: Option<bool>,
     pub codex_reasoning_effort: Option<String>,
     pub ai_usage: Option<AiUsageConfig>,
+    /// `[dev_log]`。グローバル設定でのみ採用し、プロジェクト設定の値は捨てる
+    /// (`merge_into` を参照)。
+    pub dev_log: Option<DevLogConfig>,
 }
 
 impl PartialConfig {
@@ -404,6 +407,7 @@ impl PartialConfig {
                 .codex_reasoning_effort
                 .unwrap_or(defaults.codex_reasoning_effort),
             ai_usage: self.ai_usage.or(defaults.ai_usage),
+            dev_log: self.dev_log.or(defaults.dev_log),
         }
     }
 
@@ -461,6 +465,14 @@ impl PartialConfig {
         if let Some(effort) = self.codex_reasoning_effort {
             config.codex_reasoning_effort = effort;
         }
+        // dev_log は意図的にマージしない。プロジェクトの `.git-sc` からログ出力を
+        // 有効化したり出力先を差し替えたりできると、クローンしてきたリポジトリの設定に
+        // よって自分のコードが任意のパスへ書き出されうるため、グローバル設定専用にする。
+        if self.dev_log.is_some() {
+            eprintln!(
+                "警告: プロジェクト設定の [dev_log] は無視されます。グローバル設定 (~/.config/git-sc/config.toml) で指定してください。"
+            );
+        }
         if let Some(ai_usage) = self.ai_usage {
             config.ai_usage = Some(ai_usage);
         }
@@ -501,6 +513,72 @@ impl Default for AiUsageConfig {
             timeout_seconds: default_ai_usage_timeout_seconds(),
         }
     }
+}
+
+/// 開発者向け生成ログの設定(既定 = 無効)
+///
+/// 「どのプロンプトを渡して、どのメッセージが返ったか」を残し、プロンプト改善の
+/// 効果測定に使う。プロンプトには staged diff がそのまま入る = 業務コードがホーム
+/// ディレクトリに平文で残るため、既定は無効で、明示的な opt-in を必要とする。
+///
+/// **この設定はグローバル設定 (`~/.config/git-sc/config.toml`) でのみ有効**。
+/// プロジェクトの `.git-sc` に書いても無視する。クローンしてきたリポジトリの設定が
+/// 勝手にログ出力を有効化したり出力先を選べたりするのを避けるため。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DevLogConfig {
+    /// ログ出力を有効化する(既定: false)
+    #[serde(default)]
+    pub enabled: bool,
+    /// 出力先ディレクトリ(既定: `~/.config/git-sc/logs`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
+    /// 記録の詳細度(既定: `metadata`)
+    ///
+    /// - `metadata`: プロンプトの統計とハッシュ、AI の生応答、生成されたメッセージ、
+    ///   判定結果を記録する。**プロンプト全文(= staged diff)は残さない**。
+    ///   プロバイダーの stderr も残さない(Codex はプロンプトをそこへエコーするため)。
+    /// - `full`: 実際に送ったプロンプトをそのまま記録する。差分の中身がログに残る。
+    #[serde(default = "default_dev_log_content")]
+    pub content: String,
+    /// 保持日数。これより古いログは削除する(既定: 14)
+    #[serde(default = "default_dev_log_retention_days")]
+    pub retention_days: u64,
+    /// ログ全体の容量上限 (MiB)。超えた分は古い順に削除する(既定: 500)
+    #[serde(default = "default_dev_log_max_total_mb")]
+    pub max_total_mb: u64,
+}
+
+impl Default for DevLogConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            dir: None,
+            content: default_dev_log_content(),
+            retention_days: default_dev_log_retention_days(),
+            max_total_mb: default_dev_log_max_total_mb(),
+        }
+    }
+}
+
+/// `[dev_log]` の既定保持日数(14 日)。
+///
+/// プロンプト変更の前後を比べるには数十回分の生成が要る。1 日数コミットの使い方でも
+/// 2 週間あれば比較できる量になる、という見立て。
+fn default_dev_log_retention_days() -> u64 {
+    14
+}
+
+/// `[dev_log]` の既定詳細度。
+///
+/// 差分の中身をホームディレクトリに残さない `metadata` を既定にする。プロンプトの
+/// 指示文やタグ形式を変えた効果はハッシュと統計で追えるので、多くの改善はこの粒度で足りる。
+fn default_dev_log_content() -> String {
+    "metadata".to_string()
+}
+
+/// `[dev_log]` の既定容量上限 (500 MiB)。
+fn default_dev_log_max_total_mb() -> u64 {
+    500
 }
 
 /// 使用率判定に使う枠。
@@ -587,6 +665,9 @@ pub struct Config {
     /// ai-usage --json 連携設定(省略時は連携無効)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ai_usage: Option<AiUsageConfig>,
+    /// 開発者向け生成ログ(省略時は無効)。グローバル設定でのみ指定できる。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dev_log: Option<DevLogConfig>,
 }
 
 /// デフォルトのクールダウン時間（60分 = 1時間）
@@ -634,6 +715,7 @@ impl Default for Config {
             nano_buddy: false,
             codex_reasoning_effort: default_codex_reasoning_effort(),
             ai_usage: None,
+            dev_log: None,
         }
     }
 }
@@ -908,6 +990,25 @@ grok = ""
 #      ai_usage_group = "Gemini" }},
 #   "opencode",  # profile 未指定は auto-select (最も残量が多い account を採用)
 # ]
+
+# --- 開発者向け生成ログ (プロンプト改善の効果測定用) ---
+# 「どのプロンプトを渡して、どのメッセージが返ってきたか」を実行単位の JSON として
+# ~/.config/git-sc/logs/YYYY-MM-DD/ に残す。打ち切り・複数メッセージ連結・タグ違いの
+# ような生成事故の発生率を、プロンプト変更の前後で比較するためのもの。
+# 既定は無効。**このセクションはグローバル設定でのみ有効** (プロジェクトの .git-sc に
+# 書いても無視される。clone したリポジトリの設定で勝手にコードが蓄積されないため)。
+#
+# 解析は run 単位ファイルをそのまま JSONL に流し込める:
+#   find ~/.config/git-sc/logs -name '*.json' | sort | xargs jq -c .
+#
+# [dev_log]
+# enabled = true            # false または省略でログ無効
+# content = "metadata"      # metadata | full
+#                           #   metadata: プロンプトは統計とハッシュのみ (diff を残さない)
+#                           #   full:     送ったプロンプトをそのまま保存 (差分がログに残る)
+# retention_days = 14       # これより古いログは削除する
+# max_total_mb = 500        # 合計がこれを超えたら古い順に削除する
+# dir = "~/.config/git-sc/logs"  # 出力先を変える場合のみ
 "#
         )
     }
@@ -2156,6 +2257,7 @@ gemini = "gemini-2.5-pro"
             nano_buddy: true,
             codex_reasoning_effort: "high".to_string(),
             ai_usage: None,
+            dev_log: None,
         };
 
         // 空の TOML → 全フィールドが None の PartialConfig
