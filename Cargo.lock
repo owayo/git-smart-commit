@@ -257,9 +257,9 @@ dependencies = [
 
 [[package]]
 name = "fm-rs"
-version = "0.2.1"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ad69482ea5749f91a39d48c7dc4c473931b0f96586c5747f6b9deb61a27f189"
+checksum = "f30041f6093aab2b756845e7677854bdf5aa8a35ace72d8219c204f4fd98c195"
 dependencies = [
  "serde",
  "serde_json",
@@ -429,9 +429,9 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
 name = "libredox"
-version = "0.1.19"
+version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2026a5056764a10b2bf5d56488cba40da507f5493a6a429340e2004d9ed085fa"
+checksum = "28d0a00925a9f930d679b6789b721e3a7f9ed110f41b86d2497caa780c3a070a"
 dependencies = [
  "libc",
 ]
