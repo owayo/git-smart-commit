@@ -26,10 +26,16 @@ release: ## リリースビルドを作成
 ## インストール
 
 install: release ## リリースビルドを作成して /usr/local/bin にインストール
-	cp target/release/$(BINARY_NAME) $(INSTALL_PATH)/
-ifeq ($(UNAME_S),Darwin)
-	codesign --force --sign - $(INSTALL_PATH)/$(BINARY_NAME)
-endif
+	@# macOS の署名検証キャッシュを壊さないよう、一時 inode を署名してから置き換える
+	@set -eu; \
+		temp_path=$$(mktemp "$(INSTALL_PATH)/.$(BINARY_NAME).tmp.XXXXXX"); \
+		trap 'rm -f "$$temp_path"' 0 1 2 15; \
+		cp "target/release/$(BINARY_NAME)" "$$temp_path"; \
+		chmod 0755 "$$temp_path"; \
+		if [ "$(UNAME_S)" = "Darwin" ]; then \
+			codesign --force --sign - "$$temp_path"; \
+		fi; \
+		mv -f "$$temp_path" "$(INSTALL_PATH)/$(BINARY_NAME)"
 
 ## 開発
 

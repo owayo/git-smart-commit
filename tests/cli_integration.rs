@@ -687,6 +687,157 @@ fn test_quiet_dry_run_with_ai_generation_suppresses_provider_output() {
         .stderr(predicate::str::is_empty());
 }
 
+/// `.git-sc-ignore` が効くリポジトリを組む(ルートに ignore、`src/secrets/` に秘密)
+fn setup_repo_with_ignored_secret(dir: &TempDir) {
+    std::fs::write(dir.path().join(".git-sc-ignore"), "src/secrets/**\n").unwrap();
+    std::fs::create_dir_all(dir.path().join("src").join("secrets")).unwrap();
+    std::fs::write(
+        dir.path().join("src").join("secrets").join("key.txt"),
+        "token=SUPER_SECRET_VALUE\n",
+    )
+    .unwrap();
+    // 除外されない変更も 1 つ置き、diff が空になって「変更なし」で終わらないようにする
+    std::fs::write(dir.path().join("README.md"), "# Test\nupdated\n").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+}
+
+/// diff の見た目を変える Git 設定があっても `.git-sc-ignore` は効く
+///
+/// 除外は `diff --git a/… b/…` ヘッダーから読んだパスで判定するため、この行の形を
+/// 変える設定があるとパス抽出が失敗し、判定が「除外しない」側に倒れて、隠したかった
+/// ファイルがそのまま AI へ送られる。`.git-sc-ignore` は fail-closed が設計要件なので、
+/// ユーザーの Git 設定に左右されてはいけない。
+#[test]
+fn test_ignore_patterns_apply_regardless_of_diff_format_config() {
+    let external_diff = std::env::temp_dir().join("git-sc-test-external-diff.sh");
+    std::fs::write(&external_diff, "#!/bin/sh\necho 'EXTERNAL DIFF'\n").unwrap();
+    #[cfg(unix)]
+    {
+        let mut perms = std::fs::metadata(&external_diff).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&external_diff, perms).unwrap();
+    }
+
+    let configs: Vec<Vec<(&str, String)>> = vec![
+        vec![("diff.noprefix", "true".to_string())],
+        vec![("diff.mnemonicPrefix", "true".to_string())],
+        vec![("color.ui", "always".to_string())],
+        vec![
+            ("diff.srcPrefix", "x/".to_string()),
+            ("diff.dstPrefix", "y/".to_string()),
+        ],
+        vec![(
+            "diff.external",
+            external_diff.to_string_lossy().into_owned(),
+        )],
+    ];
+
+    for config in configs {
+        let dir = setup_git_repo_with_commit();
+        let path = setup_fake_opencode_path(&dir);
+
+        for (key, value) in &config {
+            std::process::Command::new("git")
+                .args(["config", key, value])
+                .current_dir(dir.path())
+                .output()
+                .unwrap();
+        }
+        setup_repo_with_ignored_secret(&dir);
+
+        git_sc!()
+            .args(["--dry-run", "--debug"])
+            .env("PATH", &path)
+            .env("HOME", dir.path())
+            .env("XDG_CONFIG_HOME", dir.path())
+            .current_dir(dir.path())
+            .assert()
+            .success()
+            .stdout(
+                predicate::str::contains("SUPER_SECRET_VALUE")
+                    .not()
+                    .and(predicate::str::contains("secrets/key.txt").not()),
+            );
+    }
+}
+
+/// `diff.relative` + サブディレクトリからの実行でも除外は効き、変更も取りこぼさない
+///
+/// この設定はパスの「基準」を変えるため、他の設定とは壊し方が二重になる。
+/// cwd 相対のパスはリポジトリルート基準の `.git-sc-ignore` と一致しなくなり、
+/// さらに cwd の外にある変更は diff から丸ごと消えて、コミットされる内容の一部しか
+/// 見ないままメッセージが書かれる。
+#[test]
+fn test_ignore_and_full_diff_survive_diff_relative_from_subdirectory() {
+    let dir = setup_git_repo_with_commit();
+    let path = setup_fake_opencode_path(&dir);
+
+    std::process::Command::new("git")
+        .args(["config", "diff.relative", "true"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    setup_repo_with_ignored_secret(&dir);
+    // cwd (src/) の外にある変更。--no-relative が無いと diff から消える
+    std::fs::write(dir.path().join("src").join("main.rs"), "fn main() {}\n").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    git_sc!()
+        .args(["--dry-run", "--debug"])
+        .env("PATH", &path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .current_dir(dir.path().join("src"))
+        .assert()
+        .success()
+        // 除外は効いている
+        .stdout(predicate::str::contains("SUPER_SECRET_VALUE").not())
+        // cwd の外(リポジトリルート)の変更もプロンプトに載っている
+        .stdout(predicate::str::contains("README.md"));
+}
+
+/// `--quiet` は進捗表示を止めるだけで、デバッグ出力の宛先は変えない。
+///
+/// stdout を生成メッセージ専用に保つのは `--generate-for` の契約であって、
+/// `--quiet` の役目ではない。両者を混同すると、同じ実行の中で
+/// 「AI Prompt は stdout、AI Provider Command は stderr」という食い違いが起きる。
+#[test]
+fn test_quiet_with_debug_keeps_debug_output_on_stdout() {
+    let dir = setup_git_repo_with_commit();
+    let path = setup_fake_opencode_path(&dir);
+    stage_change(&dir, "# Test\nquiet debug\n");
+
+    git_sc!()
+        .args(["--quiet", "--debug", "--dry-run"])
+        .env("PATH", path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        // 5 つのデバッグブロックがすべて stdout に揃う
+        .stdout(predicate::str::contains("=== DEBUG: Config Settings ==="))
+        .stdout(predicate::str::contains("=== DEBUG: AI Prompt ==="))
+        .stdout(predicate::str::contains(
+            "=== DEBUG: AI Provider Command ===",
+        ))
+        .stdout(predicate::str::contains(
+            "=== DEBUG: AI Provider Output (streaming) ===",
+        ))
+        .stderr(predicate::str::contains("=== DEBUG").not())
+        // --quiet 本来の役割(進捗の抑制)は効いたままであること
+        .stdout(predicate::str::contains("Using ").not())
+        .stdout(predicate::str::contains("Generated commit message").not());
+}
+
 #[cfg(unix)]
 #[test]
 fn test_codex_provider_uses_output_file_not_transcript_stdout() {

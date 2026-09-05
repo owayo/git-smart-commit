@@ -11,6 +11,39 @@ use crate::error::AppError;
 /// 差分の最大文字数
 const MAX_DIFF_CHARS: usize = 10000;
 
+/// diff の出力形式をユーザーの Git 設定から切り離すための引数
+///
+/// `.git-sc-ignore` の除外は `diff --git a/... b/...` 行からパスを読んで判定する。
+/// ところが次の設定はその行の形を変えてしまい、パスが読めないと除外判定は
+/// 「対象なし」に倒れる ⇒ 隠したかったファイルがそのまま AI へ送られる。
+///
+/// - `diff.noprefix = true` … `diff --git path path`(`a/` `b/` が付かない)
+/// - `diff.mnemonicPrefix = true` … `diff --git c/path i/path`
+/// - `diff.srcPrefix` / `diff.dstPrefix` … 任意の文字列に差し替わる
+/// - `color.ui = always` … 行頭に ANSI エスケープが入り `diff --git` で始まらなくなる
+/// - `diff.external` … 出力そのものが別形式に差し替わる(`diff --git` 行ごと消える)
+///
+/// `diff.relative = true` だけは毛色が違い、**パスの基準そのもの**を変える。git は
+/// カレントディレクトリで起動する(`GitService::repo_path` は Git ルートではなく cwd)
+/// ため、サブディレクトリから実行すると
+///
+/// - ヘッダーのパスが Git ルート相対ではなく cwd 相対になる
+///   (ルートの `.git-sc-ignore` に書いた `src/secrets/**` が `secrets/key.txt` と
+///   照合されて一致せず、除外が外れる)
+/// - **cwd の外にある変更が diff から丸ごと消える**
+///   (コミットされる内容の一部しか見ずにメッセージを書くことになる)
+///
+/// の 2 つが同時に起きる。`--no-relative` で常に Git ルート基準に固定する。
+///
+/// 除外は fail-closed が設計要件なので、ユーザー設定に左右されないよう形式を固定する。
+const DIFF_FORMAT_ARGS: &[&str] = &[
+    "--no-ext-diff",
+    "--no-color",
+    "--no-relative",
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
+];
+
 /// プレフィックススクリプトの実行結果
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScriptResult {
@@ -649,7 +682,9 @@ impl GitService {
 
     /// ステージ済みのdiffを取得（バイナリファイル、.git-sc-ignore対象、空白のみの変更を除外）
     pub fn get_staged_diff(&self) -> Result<String, AppError> {
-        let raw = self.run_git(&["diff", "--cached", "-w", "-U0"])?;
+        let mut args = vec!["diff", "--cached", "-w", "-U0"];
+        args.extend_from_slice(DIFF_FORMAT_ARGS);
+        let raw = self.run_git(&args)?;
         self.apply_all_filters(&raw)
     }
 
@@ -847,7 +882,10 @@ impl GitService {
 
     /// ベースからHEADまでの差分を取得（バイナリファイル、.git-sc-ignore対象、空白のみの変更を除外）
     pub fn get_diff_from_base(&self, base: &str) -> Result<String, AppError> {
-        let raw = self.run_git(&["diff", "-w", "-U0", base, "HEAD"])?;
+        let mut args = vec!["diff", "-w", "-U0"];
+        args.extend_from_slice(DIFF_FORMAT_ARGS);
+        args.extend_from_slice(&[base, "HEAD"]);
+        let raw = self.run_git(&args)?;
         self.apply_all_filters(&raw)
     }
 
@@ -971,15 +1009,10 @@ impl GitService {
         // verify_commit_hash を通過しうる。hash をオプション位置に置くと git が
         // それをオプションとして解釈し、`git show --output=<path>` で任意ファイルを
         // 上書きできてしまうため、必ず `--end-of-options` の後ろに revision として渡す。
-        let raw = self.run_git(&[
-            "show",
-            "--format=",
-            "--no-color",
-            "-w",
-            "-U0",
-            "--end-of-options",
-            hash,
-        ])?;
+        let mut args = vec!["show", "--format=", "-w", "-U0"];
+        args.extend_from_slice(DIFF_FORMAT_ARGS);
+        args.extend_from_slice(&["--end-of-options", hash]);
+        let raw = self.run_git(&args)?;
         self.apply_all_filters(&raw)
     }
 

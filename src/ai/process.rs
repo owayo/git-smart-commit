@@ -115,9 +115,9 @@ impl AiService {
         provider: &AiProvider,
         uses_stdin: bool,
         prompt: &str,
-        silent: bool,
     ) -> Result<(ExitStatus, String, String), AppError> {
         let is_debug = self.debug;
+        let silent = self.debug_to_stderr;
 
         if is_debug {
             Self::emit_debug_line(silent, "");
@@ -407,15 +407,28 @@ impl AiService {
             AiProvider::Codex => {
                 // Codex CLI: "ERROR:" で始まる行を優先的に探す
                 // 例: "ERROR: Your access token could not be refreshed..."
-                for line in stderr.lines() {
+                //
+                // ここも 2 段目・3 段目と同じく末尾から探す。stderr の前半は
+                // プロンプトのエコー(下のコメント参照)で、agent context や diff の中に
+                // 行頭 "ERROR:" があればそれを実際の失敗理由より先に拾ってしまう。
+                for line in stderr.lines().rev() {
                     let trimmed = line.trim();
                     if trimmed.starts_with("ERROR:") {
                         return trimmed.to_string();
                     }
                 }
-                // "error" を含む行を探す（小文字も含む）
-                for line in stderr.lines() {
+                // "error" を含む行を探す（小文字も含む）。
+                //
+                // Codex は "Reading prompt from stdin..." に続けてプロンプト全文
+                // (= staged diff)を stderr へエコーする。先頭から探すと、diff の中の
+                // "error"(`std::io::Error` を含む行など、ごく普通に現れる)を
+                // 実際の失敗理由より先に拾ってしまう。実際の失敗はエコーの後ろに出るので、
+                // 3 段目のフォールバックと同じく末尾から探し、エコーの目印行は読み飛ばす。
+                for line in stderr.lines().rev() {
                     let trimmed = line.trim();
+                    if trimmed.starts_with("Reading prompt") {
+                        continue;
+                    }
                     let lower = trimmed.to_lowercase();
                     if lower.contains("error") && !lower.contains("reconnecting") {
                         return trimmed.to_string();

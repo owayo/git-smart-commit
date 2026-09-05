@@ -367,8 +367,8 @@ impl AiService {
         model: &str,
         prompt: &str,
         temp_file: Option<&TempFile>,
-        silent: bool,
     ) {
+        let silent = self.debug_to_stderr;
         let cmd_str = self.format_command_for_debug(
             provider,
             model,

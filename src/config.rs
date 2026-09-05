@@ -349,6 +349,35 @@ struct PartialModelsConfig {
     pub grok: Option<String>,
 }
 
+/// `[ai_usage]` の部分読み込み用
+///
+/// `AiUsageConfig` をそのまま受けると、プロジェクトの `.git-sc` に一部のフィールド
+/// だけ書いた場合でも、書かなかったフィールドが serde の既定値で埋まった構造体が
+/// できあがる。それをグローバル設定へ丸ごと代入すると、`enabled = true` のような
+/// 明示設定が既定値(false)に戻り、連携が黙って無効になる。`models` と同じく
+/// フィールド単位の `Option` で受け、指定されたものだけを上書きする。
+#[derive(Debug, Default, Deserialize)]
+struct PartialAiUsageConfig {
+    pub enabled: Option<bool>,
+    pub command: Option<Vec<String>>,
+    pub threshold_percent: Option<f64>,
+    pub window: Option<AiUsageWindow>,
+    pub timeout_seconds: Option<u64>,
+}
+
+impl PartialAiUsageConfig {
+    /// 土台となる設定に、明示指定されたフィールドだけを重ねる
+    fn apply_to(self, base: AiUsageConfig) -> AiUsageConfig {
+        AiUsageConfig {
+            enabled: self.enabled.unwrap_or(base.enabled),
+            command: self.command.unwrap_or(base.command),
+            threshold_percent: self.threshold_percent.unwrap_or(base.threshold_percent),
+            window: self.window.unwrap_or(base.window),
+            timeout_seconds: self.timeout_seconds.unwrap_or(base.timeout_seconds),
+        }
+    }
+}
+
 /// 設定ファイルからの部分読み込み用
 ///
 /// 全フィールドが `Option` のため、部分設定ファイルでもパースに失敗しない。
@@ -367,7 +396,7 @@ struct PartialConfig {
     pub provider_timeout_seconds: Option<u64>,
     pub nano_buddy: Option<bool>,
     pub codex_reasoning_effort: Option<String>,
-    pub ai_usage: Option<AiUsageConfig>,
+    pub ai_usage: Option<PartialAiUsageConfig>,
     /// `[dev_log]`。グローバル設定でのみ採用し、プロジェクト設定の値は捨てる
     /// (`merge_into` を参照)。
     pub dev_log: Option<DevLogConfig>,
@@ -406,7 +435,10 @@ impl PartialConfig {
             codex_reasoning_effort: self
                 .codex_reasoning_effort
                 .unwrap_or(defaults.codex_reasoning_effort),
-            ai_usage: self.ai_usage.or(defaults.ai_usage),
+            ai_usage: self
+                .ai_usage
+                .map(|partial| partial.apply_to(AiUsageConfig::default()))
+                .or(defaults.ai_usage),
             dev_log: self.dev_log.or(defaults.dev_log),
         }
     }
@@ -473,8 +505,12 @@ impl PartialConfig {
                 "警告: プロジェクト設定の [dev_log] は無視されます。グローバル設定 (~/.config/git-sc/config.toml) で指定してください。"
             );
         }
-        if let Some(ai_usage) = self.ai_usage {
-            config.ai_usage = Some(ai_usage);
+        // `[ai_usage]` はテーブル丸ごとではなくフィールド単位で重ねる。プロジェクト側で
+        // `threshold_percent` だけ書き換えたときに、グローバルの `enabled = true` が
+        // 既定値へ戻って連携が黙って止まるのを防ぐ。
+        if let Some(partial) = self.ai_usage {
+            let base = config.ai_usage.take().unwrap_or_default();
+            config.ai_usage = Some(partial.apply_to(base));
         }
     }
 }
@@ -2490,6 +2526,191 @@ gemini = "legacy-gemini-value"
         partial.merge_into(&mut config);
 
         assert_eq!(config.language, "English");
+    }
+
+    // ============================================================
+    // [ai_usage] のフィールド単位マージのテスト
+    //
+    // テーブル丸ごとの置換だと、プロジェクト側で 1 フィールド書いただけで
+    // 残りが serde の既定値に戻る。特に `enabled` は既定 false のため、
+    // 閾値を調整したつもりが連携ごと黙って止まる。
+    // ============================================================
+
+    /// プロジェクト設定で一部だけ指定しても、他のフィールドはグローバル設定を保つ
+    #[test]
+    fn test_partial_merge_into_ai_usage_keeps_unspecified_global_fields() {
+        let mut config = Config {
+            ai_usage: Some(AiUsageConfig {
+                enabled: true,
+                command: vec!["custom-usage".to_string(), "--json".to_string()],
+                threshold_percent: 90.0,
+                window: AiUsageWindow::Weekly,
+                timeout_seconds: 30,
+            }),
+            ..Config::default()
+        };
+
+        let toml = r#"
+[ai_usage]
+threshold_percent = 50.0
+"#;
+        let partial: PartialConfig = toml::from_str(toml).unwrap();
+        partial.merge_into(&mut config);
+
+        let ai_usage = config.ai_usage.expect("[ai_usage] が消えている");
+        assert_eq!(ai_usage.threshold_percent, 50.0, "指定した値が反映されない");
+        assert!(
+            ai_usage.enabled,
+            "指定していない enabled が既定値に戻り、連携が黙って無効化されている"
+        );
+        assert_eq!(
+            ai_usage.command,
+            vec!["custom-usage".to_string(), "--json".to_string()],
+            "指定していない command が既定値に戻っている"
+        );
+        assert_eq!(ai_usage.window, AiUsageWindow::Weekly);
+        assert_eq!(ai_usage.timeout_seconds, 30);
+    }
+
+    /// プロジェクト設定で明示したフィールドは、グローバル設定より優先される
+    #[test]
+    fn test_partial_merge_into_ai_usage_overrides_specified_fields() {
+        let mut config = Config {
+            ai_usage: Some(AiUsageConfig {
+                enabled: true,
+                threshold_percent: 90.0,
+                window: AiUsageWindow::Weekly,
+                ..AiUsageConfig::default()
+            }),
+            ..Config::default()
+        };
+
+        let toml = r#"
+[ai_usage]
+enabled = false
+window = "five_hour"
+timeout_seconds = 3
+"#;
+        let partial: PartialConfig = toml::from_str(toml).unwrap();
+        partial.merge_into(&mut config);
+
+        let ai_usage = config.ai_usage.expect("[ai_usage] が消えている");
+        assert!(!ai_usage.enabled, "明示的な無効化が効いていない");
+        assert_eq!(ai_usage.window, AiUsageWindow::FiveHour);
+        assert_eq!(ai_usage.timeout_seconds, 3);
+        assert_eq!(ai_usage.threshold_percent, 90.0, "未指定の値まで変わった");
+    }
+
+    /// グローバル設定に `[ai_usage]` が無ければ、プロジェクト設定だけで構成できる
+    #[test]
+    fn test_partial_merge_into_ai_usage_without_global_uses_defaults_as_base() {
+        let mut config = Config::default();
+        assert!(config.ai_usage.is_none());
+
+        let toml = r#"
+[ai_usage]
+enabled = true
+"#;
+        let partial: PartialConfig = toml::from_str(toml).unwrap();
+        partial.merge_into(&mut config);
+
+        let ai_usage = config.ai_usage.expect("[ai_usage] が作られていない");
+        assert!(ai_usage.enabled);
+        assert_eq!(ai_usage.command, default_ai_usage_command());
+        assert_eq!(
+            ai_usage.threshold_percent,
+            default_ai_usage_threshold_percent()
+        );
+        assert_eq!(ai_usage.timeout_seconds, default_ai_usage_timeout_seconds());
+    }
+
+    /// グローバル設定単体でも `[ai_usage]` の未指定フィールドは既定値で埋まる
+    #[test]
+    fn test_into_config_ai_usage_fills_unspecified_fields_with_defaults() {
+        let toml = r#"
+[ai_usage]
+enabled = true
+threshold_percent = 80.0
+"#;
+        let partial: PartialConfig = toml::from_str(toml).unwrap();
+        let config = partial.into_config();
+
+        let ai_usage = config.ai_usage.expect("[ai_usage] が作られていない");
+        assert!(ai_usage.enabled);
+        assert_eq!(ai_usage.threshold_percent, 80.0);
+        assert_eq!(ai_usage.command, default_ai_usage_command());
+        assert_eq!(ai_usage.window, AiUsageWindow::default());
+        assert_eq!(ai_usage.timeout_seconds, default_ai_usage_timeout_seconds());
+    }
+
+    // ============================================================
+    // [dev_log] がグローバル設定専用であることのテスト
+    //
+    // クローンしてきたリポジトリの `.git-sc` からログ出力を有効化したり
+    // 出力先を差し替えたりできると、自分のコード(staged diff)が
+    // 相手の選んだパスへ書き出されうる。マージしないことが安全性の要件。
+    // ============================================================
+
+    /// プロジェクト設定の `[dev_log]` ではログ出力を有効化できない
+    #[test]
+    fn test_partial_merge_into_project_dev_log_cannot_enable_logging() {
+        let mut config = Config::default();
+        assert!(config.dev_log.is_none(), "既定でログ出力は無効のはず");
+
+        let toml = r#"
+[dev_log]
+enabled = true
+dir = "/tmp/elsewhere"
+content = "full"
+"#;
+        let partial: PartialConfig = toml::from_str(toml).unwrap();
+        partial.merge_into(&mut config);
+
+        assert!(
+            config.dev_log.is_none(),
+            "プロジェクト設定からログ出力を有効化できてしまう"
+        );
+    }
+
+    /// プロジェクト設定の `[dev_log]` はグローバル設定の出力先・記録レベルも変えない
+    #[test]
+    fn test_partial_merge_into_project_dev_log_does_not_override_global() {
+        let mut config = Config {
+            dev_log: Some(DevLogConfig {
+                enabled: true,
+                dir: Some("/global/logs".to_string()),
+                content: "metadata".to_string(),
+                retention_days: 14,
+                max_total_mb: 500,
+            }),
+            ..Config::default()
+        };
+
+        let toml = r#"
+[dev_log]
+enabled = true
+dir = "/tmp/elsewhere"
+content = "full"
+retention_days = 999
+max_total_mb = 1
+"#;
+        let partial: PartialConfig = toml::from_str(toml).unwrap();
+        partial.merge_into(&mut config);
+
+        let dev_log = config
+            .dev_log
+            .expect("グローバル設定の [dev_log] が消えている");
+        assert_eq!(
+            dev_log.dir.as_deref(),
+            Some("/global/logs"),
+            "プロジェクト設定が出力先を差し替えている"
+        );
+        assert_eq!(
+            dev_log.content, "metadata",
+            "プロジェクト設定が記録レベルを引き上げている"
+        );
+        assert_eq!(dev_log.retention_days, 14);
+        assert_eq!(dev_log.max_total_mb, 500);
     }
 
     // ============================================================

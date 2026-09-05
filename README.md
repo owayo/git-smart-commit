@@ -72,6 +72,8 @@ cd git-smart-commit
 make install
 ```
 
+On macOS, `make install` signs a temporary copy and then atomically replaces the installed binary. This avoids stale per-inode code-signature validation after reinstalling over an existing command.
+
 ### From GitHub Releases
 
 Download the latest binary from [Releases](https://github.com/owayo/git-smart-commit/releases).
@@ -202,6 +204,7 @@ Operation modes (`--amend`, `--squash`, `--reword`, `--generate-for`) are mutual
 
 `--debug` behavior:
 - In `--generate-for` mode, all debug output (config settings, AI prompt, provider command, streaming output) goes to stderr, so stdout remains the generated message only and stays safe to pipe
+- In every other mode debug output goes to stdout as a single block, including when combined with `--quiet`. `--quiet` suppresses progress messages; it does not move debug output to stderr
 
 ### Examples
 
@@ -314,6 +317,7 @@ provider_timeout_seconds = 60
 | `provider_timeout_seconds` | Provider call timeout | `60` |
 | `prefix_rules` | URL-based prefix format | `[]` |
 | `prefix_scripts` | External prefix scripts | `[]` |
+| `ai_usage` | Residual quota gate via the `ai-usage` CLI (see "Residual Quota Gate") | disabled |
 | `dev_log` | Developer generation log (global config only; see "Developer Generation Log") | disabled |
 
 Existing global config files are not rewritten automatically. The current Codex default is `gpt-5.4-mini`; to use it in an existing setup, update `models.codex` in `~/.config/git-sc/config.toml`. This default was reselected on June 9, 2026 (JST) by comparing `input_tokens` for Codex models that are API-visible, listed, and support `medium` reasoning, and re-verified on June 29, 2026 (JST). The latest measurement used `Reply ok.` in an empty directory with `--ignore-user-config --ignore-rules --ephemeral --sandbox read-only` and `model_reasoning_effort='medium'`: `gpt-5.5` = 17593, `gpt-5.4` = 16206, `gpt-5.4-mini` = 15856. All accepted runs produced `ok` and no tool calls, so the ranking is stable and the default is unchanged.
@@ -416,6 +420,7 @@ echo "conventional"
 - Reword message temporary files use the same private-file behavior.
 - The provider cooldown state file (`~/.config/git-sc/.providers-state`) is also created with no group/other permissions, because its cooldown keys embed each step's `env` values verbatim.
 - **`.git-sc-ignore` failures stop the run.** If the file exists but cannot be read or parsed, git-sc exits with an error instead of continuing without exclusions. A malformed ignore file would otherwise silently send the very files you meant to withhold to the AI provider.
+- **`.git-sc-ignore` is not affected by your diff-formatting Git config.** Exclusion works by reading file paths out of the `diff --git a/… b/…` header, so settings that reshape that line — `diff.noprefix`, `diff.mnemonicPrefix`, `diff.srcPrefix` / `diff.dstPrefix`, `color.ui = always`, `diff.external` — would otherwise make every pattern silently stop matching. git-sc requests the diff with the prefixes, colors, and path base pinned, so your patterns apply the same way regardless of those settings. This also covers `diff.relative`, which additionally would have hidden any change outside the directory you ran git-sc from — with it pinned, the message is always written from the full staged diff no matter which subdirectory you are in.
 - **A project-level `.git-sc` can run code.** `providers[].command`, `prefix_scripts[].script`, and `ai_usage.command` name executables that git-sc launches, and a repository-local `.git-sc` is merged in like any other config. Cloning an untrusted repository and running git-sc in it — including automatically, via an agent stop hook — therefore executes whatever those fields point at. `env` keys are validated and dynamic-loader / interpreter pre-load names are rejected, but that does not constrain these three fields. Review a repository's `.git-sc` before running git-sc inside it, the same way you would review a `Makefile` or a git hook.
 
 ### .git-sc-ignore
@@ -442,6 +447,40 @@ auto_push = true
 ```
 
 When enabled, `git-sc` will run `git push` after a successful commit or squash.
+
+### Residual Quota Gate (`ai-usage`)
+
+If you have the `ai-usage` CLI installed, git-sc can drop providers whose account is nearly out of quota before spending a call on them. Disabled by default.
+
+```toml
+[ai_usage]
+enabled = true
+command = ["ai-usage", "--json"]  # optional
+threshold_percent = 95            # skip a step at or above this usage
+window = "nearest"                # weekly | five_hour | nearest (the higher of the two)
+timeout_seconds = 10
+```
+
+git-sc runs the command once at startup and checks each step in the fallback chain against the matching account. Steps at or above `threshold_percent` are removed **for that run only** — the provider cooldown state is untouched.
+
+Each provider step can say which account it belongs to:
+
+```toml
+[[providers]]
+provider = "codex"
+ai_usage_profile = "Work"          # exact, case-sensitive match on the ai-usage `profile`
+env = { CODEX_HOME = "~/.codex-work" }
+
+[[providers]]
+provider = "antigravity"
+ai_usage_group = "Claude&GPT"      # case-insensitive match on `group_label`
+```
+
+`ai_usage_group` exists because one account's quota can be split per model family — Antigravity reports separate `Gemini` and `Claude&GPT` pools that run out independently. Without `ai_usage_profile`, git-sc judges the step against the least-used account for that provider; note this only affects the *decision*, since the account a step actually runs as is decided by its `env`. Set both if you want the gate and the execution to agree.
+
+Failure handling is deliberately asymmetric: if the command cannot be run, times out, or returns unparseable output, the chain is left as-is and the commit proceeds, because a broken helper must never block a commit. But if the usage data is read successfully and *every* step is over the threshold, git-sc stops with an error rather than falling back to the default chain — falling back would call the very providers the gate just refused.
+
+A project-level `.git-sc` can override individual fields; anything it does not mention keeps the global value.
 
 ### Developer Generation Log
 

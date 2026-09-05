@@ -102,6 +102,12 @@ pub struct AiService {
     cooldown_minutes: u64,
     pub(super) timeout_seconds: u64,
     pub(super) debug: bool,
+    /// デバッグ出力を stdout ではなく stderr へ流すか。
+    ///
+    /// `--generate-for` は「stdout には生成メッセージのみ」が契約なので、そのモードだけ
+    /// true にする。進捗表示の抑制(`--quiet`)とは別の軸で、混ぜると
+    /// 「AI Prompt は stdout、AI Provider Command は stderr」という食い違いが起きる。
+    pub(super) debug_to_stderr: bool,
     provider_override: bool,
     /// 設定ファイル中に旧 `gemini` エイリアス、または `[models] gemini` の指定が
     /// 残っていた場合に立つフラグ。debug 出力時に注意を促す。
@@ -187,6 +193,7 @@ impl AiService {
             cooldown_minutes: config.provider_cooldown_minutes,
             timeout_seconds: config.provider_timeout_seconds,
             debug: false,
+            debug_to_stderr: false,
             provider_override: false,
             legacy_gemini_alias_detected,
             ai_usage_notes,
@@ -301,6 +308,7 @@ impl AiService {
             cooldown_minutes: 60, // デフォルト1時間
             timeout_seconds: 60,  // デフォルト60秒（Config::defaultと同値）
             debug: false,
+            debug_to_stderr: false,
             provider_override: false,
             legacy_gemini_alias_detected: false,
             ai_usage_notes: Vec::new(),
@@ -313,26 +321,42 @@ impl AiService {
     ///
     /// 旧 `gemini` エイリアスや `[models] gemini` が残っている設定を検出していた場合、
     /// または ai-usage 連携で fallback chain の絞り込み結果があれば、この呼び出しの
-    /// タイミングで一度だけ eprintln! で表示する。
+    /// タイミングで一度だけ表示する。
+    ///
+    /// これらは `--debug` のときだけ出る情報なので、他のデバッグ出力と同じ宛先に流す。
+    /// そのため呼び出し側は `set_debug_to_stderr` を先に済ませておくこと。
     pub fn set_debug(&mut self, debug: bool) {
         self.debug = debug;
         if debug && self.legacy_gemini_alias_detected {
-            eprintln!(
-                "{}",
-                "[git-sc] notice: 'gemini' is a legacy alias for the Antigravity CLI ('agy') and is \
+            Self::emit_debug_line(
+                self.debug_to_stderr,
+                &"[git-sc] notice: 'gemini' is a legacy alias for the Antigravity CLI ('agy') and is \
                  normalized to 'antigravity'. Prefer writing 'antigravity' (and [models] antigravity) instead."
                     .yellow()
+                    .to_string(),
             );
             // 通知は一度だけで十分
             self.legacy_gemini_alias_detected = false;
         }
         if debug && !self.ai_usage_notes.is_empty() {
-            eprintln!("{}", "[git-sc] ai-usage filter:".dimmed());
+            Self::emit_debug_line(
+                self.debug_to_stderr,
+                &"[git-sc] ai-usage filter:".dimmed().to_string(),
+            );
             for note in &self.ai_usage_notes {
-                eprintln!("  {}", note.dimmed());
+                Self::emit_debug_line(self.debug_to_stderr, &format!("  {}", note.dimmed()));
             }
             self.ai_usage_notes.clear();
         }
+    }
+
+    /// デバッグ出力の宛先を stderr に切り替える(`--generate-for` 専用)。
+    ///
+    /// stdout を生成メッセージ専用に保つためのもので、`--quiet` による進捗抑制とは
+    /// 別物。`--quiet` でここを true にすると、デバッグ出力の一部だけが stderr に
+    /// 逃げて出力先がブロックごとに食い違う。
+    pub fn set_debug_to_stderr(&mut self, to_stderr: bool) {
+        self.debug_to_stderr = to_stderr;
     }
 
     /// 生成ログを紐付ける(App と共有し、プロバイダー呼び出しごとに試行を記録する)
@@ -750,10 +774,10 @@ impl AiService {
                     );
                     result
                 } else {
-                    self.call_provider(&provider, step, &model, &prompt, silent, retry)
+                    self.call_provider(&provider, step, &model, &prompt, retry)
                 };
                 #[cfg(not(all(target_os = "macos", feature = "apple-ai")))]
-                let result = self.call_provider(&provider, step, &model, &prompt, silent, retry);
+                let result = self.call_provider(&provider, step, &model, &prompt, retry);
 
                 match result {
                     Ok(CleanedResponse {
@@ -882,17 +906,16 @@ impl AiService {
         step: &ProviderStep,
         model: &str,
         prompt: &str,
-        silent: bool,
         retry: u32,
     ) -> Result<CleanedResponse, AppError> {
         let Some(dev_log) = self.dev_log.clone() else {
             let mut captured = CapturedOutput::default();
-            return self.call_provider_inner(provider, step, model, prompt, silent, &mut captured);
+            return self.call_provider_inner(provider, step, model, prompt, &mut captured);
         };
 
         let mut captured = CapturedOutput::default();
         let started = Instant::now();
-        let result = self.call_provider_inner(provider, step, model, prompt, silent, &mut captured);
+        let result = self.call_provider_inner(provider, step, model, prompt, &mut captured);
         let duration_ms = started.elapsed().as_millis() as u64;
 
         let (raw_stdout, stdout_truncated) = crate::devlog::capture(&captured.stdout);
@@ -935,15 +958,14 @@ impl AiService {
 
     /// プロバイダー呼び出しの本体
     ///
-    /// silent: --generate-for のように stdout を生成メッセージ専用に保つモード。
-    /// デバッグ出力(コマンド表示・ストリーミング)を stderr へ逃がす。
+    /// デバッグ出力(コマンド表示・ストリーミング)の宛先は `self.debug_to_stderr` が
+    /// 決める(`--generate-for` のときだけ stderr)。
     fn call_provider_inner(
         &self,
         provider: &AiProvider,
         step: &ProviderStep,
         model: &str,
         prompt: &str,
-        silent: bool,
         captured: &mut CapturedOutput,
     ) -> Result<CleanedResponse, AppError> {
         // opencode / grok は一時ファイル経由でプロンプトを渡す。
@@ -982,7 +1004,7 @@ impl AiService {
             } else {
                 temp_file.as_ref()
             };
-            self.print_debug_command(provider, step, model, prompt, debug_file, silent);
+            self.print_debug_command(provider, step, model, prompt, debug_file);
         }
 
         // プロセスを起動
@@ -1000,7 +1022,7 @@ impl AiService {
         // 大きいプロンプト使用時のパイプ双方向デッドロックを防ぐ
         // (詳細は run_process_with_timeout のコメントを参照)。
         let (exit_status, stdout_str, stderr_str) =
-            self.run_process_with_timeout(&mut child, provider, uses_stdin, prompt, silent)?;
+            self.run_process_with_timeout(&mut child, provider, uses_stdin, prompt)?;
 
         let stdout_str = if let Some(output_file) = &codex_output_file {
             fs::read_to_string(output_file.path()).map_err(|e| {
@@ -3348,7 +3370,7 @@ mod tests {
         service.timeout_seconds = 5;
 
         let (status, stdout, stderr) = service
-            .run_process_with_timeout(&mut child, &AiProvider::Codex, false, "", false)
+            .run_process_with_timeout(&mut child, &AiProvider::Codex, false, "")
             .unwrap();
 
         assert!(status.success());
@@ -3369,8 +3391,7 @@ mod tests {
         let mut service = AiService::new();
         service.timeout_seconds = 0;
 
-        let result =
-            service.run_process_with_timeout(&mut child, &AiProvider::Codex, false, "", false);
+        let result = service.run_process_with_timeout(&mut child, &AiProvider::Codex, false, "");
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("timed out"));
@@ -3402,7 +3423,7 @@ mod tests {
         let large_prompt = "x".repeat(1_000_000);
 
         let (status, stdout, _stderr) = service
-            .run_process_with_timeout(&mut child, &AiProvider::Codex, true, &large_prompt, false)
+            .run_process_with_timeout(&mut child, &AiProvider::Codex, true, &large_prompt)
             .unwrap();
 
         // デッドロックせず子は正常終了し、stdout も全量読み取れている
@@ -3432,13 +3453,8 @@ mod tests {
         // メインの try_wait ループがタイムアウトを検出して kill するためデッドロックしない。
         let large_prompt = "x".repeat(1_000_000);
 
-        let result = service.run_process_with_timeout(
-            &mut child,
-            &AiProvider::Codex,
-            true,
-            &large_prompt,
-            false,
-        );
+        let result =
+            service.run_process_with_timeout(&mut child, &AiProvider::Codex, true, &large_prompt);
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("timed out"));
@@ -3467,13 +3483,8 @@ mod tests {
         // パイプバッファを超える大きさ。子が読まずに終了するため write_all は BrokenPipe になる。
         let large_prompt = "x".repeat(1_000_000);
 
-        let result = service.run_process_with_timeout(
-            &mut child,
-            &AiProvider::Codex,
-            true,
-            &large_prompt,
-            false,
-        );
+        let result =
+            service.run_process_with_timeout(&mut child, &AiProvider::Codex, true, &large_prompt);
 
         assert!(result.is_err());
         assert!(
@@ -4300,6 +4311,37 @@ mod tests {
         );
     }
 
+    /// Codex は stderr にプロンプト全文(= staged diff)をエコーする。
+    /// diff の中の "error" を実際の失敗理由より先に拾ってはいけない。
+    #[test]
+    fn test_extract_error_codex_prefers_real_error_over_prompt_echo() {
+        let stderr = concat!(
+            "Reading prompt from stdin...\n",
+            "diff --git a/src/lib.rs b/src/lib.rs\n",
+            "+    let mut read_error: Option<std::io::Error> = None;\n",
+            "stream error: connection reset by peer\n",
+        );
+        assert_eq!(
+            AiService::extract_error(stderr, &AiProvider::Codex),
+            "stream error: connection reset by peer"
+        );
+    }
+
+    /// "ERROR:" で始まる行を探す段でも、エコーされたプロンプト側を先に拾わない
+    #[test]
+    fn test_extract_error_codex_prefers_real_error_prefix_over_echoed_one() {
+        // agent context や diff の中に行頭 "ERROR:" が現れることはありうる
+        let stderr = concat!(
+            "Reading prompt from stdin...\n",
+            "ERROR: failed to open config file\n",
+            "ERROR: rate limit exceeded\n",
+        );
+        assert_eq!(
+            AiService::extract_error(stderr, &AiProvider::Codex),
+            "ERROR: rate limit exceeded"
+        );
+    }
+
     #[test]
     fn test_extract_error_codex_fallback_last_line() {
         let stderr = "Reading prompt...\nReconnecting...\nUnknown issue";
@@ -4451,6 +4493,7 @@ mod tests {
             cooldown_minutes: 60,
             timeout_seconds: 60,
             debug: false,
+            debug_to_stderr: false,
             provider_override: false,
             legacy_gemini_alias_detected: false,
             ai_usage_notes: Vec::new(),
@@ -4490,6 +4533,7 @@ mod tests {
             cooldown_minutes: 60,
             timeout_seconds: 60,
             debug: true,
+            debug_to_stderr: false,
             provider_override: false,
             legacy_gemini_alias_detected: false,
             ai_usage_notes: Vec::new(),
@@ -4520,6 +4564,7 @@ mod tests {
             cooldown_minutes: 60,
             timeout_seconds: 60,
             debug: false,
+            debug_to_stderr: false,
             provider_override: false,
             legacy_gemini_alias_detected: false,
             ai_usage_notes: Vec::new(),
@@ -4549,6 +4594,7 @@ mod tests {
             cooldown_minutes: 60,
             timeout_seconds: 60,
             debug: false,
+            debug_to_stderr: false,
             provider_override: false,
             legacy_gemini_alias_detected: false,
             ai_usage_notes: Vec::new(),

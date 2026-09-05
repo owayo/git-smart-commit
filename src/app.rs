@@ -112,7 +112,10 @@ impl App {
             ai.set_dev_log(Rc::clone(dev_log));
         }
 
-        // デバッグモードを設定
+        // デバッグ出力の宛先は「--generate-for かどうか」だけで決める。--quiet は
+        // 進捗表示を止めるフラグであって、stdout を空ける契約ではない。
+        // set_debug は有効化した時点で notice を出すので、宛先を先に決めておく。
+        ai.set_debug_to_stderr(cli.generate_for.is_some());
         if cli.debug {
             ai.set_debug(true);
         }
@@ -562,7 +565,10 @@ impl App {
     /// - `prefix_mode`: プレフィックス判定結果
     /// - `is_squash`: squashモードかどうか（Autoモード時にconventionalを強制する）
     /// - `agent_context`: エージェントコンテキスト
-    /// - `silent`: trueの場合、進捗メッセージを抑制しデバッグ出力をstderrに出力
+    /// - `silent`: `--generate-for` かどうか。進捗メッセージを抑制する
+    ///   (`--quiet` と同じ扱いにするため、以降は `quiet` にまとめる)。
+    ///   デバッグ出力の宛先は `AiService::debug_to_stderr` が別に持つので、
+    ///   ここでは扱わない
     #[allow(clippy::too_many_arguments)]
     fn generate_with_prefix(
         &self,

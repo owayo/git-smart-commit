@@ -626,6 +626,20 @@ mod tests {
         assert_eq!(ContentLevel::parse(""), ContentLevel::Metadata);
     }
 
+    /// cleanup の閾値だけを変えて有効化する
+    fn cleanup_config(dir: &Path, retention_days: u64, max_total_mb: u64) -> Config {
+        Config {
+            dev_log: Some(DevLogConfig {
+                enabled: true,
+                dir: Some(dir.to_string_lossy().into_owned()),
+                content: "metadata".to_string(),
+                retention_days,
+                max_total_mb,
+            }),
+            ..Config::default()
+        }
+    }
+
     /// 生成まで到達した実行を模す(プロンプトを渡してから結末を書く)
     fn finish_with_prompt(log: &DevLog, prompt: &str) {
         log.set_generation_input(Input::default(), prompt, Vec::new());
@@ -750,16 +764,7 @@ mod tests {
     #[test]
     fn test_cleanup_removes_files_older_than_retention() {
         let dir = tempfile::TempDir::new().unwrap();
-        let config = Config {
-            dev_log: Some(DevLogConfig {
-                enabled: true,
-                dir: Some(dir.path().to_string_lossy().into_owned()),
-                content: "metadata".to_string(),
-                retention_days: 1,
-                max_total_mb: 500,
-            }),
-            ..Config::default()
-        };
+        let config = cleanup_config(dir.path(), 1, 500);
         let old_dir = dir.path().join("2020-01-01");
         fs::create_dir_all(&old_dir).unwrap();
         let old_file = old_dir.join("old.json");
@@ -775,16 +780,7 @@ mod tests {
     #[test]
     fn test_cleanup_is_skipped_while_stamp_is_fresh() {
         let dir = tempfile::TempDir::new().unwrap();
-        let config = Config {
-            dev_log: Some(DevLogConfig {
-                enabled: true,
-                dir: Some(dir.path().to_string_lossy().into_owned()),
-                content: "metadata".to_string(),
-                retention_days: 1,
-                max_total_mb: 500,
-            }),
-            ..Config::default()
-        };
+        let config = cleanup_config(dir.path(), 1, 500);
         fs::create_dir_all(dir.path()).unwrap();
         fs::write(dir.path().join(".cleanup-stamp"), b"").unwrap();
 
@@ -801,6 +797,77 @@ mod tests {
             old_file.exists(),
             "スタンプが新しい間は走査ごと省略されるはず"
         );
+    }
+
+    /// 保持期間内でも合計が上限を超えたら、収まるまで古い順に消す
+    #[test]
+    fn test_cleanup_trims_oldest_files_until_total_fits_limit() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // 上限 1 MiB に対し 600 KiB × 3 = 1.8 MiB。2 つ消せば収まる
+        let config = cleanup_config(dir.path(), 14, 1);
+        let day_dir = dir.path().join("2020-01-01");
+        fs::create_dir_all(&day_dir).unwrap();
+
+        let filler = "x".repeat(600 * 1024);
+        let oldest = day_dir.join("oldest.json");
+        let middle = day_dir.join("middle.json");
+        let newest = day_dir.join("newest.json");
+        for path in [&oldest, &middle, &newest] {
+            fs::write(path, &filler).unwrap();
+        }
+        // 保持期間(14 日)には掛からない範囲で新旧の順序だけを付ける
+        set_modified_secs_ago(&oldest, 3 * 60 * 60);
+        set_modified_secs_ago(&middle, 2 * 60 * 60);
+        set_modified_secs_ago(&newest, 60 * 60);
+
+        let log = DevLog::from_config(&config, true).unwrap();
+        finish_with_prompt(&log, "prompt");
+
+        assert!(!oldest.exists(), "上限超過時に最も古いログが消えていない");
+        assert!(!middle.exists(), "上限を下回るまで古い順に消えていない");
+        assert!(newest.exists(), "上限に収まった後も新しいログを消している");
+        assert!(
+            single_log_path(dir.path()).exists(),
+            "今回の実行のログまで消えている"
+        );
+    }
+
+    /// 書きかけかもしれない `.tmp` は、十分古いものだけ回収する
+    #[test]
+    fn test_cleanup_removes_only_stale_tmp_files() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config = cleanup_config(dir.path(), 14, 500);
+        let day_dir = dir.path().join("2020-01-01");
+        fs::create_dir_all(&day_dir).unwrap();
+
+        let stale = day_dir.join(".stale.tmp");
+        let fresh = day_dir.join(".fresh.tmp");
+        fs::write(&stale, "{}").unwrap();
+        fs::write(&fresh, "{}").unwrap();
+        set_modified_secs_ago(&stale, 2 * 60 * 60);
+
+        let log = DevLog::from_config(&config, true).unwrap();
+        finish_with_prompt(&log, "prompt");
+
+        assert!(!stale.exists(), "1 時間以上放置された .tmp が残っている");
+        assert!(fresh.exists(), "実行中かもしれない .tmp まで消している");
+    }
+
+    /// ログが無くなった日付ディレクトリは残さない
+    #[test]
+    fn test_cleanup_removes_emptied_date_directories() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config = cleanup_config(dir.path(), 1, 500);
+        let old_dir = dir.path().join("2020-01-01");
+        fs::create_dir_all(&old_dir).unwrap();
+        let old_file = old_dir.join("old.json");
+        fs::write(&old_file, "{}").unwrap();
+        set_modified_days_ago(&old_file, 30);
+
+        let log = DevLog::from_config(&config, true).unwrap();
+        finish_with_prompt(&log, "prompt");
+
+        assert!(!old_dir.exists(), "空になった日付ディレクトリが残っている");
     }
 
     #[test]
@@ -869,7 +936,11 @@ mod tests {
     }
 
     fn set_modified_days_ago(path: &Path, days: u64) {
-        let target = SystemTime::now() - std::time::Duration::from_secs(days * 24 * 60 * 60);
+        set_modified_secs_ago(path, days * 24 * 60 * 60);
+    }
+
+    fn set_modified_secs_ago(path: &Path, secs: u64) {
+        let target = SystemTime::now() - std::time::Duration::from_secs(secs);
         let file = fs::File::options().write(true).open(path).unwrap();
         file.set_modified(target).unwrap();
     }
