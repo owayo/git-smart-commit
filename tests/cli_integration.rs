@@ -1434,3 +1434,82 @@ fn test_generate_for_debug_keeps_stdout_message_only() {
         .stdout(predicate::eq("feat: quiet integration test\n"))
         .stderr(predicate::str::contains("=== DEBUG"));
 }
+
+/// テスト用ヘルパー: 呼び出し中に別ファイルを `git add` するフェイク opencode を配置する。
+/// AI 生成に数十秒かかる間に、別の端末やエディタの自動保存が `git add` する状況を再現する。
+#[cfg(unix)]
+fn setup_fake_opencode_that_stages_file(dir: &TempDir, file_to_stage: &str) -> String {
+    let bin_dir = dir.path().join("fake-bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+
+    let script_path = bin_dir.join("opencode");
+    let real_git = resolve_real_git_path();
+    let script_body = format!(
+        "#!/bin/sh\n\"{real_git}\" add \"{file_to_stage}\"\necho \"feat: quiet integration test\"\n"
+    );
+    std::fs::write(&script_path, script_body).unwrap();
+
+    let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&script_path, perms).unwrap();
+
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    format!("{}:{}", bin_dir.display(), current_path)
+}
+
+/// 生成中に別プロセスが `git add` したら、生成済みメッセージは変更後の内容を
+/// 説明していないためコミットせず中止する。
+///
+/// `has_staged_changes()` による有無判定だけではこの状況をすり抜ける
+/// (紛れ込んだ変更があってもステージは「空でない」ままなので素通りする)。
+/// index のツリーハッシュを生成前後で突き合わせる防御が効いていることを確認する。
+#[cfg(unix)]
+#[test]
+fn test_index_change_during_generation_aborts_commit() {
+    let dir = setup_git_repo_with_commit();
+
+    // ユーザーが意図してステージした変更
+    std::fs::write(dir.path().join("staged.txt"), "staged\n").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "staged.txt"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // 生成中に紛れ込む変更（フェイク opencode が自分で stage する）
+    std::fs::write(dir.path().join("sneaked.txt"), "sneaked\n").unwrap();
+    let path = setup_fake_opencode_that_stages_file(&dir, "sneaked.txt");
+
+    git_sc!()
+        .args(["--yes"])
+        .env("PATH", path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("ステージ内容が変化しました"));
+
+    // コミットは作られていない
+    let message_output = std::process::Command::new("git")
+        .args(["log", "-1", "--format=%s"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&message_output.stdout).trim(),
+        "initial commit",
+        "index が変化した場合はコミットしてはいけない"
+    );
+
+    // 紛れ込んだ変更を含め、ステージ内容はそのまま残る（破壊しない）
+    let staged_output = std::process::Command::new("git")
+        .args(["diff", "--cached", "--name-only"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let staged = String::from_utf8_lossy(&staged_output.stdout);
+    let mut staged_files: Vec<&str> = staged.lines().collect();
+    staged_files.sort_unstable();
+    assert_eq!(staged_files, vec!["sneaked.txt", "staged.txt"]);
+}
