@@ -875,6 +875,16 @@ impl Config {
                 *first = shellexpand::tilde(first).to_string();
             }
         }
+
+        // `[ai_usage] command` の実行ファイルも同じ規則で展開する。ここだけ非対称に
+        // 未展開のままだと `command = ["~/bin/ai-usage", ...]` が spawn に失敗し、
+        // ai-usage 連携は fail-open なので `--debug` を付けない限り何も表示されず、
+        // 残量ゲートが黙って無効になる。引数側は展開しない(パスとは限らないため)。
+        if let Some(usage) = self.ai_usage.as_mut()
+            && let Some(first) = usage.command.first_mut()
+        {
+            *first = shellexpand::tilde(first).to_string();
+        }
         Ok(())
     }
 
@@ -3152,6 +3162,30 @@ providers = [
         let v = out.get("CODEX_HOME").unwrap();
         assert!(v.starts_with('/'), "~ は絶対パスに展開されるべき: {v}");
         assert!(!v.contains('~'));
+    }
+
+    #[test]
+    fn test_finalize_steps_expands_tilde_in_ai_usage_command() {
+        // `providers[].command[0]` と同じ規則で `[ai_usage] command` の実行ファイルも
+        // 展開する。ここだけ未展開だと spawn に失敗し、ai-usage 連携は fail-open なので
+        // `--debug` を付けない限り何も表示されず、残量ゲートが黙って無効になる。
+        let mut config = Config {
+            ai_usage: Some(AiUsageConfig {
+                command: vec!["~/bin/ai-usage".to_string(), "--json".to_string()],
+                ..AiUsageConfig::default()
+            }),
+            ..Config::default()
+        };
+        config.finalize_steps().unwrap();
+
+        let command = &config.ai_usage.as_ref().unwrap().command;
+        assert!(
+            command[0].starts_with('/') && !command[0].contains('~'),
+            "~ は絶対パスに展開されるべき: {}",
+            command[0]
+        );
+        // 引数側はパスとは限らないので触らない
+        assert_eq!(command[1], "--json");
     }
 
     #[test]

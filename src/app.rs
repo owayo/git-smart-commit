@@ -814,6 +814,10 @@ impl App {
         // 取得できない場合(未解決コンフリクトが index にある等)は None にして
         // 従来どおり進める。これは追加の防御であって、必須の前提条件ではない。
         let index_tree_before_generate = self.git.write_tree().ok();
+        // index だけでなく HEAD も控える。index の tree が同じでも、生成中や確認待ちの
+        // 間に `git reset --soft HEAD~1` が走ると、コミットに入る差分は HEAD 側が動いた
+        // 分だけ広がる(index は不変なので tree 比較では捕まらない)。
+        let head_before_generate = self.git.head_snapshot();
 
         // ステージ済みのdiffを取得
         let staged_diff = self.git.get_staged_diff()?;
@@ -895,6 +899,11 @@ impl App {
                     "コミットメッセージの生成中にステージ内容が変化しました。生成済みメッセージは変更後の内容を反映していないため中止します。再実行してください".to_string(),
                 ));
             }
+            if head_before_generate.is_some() && self.git.head_snapshot() != head_before_generate {
+                return Err(AppError::InvalidArgument(
+                    "コミットメッセージの生成中に HEAD が移動しました。生成済みメッセージは現在の履歴を反映していないため中止します。再実行してください".to_string(),
+                ));
+            }
             self.git.commit(&message)?;
             self.record_dev_log_result("committed", provider_name, &message);
             if cli.quiet {
@@ -934,6 +943,11 @@ impl App {
                 "Amend mode: regenerating message for last commit...".cyan()
             );
         }
+
+        // 差分を読む「前」の HEAD を控える。amend が書き換えるのは HEAD そのものなので、
+        // 生成中に別の端末がコミットすると、旧コミットを説明したメッセージで
+        // 別のコミットを書き換えてしまう(新しいコミットの元メッセージは失われる)。
+        let head_before_generate = self.git.head_snapshot();
 
         // 直前のコミットのdiffを取得
         let diff = self.git.get_last_commit_diff()?;
@@ -985,6 +999,14 @@ impl App {
 
         // 確認してamend
         if cli.auto_confirm || self.confirm_amend()? {
+            // 書き換え直前に HEAD を取り直す。生成中に別プロセスがコミットしていると、
+            // 生成済みメッセージが説明していないコミットを書き換えることになる。
+            if head_before_generate.is_some() && self.git.head_snapshot() != head_before_generate {
+                return Err(AppError::InvalidArgument(
+                    "メッセージ生成中に HEAD が移動しました。生成済みメッセージは現在の HEAD を反映していないため中止します。再実行してください"
+                        .to_string(),
+                ));
+            }
             self.git.amend_commit(&message)?;
             self.record_dev_log_result("committed", provider_name, &message);
             if cli.quiet {
@@ -1065,6 +1087,11 @@ impl App {
             ));
         }
 
+        // 差分を読む「前」の HEAD を控える。squash が畳むのは index ではなく履歴なので、
+        // 生成中に別の端末が `git commit` すると、AI が見ていない後発コミットまで
+        // squash 対象に入ってしまう(staged 変更のガードは index しか見ないため素通りする)。
+        let head_before_generate = self.git.head_snapshot();
+
         // ベースからの差分を取得
         let diff = self.git.get_diff_from_base(&merge_base)?;
         if diff.trim().is_empty() {
@@ -1107,6 +1134,15 @@ impl App {
             if self.git.has_staged_changes() {
                 return Err(AppError::InvalidArgument(
                     "squash 開始後に staged 変更が追加されました。commit、unstage、または stash してから再実行してください"
+                        .to_string(),
+                ));
+            }
+
+            // 履歴側も同様に取り直す。生成中に別プロセスがコミットしていると、
+            // 生成済みメッセージが説明していないコミットまで畳んでしまう。
+            if head_before_generate.is_some() && self.git.head_snapshot() != head_before_generate {
+                return Err(AppError::InvalidArgument(
+                    "メッセージ生成中に HEAD が移動しました。生成済みメッセージは現在の履歴を反映していないため中止します。再実行してください"
                         .to_string(),
                 ));
             }
@@ -1381,9 +1417,19 @@ impl App {
             .map_err(|e| AppError::GitError(e.to_string()))?;
 
         let mut input = String::new();
-        io::stdin()
+        let read_bytes = io::stdin()
             .read_line(&mut input)
             .map_err(|e| AppError::GitError(e.to_string()))?;
+
+        // EOF(0 バイト)は「Enter を押した」ではなく「応答が返らない」。空行と同じ
+        // 既定 Yes に倒すと、stdin を閉じたスクリプトや hook から `--yes` なしで
+        // 呼ばれたときに、確認を表示した直後へ無人で承認が入る。commit だけでなく
+        // amend / squash / reword もこの関数を通るため、履歴がそのまま書き換わる。
+        if read_bytes == 0 {
+            return Err(AppError::InvalidArgument(
+                "確認入力が EOF になりました。無人実行では --yes を指定してください".to_string(),
+            ));
+        }
 
         let input = input.trim().to_lowercase();
         Ok(input.is_empty() || input == "y" || input == "yes")

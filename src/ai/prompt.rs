@@ -182,16 +182,53 @@ Instructions:
             None => (Self::strip_commit_tags(&message), None),
         };
 
-        // 先頭と末尾の引用符がある場合は削除
-        let message = message.trim_matches('"').trim_matches('\'');
+        // 先頭と末尾が対になっている引用符だけを削除する
+        let message = Self::strip_wrapping_quotes(&message);
 
         let message = message.trim().to_string();
+
+        // 引用符と空白しか残らない応答は空扱いにする。対になっていない引用符を
+        // 保持するようにしたことで、`"` だけの応答が「1 文字の有効なメッセージ」
+        // として通ってしまうようになった(以前は両端を独立に削るので空になり、
+        // 空応答として次のプロバイダーへ落ちていた)。中身が無い点は同じなので、
+        // 空応答の扱いに戻す。
+        let message = if message
+            .chars()
+            .all(|c| c.is_whitespace() || matches!(c, '"' | '\''))
+        {
+            String::new()
+        } else {
+            message
+        };
 
         // 件名と本文の間に空行を保証
         CleanedResponse {
             message: Self::ensure_body_separator(&message),
             envelope_tag,
         }
+    }
+
+    /// 先頭と末尾が同じ引用符で「対になっている」ときだけ剥がす
+    ///
+    /// `trim_matches` は両端を独立に削るため、片側にしか引用符が無い件名から
+    /// その 1 つだけを落としてしまう。`revert: "feat: 認証追加"` の閉じ引用符や
+    /// `"foo" のバグを修正` の開き引用符は本文の一部であって、囲みではない。
+    /// 落とすと引用符が閉じていないメッセージがそのままコミットされる(下流の
+    /// `is_truncated_subject` / `has_leftover_markup` はどちらもこれを捕まえない)。
+    ///
+    /// 引用符の種類ごとに順に処理するのは、既存の段階的な挙動
+    /// (`'"feat: x"'` は外側の single だけ剥がして内側の double を残す)を保つため。
+    fn strip_wrapping_quotes(message: &str) -> &str {
+        let mut current = message;
+        for quote in ['"', '\''] {
+            while let Some(inner) = current
+                .strip_prefix(quote)
+                .and_then(|rest| rest.strip_suffix(quote))
+            {
+                current = inner;
+            }
+        }
+        current
     }
 
     /// 応答全体が属性なしの同名タグ 1 組で包まれていれば、その名前と中身を返す

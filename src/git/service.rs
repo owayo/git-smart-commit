@@ -292,6 +292,43 @@ impl GitService {
         }
     }
 
+    /// diff ブロックの開始行か判定する
+    ///
+    /// マージコミットに対する `git show` は既定で combined diff を出力し、ヘッダーが
+    /// `diff --cc <path>` / `diff --combined <path>` になる(`a/` `b/` は付かない)。
+    /// `diff --git` だけを見ていると combined diff のブロックを 1 つも認識できず、
+    /// `.git-sc-ignore` の除外もバイナリ要約も丸ごと素通りする。除外を書いたのに
+    /// 効かず、しかも黙っている——`load_ignore_patterns` を fail-closed にしたのと
+    /// 同じ事故が、`--generate-for <マージコミット>` と `--amend`(HEAD がマージ)で
+    /// 起きていた。
+    fn is_diff_block_start(line: &str) -> bool {
+        line.starts_with("diff --git")
+            || line.starts_with("diff --cc ")
+            || line.starts_with("diff --combined ")
+    }
+
+    /// combined diff ヘッダー(`diff --cc <path>`)からファイルパスを取り出す
+    ///
+    /// combined diff は before/after が同一パスで、`a/` `b/` のプレフィックスも付かない。
+    /// Git がクォートするのは非 ASCII 等を含む場合だけで、スペースだけならクォート
+    /// されない(実測: `diff --cc sp ace.txt` / `diff --cc "nonascii-\303\251.txt"`)。
+    /// そのため非クォート側は行末までを 1 つのパスとして扱う。
+    fn extract_combined_diff_path(header: &str) -> Option<String> {
+        let rest = header
+            .strip_prefix("diff --cc ")
+            .or_else(|| header.strip_prefix("diff --combined "))?
+            .trim();
+        if rest.is_empty() {
+            return None;
+        }
+        match rest.strip_prefix('"') {
+            Some(after_quote) => {
+                Self::decode_quoted_diff_path_with_rest(after_quote).map(|(path, _)| path)
+            }
+            None => Some(rest.to_string()),
+        }
+    }
+
     /// diffからignoreパターンにマッチするファイルを除外
     fn filter_ignored_files(diff_text: &str, ignore: &Gitignore) -> String {
         if diff_text.is_empty() {
@@ -305,7 +342,7 @@ impl GitService {
         while i < lines.len() {
             let line = lines[i];
 
-            if line.starts_with("diff --git") {
+            if Self::is_diff_block_start(line) {
                 // ファイルパスを抽出 (例: "diff --git a/path/to/file b/path/to/file")
                 let block_start = i;
                 let file_paths = Self::extract_file_paths_from_diff_header(line);
@@ -322,7 +359,7 @@ impl GitService {
 
                 // このブロックの終端を見つける
                 i += 1;
-                while i < lines.len() && !lines[i].starts_with("diff --git") {
+                while i < lines.len() && !Self::is_diff_block_start(lines[i]) {
                     i += 1;
                 }
 
@@ -350,6 +387,11 @@ impl GitService {
     /// 非クォートの同一パス対称ケースでは中央分割で正しく抽出し、片側だけが
     /// クォートされているケースではクォート側を優先的に解析する。
     fn extract_file_paths_from_diff_header(header: &str) -> Option<(String, String)> {
+        // combined diff(マージコミット)は before/after が同一の 1 パス
+        if let Some(path) = Self::extract_combined_diff_path(header) {
+            return Some((path.clone(), path));
+        }
+
         let rest = header.strip_prefix("diff --git ")?.trim();
 
         if !rest.contains('"') {
@@ -599,7 +641,7 @@ impl GitService {
         while i < lines.len() {
             let line = lines[i];
 
-            if line.starts_with("diff --git") {
+            if Self::is_diff_block_start(line) {
                 // 新しいdiffブロックの開始
                 let block_start = i;
                 let file_path = Self::extract_file_path_from_diff_header(line)
@@ -613,7 +655,7 @@ impl GitService {
                 let mut rename_from: Option<String> = None;
                 let mut rename_to: Option<String> = None;
 
-                while i < lines.len() && !lines[i].starts_with("diff --git") {
+                while i < lines.len() && !Self::is_diff_block_start(lines[i]) {
                     let current_line = lines[i];
 
                     if current_line.starts_with("Binary files") {
@@ -731,17 +773,26 @@ impl GitService {
         // Windows環境では "nul" は予約デバイス名
         // AIプロバイダー呼び出し時に意図せず "nul" ファイルが作成されることがあるため、
         // nul ファイルの削除 + ステージング除外の二重防御を行う
+        // nul の探索・除外はいずれも Git ルート基準にする。`repo_path` は cwd なので、
+        // サブディレクトリから実行するとルート直下の nul を取りこぼす。
         #[cfg(windows)]
         {
-            let nul_path = self.repo_path.join("nul");
+            let nul_path = self
+                .get_git_root()
+                .unwrap_or_else(|| self.repo_path.clone())
+                .join("nul");
             if nul_path.exists() {
                 let _ = std::fs::remove_file(&nul_path);
             }
         }
 
-        // Windows環境では "nul" を除外してステージング（pathspecの除外指定を使用）
+        // Windows環境では "nul" を除外してステージング（pathspecの除外指定を使用）。
+        // pathspec に `.` を渡すと cwd 配下だけが対象になり、Unix 側の `git add -A`
+        // (作業ツリー全体) と範囲が食い違う。サブディレクトリから `-a` を使うと
+        // cwd 外の変更が黙って取り残されるため、`:/` でルート基準の全体指定にし、
+        // nul の除外も `top` 属性でルート基準へ固定する。
         #[cfg(windows)]
-        let args: &[&str] = &["add", "-A", "--", ".", ":!nul"];
+        let args: &[&str] = &["add", "-A", "--", ":/", ":(exclude,top)nul"];
         #[cfg(not(windows))]
         let args: &[&str] = &["add", "-A"];
 
@@ -751,7 +802,7 @@ impl GitService {
         #[cfg(windows)]
         {
             let _ = Command::new("git")
-                .args(["reset", "HEAD", "--", "nul"])
+                .args(["reset", "HEAD", "--", ":(top)nul"])
                 .current_dir(&self.repo_path)
                 .output();
         }
@@ -761,9 +812,16 @@ impl GitService {
 
     /// ステージ済みの変更が存在するかチェック
     pub fn has_staged_changes(&self) -> bool {
-        // git diff --cached --quiet は差分があると exit 1 を返す
+        // git diff --cached --quiet は差分があると exit 1 を返す。
+        //
+        // `--no-relative` は差分取得側 (`DIFF_FORMAT_ARGS`) と基準をそろえるために必須。
+        // `repo_path` は Git ルートではなく cwd なので、`diff.relative = true` の設定下で
+        // サブディレクトリから実行すると cwd 配下しか見えず、外側の staged 変更を
+        // 「無し」と誤判定する。差分取得は `--no-relative` で全体を見ているため、
+        // 「メッセージは生成できたのにコミットはスキップされる」「squash 前のガードが
+        // 素通りして無関係な staged 変更が squash コミットへ混入する」という食い違いになる。
         Command::new("git")
-            .args(["diff", "--cached", "--quiet"])
+            .args(["diff", "--cached", "--quiet", "--no-relative"])
             .current_dir(&self.repo_path)
             .output()
             .map(|o| !o.status.success())
@@ -894,6 +952,20 @@ impl GitService {
     /// squash の `reset --soft` 前に復旧先として控えるために使う。
     pub fn get_head_hash(&self) -> Result<String, AppError> {
         self.run_git(&["rev-parse", "HEAD"])
+    }
+
+    /// 履歴が動いていないかを比べるための HEAD スナップショット
+    ///
+    /// `write_tree()` による index の突き合わせは「ステージ内容が変わったか」しか見ない。
+    /// squash と amend が説明するのは index ではなく **HEAD 側の履歴**なので、生成中に
+    /// 別の端末が `git commit` しても index はきれいなままで、そちらのガードは素通りする。
+    /// 実際に squash では、AI が見ていない後発コミットが squash 対象に巻き込まれる
+    /// (実機で再現)。amend も同様に、旧コミットを説明したメッセージで別コミットを
+    /// 書き換えてしまう。
+    ///
+    /// HEAD が無いリポジトリ(初回コミット前)では `None` を返し、比較を成立させる。
+    pub fn head_snapshot(&self) -> Option<String> {
+        self.run_git(&["rev-parse", "HEAD"]).ok()
     }
 
     /// 現在の index を表す tree ハッシュを取得する
@@ -1160,24 +1232,30 @@ impl GitService {
         // `rebase.abbreviateCommands=false` を後段の rebase 起動側で強制するため、
         // todo は必ず `pick <hash>` 形式で出力される（短縮形 `p` は出ない）。
         // また、対象は先頭の 1 行のみで、範囲内の他コミットには触れない。
-        let sequence_editor = if cfg!(windows) {
-            // Windows: PowerShell で配列読み込み、最初の行だけを reword に変更する。
-            // `(Get-Content) -replace` を全行に適用すると、複数の pick が同時に書き換えられる。
-            "powershell -Command \"$lines = @(Get-Content $args[0]); if ($lines.Count -gt 0) { $lines[0] = $lines[0] -replace '^pick ', 'reword ' }; Set-Content -Path $args[0] -Value $lines\"".to_string()
-        } else {
-            // Unix系: sed の `1s/...` で先頭行のみ対象にし、`pick ` の直後のスペースを
-            // 含めて誤マッチを避ける。
-            "sh -c 'sed -i.bak '\"'\"'1s/^pick /reword /'\"'\"' \"$1\" && rm -f \"$1.bak\"' --"
-                .to_string()
-        };
+        //
+        // Windows でも同じ sh 版を使う。git はエディタ文字列にシェルメタ文字が含まれると
+        // OS を問わず `sh -c '<editor> "$@"' <editor> <path>` の形で起動する
+        // (Git for Windows では同梱の sh)。以前の PowerShell 版はその外側の sh に
+        // `$lines` / `$args` を先に展開されて中身が消え、さらに PowerShell の `-Command` は
+        // 後続引数を `$args` へ渡さないため、二重に機能していなかった。
+        // Git for Windows は sh / sed / cp を同梱しているので Unix 版へ一本化する。
+        //
+        // 先頭行が `pick ` でなければ非ゼロ終了して rebase ごと失敗させる。置換が空振り
+        // しても todo は全行 `pick` のまま有効なため、rebase は exit 0 で完了し
+        // 「成功と表示されるのにメッセージが変わらない」無言の no-op になる。既知の原因
+        // (`rebase.rebaseMerges`) は `--no-rebase-merges` で塞いだが、todo の先頭へ別の
+        // 前置きを足す設定が将来増えても、黙って no-op になる代わりに失敗として現れる。
+        let sequence_editor = concat!(
+            r#"sh -c 'IFS= read -r first < "$1" || exit 1; "#,
+            r#"case "$first" in "pick "*) ;; "#,
+            r#"*) echo "git-sc: unexpected rebase todo (first line is not a pick)" >&2; exit 1;; esac; "#,
+            r#"sed -i.bak "1s/^pick /reword /" "$1" && rm -f "$1.bak"' --"#
+        )
+        .to_string();
 
         // GIT_EDITOR: 一時ファイルの内容をコミットメッセージに反映
         // パスを環境変数経由で渡し、シェル文字列にパスを埋め込まない（インジェクション防止）
-        let editor = if cfg!(windows) {
-            "powershell -Command \"Copy-Item $env:GIT_SC_MSG_FILE $args[0]\"".to_string()
-        } else {
-            "sh -c 'cp \"$GIT_SC_MSG_FILE\" \"$1\"' --".to_string()
-        };
+        let editor = r#"sh -c 'cp "$GIT_SC_MSG_FILE" "$1"' --"#.to_string();
 
         // git rebase -i を実行（最古コミット対象時は --root を使う）。
         // `rebase.abbreviateCommands=false` で todo を必ず `pick` で出力させ、
@@ -1187,9 +1265,18 @@ impl GitService {
         // 対象コミットへ黙って溶け込み、reword 以外の履歴改変が起きる。さらに `squash` 行は
         // GIT_EDITOR (メッセージファイルをコピーするだけ) を通るため、結合先メッセージまで
         // reword 用メッセージで上書きされてしまう。
+        // `--no-rebase-merges` は `rebase.rebaseMerges=true` のユーザー設定を隔離するために
+        // 必須。これが効くと todo の先頭に `label onto` / `reset onto` の前置きが入り、
+        // 1 行目を対象にした置換が空振りする。それでも todo は全行 `pick` のまま有効なので
+        // rebase は exit 0 で完了し、git-sc は「成功」と表示しながらメッセージが一切
+        // 変わらない(= 無言の no-op)。ユーザーは reword 済みと信じて force push まで案内される。
         let mut rebase_cmd = Command::new("git");
         rebase_cmd.arg("-c").arg("rebase.abbreviateCommands=false");
-        rebase_cmd.arg("rebase").arg("-i").arg("--no-autosquash");
+        rebase_cmd
+            .arg("rebase")
+            .arg("-i")
+            .arg("--no-autosquash")
+            .arg("--no-rebase-merges");
         if n == first_parent_total {
             rebase_cmd.arg("--root");
         } else {
@@ -2012,6 +2099,73 @@ index 1234567..abcdefg 100644
 
         let result = GitService::filter_ignored_files(diff, &ignore);
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_filter_ignored_files_excludes_combined_diff_block() {
+        // マージコミットへの `git show` は combined diff (`diff --cc <path>`) を出す。
+        // `diff --git` しか見ていなかった頃はブロックを 1 つも認識できず、
+        // .git-sc-ignore の除外が丸ごと素通りして秘密が AI へ送られていた。
+        let mut builder = GitignoreBuilder::new(".");
+        builder.add_line(None, "secrets/**").unwrap();
+        let ignore = builder.build().unwrap();
+
+        let diff = "diff --cc secrets/key.txt\n\
+                    index a3d4dbe,f9a1862..59be8f3\n\
+                    --- a/secrets/key.txt\n\
+                    +++ b/secrets/key.txt\n\
+                    @@@ -1,1 -1,1 +1,1 @@@\n\
+                    - MAIN-SIDE-SECRET\n\
+                    \x20-FEATURE-SIDE-SECRET\n\
+                    ++RESOLVED-SECRET\n\
+                    diff --cc public.txt\n\
+                    index 1111111,2222222..3333333\n\
+                    --- a/public.txt\n\
+                    +++ b/public.txt\n\
+                    @@@ -1,1 -1,1 +1,1 @@@\n\
+                    ++RESOLVED-PUBLIC\n";
+
+        let result = GitService::filter_ignored_files(diff, &ignore);
+        assert!(
+            !result.contains("RESOLVED-SECRET"),
+            "combined diff で除外が効いていない: {result}"
+        );
+        assert!(
+            !result.contains("diff --cc secrets/key.txt"),
+            "除外対象のブロックヘッダーが残っている: {result}"
+        );
+        assert!(
+            result.contains("RESOLVED-PUBLIC"),
+            "除外していないブロックまで消えている: {result}"
+        );
+    }
+
+    #[test]
+    fn test_extract_combined_diff_path_handles_spaces_and_quoting() {
+        // Git は combined diff のパスを、非 ASCII を含むときだけクォートする
+        // (スペースだけならクォートしない)。実測した両方の形を押さえる。
+        assert_eq!(
+            GitService::extract_combined_diff_path("diff --cc plain.txt"),
+            Some("plain.txt".to_string())
+        );
+        assert_eq!(
+            GitService::extract_combined_diff_path("diff --cc sp ace.txt"),
+            Some("sp ace.txt".to_string())
+        );
+        assert_eq!(
+            GitService::extract_combined_diff_path("diff --cc \"nonascii-\\303\\251.txt\""),
+            Some("nonascii-é.txt".to_string())
+        );
+        // `diff --combined` 形式も同じ扱い
+        assert_eq!(
+            GitService::extract_combined_diff_path("diff --combined a/b.txt"),
+            Some("a/b.txt".to_string())
+        );
+        // 通常の diff --git ヘッダーは combined ではない
+        assert_eq!(
+            GitService::extract_combined_diff_path("diff --git a/x.txt b/x.txt"),
+            None
+        );
     }
 
     #[test]

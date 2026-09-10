@@ -25,9 +25,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime};
 
-use chrono::Local;
+use chrono::{DateTime, Local};
 use serde::Serialize;
 
 use crate::config::{Config, DevLogConfig};
@@ -209,6 +209,8 @@ pub struct DevLog {
     max_total_bytes: u64,
     quiet: bool,
     started: Instant,
+    /// 実行開始時刻(ローカル時刻)。`started_at_unix_ms` と同じ時計読みから作る
+    started_at_local: DateTime<Local>,
     started_at_unix_ms: u64,
     run: RefCell<RunContext>,
     attempts: RefCell<Vec<AttemptRecord>>,
@@ -224,10 +226,11 @@ impl DevLog {
             return None;
         }
         let dir = Self::resolve_dir(dev_log)?;
-        let started_at_unix_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        // 人間可読の `started_at` と epoch ms は同じ時計読みから作る。別々に読むと、
+        // 後から読んだ側が実行時間の分だけずれる(`finish` 側で読み直していた頃は
+        // `started_at` が名前に反して終了時刻になっていた)。
+        let started_at_local = Local::now();
+        let started_at_unix_ms = started_at_local.timestamp_millis().max(0) as u64;
 
         Some(Self {
             dir,
@@ -236,6 +239,7 @@ impl DevLog {
             max_total_bytes: dev_log.max_total_mb.saturating_mul(1024 * 1024),
             quiet,
             started: Instant::now(),
+            started_at_local,
             started_at_unix_ms,
             run: RefCell::new(RunContext::default()),
             attempts: RefCell::new(Vec::new()),
@@ -342,7 +346,7 @@ impl DevLog {
         let record = RunRecord {
             schema_version: SCHEMA_VERSION,
             run_id: run_id.clone(),
-            started_at: Local::now().to_rfc3339(),
+            started_at: self.started_at_local.to_rfc3339(),
             started_at_unix_ms: self.started_at_unix_ms,
             duration_ms: self.started.elapsed().as_millis() as u64,
             git_sc_version: env!("CARGO_PKG_VERSION"),
@@ -373,7 +377,11 @@ impl DevLog {
 
     /// 一時ファイルへ書ききってから rename で公開する
     fn write_record(&self, run_id: &str, record: &RunRecord) -> Result<(), String> {
-        let day_dir = self.dir.join(Local::now().format("%Y-%m-%d").to_string());
+        // 日付ディレクトリも開始時刻から決める。`run_id` は開始時刻の epoch ms なので、
+        // ここで現在時刻を読むと、日付をまたいだ実行だけ run_id と格納先の日付が食い違う。
+        let day_dir = self
+            .dir
+            .join(self.started_at_local.format("%Y-%m-%d").to_string());
         create_dir_private(&day_dir)?;
 
         let tmp_path = day_dir.join(format!(".{run_id}.tmp"));
@@ -933,6 +941,39 @@ mod tests {
     fn read_single_record(root: &Path) -> serde_json::Value {
         let content = fs::read_to_string(single_log_path(root)).unwrap();
         serde_json::from_str(&content).unwrap()
+    }
+
+    /// `started_at` は実行の**開始**時刻であること
+    ///
+    /// `finish()` で現在時刻を読み直していた頃は、名前に反して終了時刻が入り、
+    /// `started_at_unix_ms` からちょうど `duration_ms` だけ後ろにずれていた
+    /// (実運用ログ 8 件すべてで差分 == duration_ms を確認)。生成には十数秒かかるため、
+    /// 開始時刻でレコードを束ねる集計が終了時刻基準のものと混ざる。
+    #[test]
+    fn test_started_at_records_run_start_not_finish() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let log = DevLog::from_config(&enabled_config(dir.path(), "metadata"), true).unwrap();
+        // AI 生成にかかる時間を模す
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        finish_with_prompt(&log, "prompt");
+
+        let written = read_single_record(dir.path());
+        let started_at = DateTime::parse_from_rfc3339(written["started_at"].as_str().unwrap())
+            .unwrap()
+            .timestamp_millis();
+        let unix_ms = written["started_at_unix_ms"].as_i64().unwrap();
+        let duration_ms = written["duration_ms"].as_i64().unwrap();
+
+        assert!(
+            duration_ms >= 250,
+            "実行時間が作れておらずテストが意味を持たない: {duration_ms}ms"
+        );
+        assert!(
+            (started_at - unix_ms).abs() < 50,
+            "started_at が開始時刻になっていない(差 {}ms / duration {}ms)",
+            started_at - unix_ms,
+            duration_ms
+        );
     }
 
     fn set_modified_days_ago(path: &Path, days: u64) {

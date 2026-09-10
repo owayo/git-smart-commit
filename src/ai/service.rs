@@ -3704,6 +3704,48 @@ mod tests {
     }
 
     #[test]
+    fn test_process_provider_output_empty_response_does_not_leak_prompt_echo() {
+        // Codex は "Reading prompt from stdin..." に続けてプロンプト全文
+        // (= staged diff)を stderr へエコーする。空応答エラーに生の stderr を
+        // 貼ると、その diff が端末と生成ログの `error` に流れ込む。`error` は
+        // 詳細度(`content = "metadata"`)の振り分け対象外なので、
+        // 「metadata では diff を残さない」という設計がこの経路だけで破れる。
+        let status = exit_status(true);
+        let stderr = concat!(
+            "Reading prompt from stdin...\n",
+            "<changes>\n",
+            "diff --git a/src/error.rs b/src/error.rs\n",
+            "+const API_TOKEN: &str = \"super-secret-value\";\n",
+            "+    let read_error = std::io::Error::last_os_error();\n",
+            "</changes>\n",
+            "stream error: unexpected EOF\n"
+        );
+        let result = AiService::process_provider_output(&AiProvider::Codex, status, "", stderr);
+        let err = result.unwrap_err().to_string();
+
+        assert!(
+            err.contains("empty response"),
+            "空stdoutでは 'empty response' エラーになるべき: {}",
+            err
+        );
+        assert!(
+            !err.contains("diff --git"),
+            "プロンプトのエコー(diff)がエラー文字列へ漏れている: {}",
+            err
+        );
+        assert!(
+            !err.contains("super-secret-value"),
+            "diff の中身がエラー文字列へ漏れている: {}",
+            err
+        );
+        assert!(
+            err.contains("unexpected EOF"),
+            "本当の失敗理由は残すべき: {}",
+            err
+        );
+    }
+
+    #[test]
     fn test_process_provider_output_codex_stderr_error_keyword_skipped() {
         // Codex: exit code 0 + stdout あり + stderr に "error:" → stderrは無視されて正常
         let status = exit_status(true);
@@ -4793,17 +4835,61 @@ mod tests {
     #[test]
     fn test_clean_message_outer_single_inner_double_quotes() {
         // 外側 single 内側 double のクォートは外側だけが除去される。
-        // trim_matches('"') で `'` の両端は変化せず、続く trim_matches('\'') で
-        // 外側 `'` が除去された結果、内側の `"text"` がそのまま残ることを保証する。
+        // 引用符の種類ごとに順に処理するため、まず `"` では両端が揃わず変化せず、
+        // 続く `'` の処理で外側だけが外れて内側の `"text"` がそのまま残る。
         let message = "'\"feat: add feature\"'";
         assert_eq!(AiService::clean_message(message), "\"feat: add feature\"");
     }
 
     #[test]
     fn test_clean_message_double_outer_quotes_removed_once() {
-        // 連続する複数の同種クォートは trim_matches によって一括で除去される。
+        // 連続する複数の同種クォートは、対になっている限り繰り返し除去される。
         let message = "\"\"feat: scope\"\"";
         assert_eq!(AiService::clean_message(message), "feat: scope");
+    }
+
+    #[test]
+    fn test_clean_message_keeps_unpaired_quotes() {
+        // 片側にしかない引用符は本文の一部であって囲みではない。以前は
+        // `trim_matches` が両端を独立に削っていたため、末尾の閉じ引用符だけが
+        // 落ちて「引用符が閉じていない件名」がそのままコミットされていた。
+        // 下流の欠陥検出(打ち切り / 複数メッセージ / タグ残り)はどれも
+        // これを捕まえないため、ここで壊さないことが唯一の防波堤になる。
+
+        // revert の慣用形式(git revert の既定メッセージと同じ形)
+        assert_eq!(
+            AiService::clean_message("revert: \"feat: 認証追加\""),
+            "revert: \"feat: 認証追加\""
+        );
+        // 先頭だけが引用符のケースも同じ理由で保持する
+        assert_eq!(
+            AiService::clean_message("\"foo\" のバグを修正"),
+            "\"foo\" のバグを修正"
+        );
+        // 引用が本文中に複数あっても、囲みでない限り触らない
+        assert_eq!(
+            AiService::clean_message("chore: rename \"foo\" to \"bar\""),
+            "chore: rename \"foo\" to \"bar\""
+        );
+        // シングルクォートでも同様
+        assert_eq!(
+            AiService::clean_message("fix: 'foo' の不具合"),
+            "fix: 'foo' の不具合"
+        );
+    }
+
+    #[test]
+    fn test_clean_message_treats_quote_only_response_as_empty() {
+        // 対になっていない引用符を保持するようにした副作用で、`"` だけの応答が
+        // 「1 文字の有効なメッセージ」として通る余地ができた(以前は両端を独立に
+        // 削るので空になり、空応答として次のプロバイダーへ落ちていた)。
+        // 中身が無い点は空応答と同じなので、その扱いに戻す。
+        assert_eq!(AiService::clean_message("\""), "");
+        assert_eq!(AiService::clean_message("\"\"\""), "");
+        assert_eq!(AiService::clean_message("'"), "");
+        assert_eq!(AiService::clean_message("  \"  '  "), "");
+        // 中身があるものは当然そのまま
+        assert_eq!(AiService::clean_message("\"a\""), "a");
     }
 
     // ============================================================

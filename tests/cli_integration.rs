@@ -1513,3 +1513,342 @@ fn test_index_change_during_generation_aborts_commit() {
     staged_files.sort_unstable();
     assert_eq!(staged_files, vec!["sneaked.txt", "staged.txt"]);
 }
+
+/// `rebase.rebaseMerges = true` のユーザー設定があっても reword が実際に働く。
+///
+/// この設定が効くと rebase todo の先頭に `label onto` / `reset onto` の前置きが入り、
+/// 「1 行目の `pick` を `reword` に変える」置換が空振りする。それでも todo は全行
+/// `pick` のまま有効なので rebase は exit 0 で完了し、git-sc は「成功」と表示しながら
+/// メッセージが一切変わらない(無言の no-op)。ユーザーは reword 済みと信じて
+/// force push まで案内されるため、成功表示だけでなく実際の書き換えを確認する。
+#[cfg(unix)]
+#[test]
+fn test_reword_succeeds_with_rebase_merges_true() {
+    let dir = setup_git_repo_with_commit();
+    let path = setup_fake_opencode_path(&dir);
+
+    std::process::Command::new("git")
+        .args(["config", "rebase.rebaseMerges", "true"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // reword 対象となる最も古いコミット（initial commit）を控える
+    let old_hash = head_hash(&dir);
+    // reword は HEAD 以外を対象にする必要があるため、後続コミットを 1 件積む
+    commit_change(&dir, "# Test\nsecond\n", "second commit");
+
+    git_sc!()
+        .args(["--reword", &old_hash, "--yes"])
+        .env("PATH", path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let log = std::process::Command::new("git")
+        .args(["log", "--format=%s"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let messages = String::from_utf8_lossy(&log.stdout);
+
+    assert!(
+        messages.contains("feat: quiet integration test"),
+        "reword 後のログに新メッセージが含まれていない（成功表示だけの no-op）: {}",
+        messages
+    );
+    assert!(
+        !messages.contains("initial commit"),
+        "reword 後のログに元メッセージが残存: {}",
+        messages
+    );
+}
+
+/// `diff.relative = true` の設定下でサブディレクトリから実行しても、
+/// cwd の外にある staged 変更を検出して squash を拒否する。
+///
+/// `git diff --cached --quiet` は `diff.relative` の影響を受けて cwd 配下しか見ない。
+/// `--no-relative` を渡さないと「staged 変更なし」と誤判定し、squash 前のガードが
+/// すり抜けて、無関係な変更が squash コミットへ混入する。
+#[cfg(unix)]
+#[test]
+fn test_squash_guard_sees_staged_changes_outside_cwd_under_diff_relative() {
+    let dir = setup_git_repo_with_commit();
+    let path = setup_fake_opencode_path(&dir);
+
+    let branch_output = std::process::Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let base_branch = String::from_utf8_lossy(&branch_output.stdout)
+        .trim()
+        .to_string();
+
+    std::process::Command::new("git")
+        .args(["checkout", "-b", "feature/relative-squash"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // squash 対象のコミットはサブディレクトリ配下に積む
+    let sub = dir.path().join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    for (name, body) in [("a.txt", "a\n"), ("b.txt", "b\n")] {
+        std::fs::write(sub.join(name), body).unwrap();
+        std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", &format!("feature {name}")])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+    }
+
+    std::process::Command::new("git")
+        .args(["config", "diff.relative", "true"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // cwd（sub/）の外にある無関係な変更を stage する
+    std::fs::write(dir.path().join("README.md"), "# Test\nunrelated\n").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "README.md"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    let head_before = head_hash(&dir);
+
+    git_sc!()
+        .args(["--quiet", "--squash", &base_branch, "--yes"])
+        .env("PATH", path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .current_dir(&sub)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "squash を実行する前に staged 変更",
+        ));
+
+    assert_eq!(
+        head_hash(&dir),
+        head_before,
+        "ガードが働かず履歴が書き換わっている"
+    );
+
+    // 無関係な変更は staged のまま残る（squash に巻き込まれていない）
+    let staged_output = std::process::Command::new("git")
+        .args(["diff", "--cached", "--name-only", "--no-relative"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&staged_output.stdout).trim(),
+        "README.md"
+    );
+}
+
+/// 確認プロンプトで stdin が EOF のとき、既定 Yes に倒して無人で承認しない。
+///
+/// `[Y/n]` の「空行 = Yes」は、ユーザーが Enter を押した応答。EOF は応答が
+/// 返らない状態であって Yes ではない。同じ扱いにすると、stdin を閉じた
+/// スクリプトや hook から `--yes` なしで呼ばれたときに、確認を表示した直後へ
+/// 無人で承認が入る（commit だけでなく amend / squash / reword も同じ関数を通る）。
+#[cfg(unix)]
+#[test]
+fn test_confirm_prompt_rejects_eof_instead_of_defaulting_to_yes() {
+    let dir = setup_git_repo_with_commit();
+    let path = setup_fake_opencode_path(&dir);
+
+    std::fs::write(dir.path().join("staged.txt"), "staged\n").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "staged.txt"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // --yes を付けずに stdin を空（即 EOF）にして実行する
+    git_sc!()
+        .env("PATH", path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .current_dir(dir.path())
+        .write_stdin("")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("EOF"));
+
+    // コミットは作られていない
+    let message_output = std::process::Command::new("git")
+        .args(["log", "-1", "--format=%s"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&message_output.stdout).trim(),
+        "initial commit",
+        "EOF を承認として扱ってコミットしている"
+    );
+}
+
+/// squash 中に別プロセスがコミットしたら、その後発コミットを畳まずに中止する。
+///
+/// squash が畳むのは index ではなく HEAD 側の履歴なので、staged 変更のガード
+/// （index しか見ない）では素通りする。AI が見ていないコミットが squash 対象に
+/// 巻き込まれ、生成済みメッセージが説明していない変更が 1 コミットに入る。
+#[cfg(unix)]
+#[test]
+fn test_squash_aborts_when_head_moves_during_generation() {
+    let dir = setup_git_repo_with_commit();
+
+    let branch_output = std::process::Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let base_branch = String::from_utf8_lossy(&branch_output.stdout)
+        .trim()
+        .to_string();
+
+    std::process::Command::new("git")
+        .args(["checkout", "-b", "feature/head-moves"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    commit_change(&dir, "# Test\nfeature 1\n", "feature 1");
+    commit_change(&dir, "# Test\nfeature 2\n", "feature 2");
+
+    // フェイク opencode が生成中に別コミットを積む（別端末の作業を模す）
+    let bin_dir = dir.path().join("fake-bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let real_git = resolve_real_git_path();
+    let repo = dir.path().display();
+    let script_path = bin_dir.join("opencode");
+    std::fs::write(
+        &script_path,
+        format!(
+            "#!/bin/sh\n\
+             echo unrelated > \"{repo}/unrelated.txt\"\n\
+             \"{real_git}\" -C \"{repo}\" add unrelated.txt\n\
+             \"{real_git}\" -C \"{repo}\" commit -qm \"unrelated work\"\n\
+             echo \"feat: squashed\"\n"
+        ),
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&script_path, perms).unwrap();
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    let path = format!("{}:{}", bin_dir.display(), current_path);
+
+    git_sc!()
+        .args(["--quiet", "--squash", &base_branch, "--yes"])
+        .env("PATH", path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("HEAD が移動しました"));
+
+    // squash されておらず、割り込みコミットも残っている
+    let log = std::process::Command::new("git")
+        .args(["log", "--format=%s"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let messages = String::from_utf8_lossy(&log.stdout);
+    assert!(
+        messages.contains("unrelated work") && messages.contains("feature 2"),
+        "履歴が壊れている: {messages}"
+    );
+    assert!(
+        !messages.contains("feat: squashed"),
+        "HEAD が移動したのに squash が実行されている: {messages}"
+    );
+}
+
+/// マージコミットでも `.git-sc-ignore` の除外が効く。
+///
+/// マージコミットへの `git show` は combined diff（`diff --cc <path>`）を出すため、
+/// `diff --git` だけを見ていたブロック検出が空振りし、除外対象のファイルの中身が
+/// そのまま AI プロバイダーへ送られていた。
+#[cfg(unix)]
+#[test]
+fn test_ignore_patterns_apply_to_merge_commit_combined_diff() {
+    let dir = setup_git_repo_with_commit();
+    let path = setup_fake_opencode_path(&dir);
+
+    let branch_output = std::process::Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let base_branch = String::from_utf8_lossy(&branch_output.stdout)
+        .trim()
+        .to_string();
+
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir.path())
+            .output()
+            .unwrap()
+    };
+
+    std::fs::create_dir_all(dir.path().join("secrets")).unwrap();
+    std::fs::write(dir.path().join("secrets/key.txt"), "BASE\n").unwrap();
+    std::fs::write(dir.path().join("public.txt"), "BASE\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-m", "add files"]);
+
+    // 両ブランチで同じ 2 ファイルを変更して競合させる（= combined diff に両方出る）
+    git(&["checkout", "-b", "feature/merge-ignore"]);
+    std::fs::write(dir.path().join("secrets/key.txt"), "FEATURE\n").unwrap();
+    std::fs::write(dir.path().join("public.txt"), "FEATURE\n").unwrap();
+    git(&["commit", "-am", "feature side"]);
+
+    git(&["checkout", &base_branch]);
+    std::fs::write(dir.path().join("secrets/key.txt"), "MAIN\n").unwrap();
+    std::fs::write(dir.path().join("public.txt"), "MAIN\n").unwrap();
+    git(&["commit", "-am", "main side"]);
+
+    git(&["merge", "feature/merge-ignore"]);
+    std::fs::write(
+        dir.path().join("secrets/key.txt"),
+        "RESOLVED-SECRET-VALUE\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("public.txt"), "RESOLVED-PUBLIC-VALUE\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-m", "merge resolved"]);
+
+    std::fs::write(dir.path().join(".git-sc-ignore"), "secrets/**\n").unwrap();
+
+    let output = git_sc!()
+        .args(["--generate-for", "HEAD", "--debug"])
+        .env("PATH", path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr).to_string();
+
+    assert!(
+        !stderr.contains("RESOLVED-SECRET-VALUE"),
+        "マージコミットで除外対象の中身がプロンプトへ送られている"
+    );
+    assert!(
+        stderr.contains("RESOLVED-PUBLIC-VALUE"),
+        "除外していないファイルまでプロンプトから消えている"
+    );
+}

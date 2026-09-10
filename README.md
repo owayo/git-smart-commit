@@ -141,6 +141,7 @@ Concurrency guards worth knowing about:
 
 - `--reword` refuses to run while a rebase is in progress. It ends every failed rebase with `git rebase --abort`, so starting one on top of yours would discard your in-progress conflict resolution. Finish or abort your rebase first.
 - Committing aborts if the staged content changed while the message was being generated (git-sc compares the index tree before and after). The generated message describes the old content, so committing the new one would be wrong. Just re-run. `--squash` re-checks for newly staged changes the same way, right before it resets.
+- Committing, `--amend`, and `--squash` also abort if `HEAD` moved during generation. What `--squash` folds and `--amend` rewrites comes from the history rather than the index, so a commit made in another terminal leaves the index clean and slips past the staged-changes check — a `--squash` would then fold in a commit the AI never saw, and an `--amend` would overwrite a different commit than the one it described.
 
 ### Options
 
@@ -196,6 +197,9 @@ Operation modes (`--amend`, `--squash`, `--reword`, `--generate-for`) are mutual
 | `--debug` | `-d` | Show prompts sent to AI |
 | `--help` | `-h` | Print help |
 | `--version` | `-V` | Print version |
+
+`--yes` behavior:
+- Required for unattended runs. If the confirmation prompt reaches end-of-file on stdin (for example when git-sc is invoked from a script or hook with stdin closed), the run aborts with an error instead of taking the `[Y/n]` default. An empty line typed by a user still means yes; "no input at all" does not, because the same prompt guards `--amend`, `--squash`, and `--reword`
 
 `--quiet` behavior:
 - Suppresses progress, preview, and success/cancel messages in normal/amend/squash/reword flows
@@ -455,7 +459,7 @@ If you have the `ai-usage` CLI installed, git-sc can drop providers whose accoun
 ```toml
 [ai_usage]
 enabled = true
-command = ["ai-usage", "--json"]  # optional
+command = ["ai-usage", "--json"]  # optional (`~` in the executable path is expanded)
 threshold_percent = 95            # skip a step at or above this usage
 window = "nearest"                # weekly | five_hour | nearest (the higher of the two)
 timeout_seconds = 10

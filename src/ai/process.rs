@@ -360,12 +360,16 @@ impl AiService {
         let message = cleaned.message;
 
         if message.is_empty() {
-            // stderr にヒントがあればそれも含める
+            // stderr にヒントがあればそれも含める。ただし生の stderr は貼らない:
+            // Codex は "Reading prompt from stdin..." に続けてプロンプト全文
+            // (= staged diff)を stderr へエコーするため、全文を埋め込むと
+            // 端末と生成ログの `error` に diff が流れ込む。`error` は詳細度
+            // (`content = "metadata"`)の振り分け対象外なので、そこでは止まらない。
             if !stderr_str.trim().is_empty() {
                 return Err(AppError::AiProviderError(format!(
                     "{} returned an empty response (stderr: {})",
                     provider.name(),
-                    stderr_str.trim()
+                    Self::extract_error(stderr_str, provider)
                 )));
             }
             return Err(AppError::AiProviderError(format!(
