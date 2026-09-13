@@ -8,7 +8,13 @@
   AIコーディングエージェントによるスマートコミットメッセージ生成CLI
 </p>
 
+<h3 align="center">Supported Platforms</h3>
+
 <p align="center">
+  <img src="https://img.shields.io/badge/Linux-FCC624?logo=linux&amp;logoColor=black" alt="Linux">
+  <img src="https://img.shields.io/badge/macOS-000000?logo=apple&amp;logoColor=white" alt="macOS">
+  <img src="https://img.shields.io/badge/Windows-0078D6" alt="Windows">
+  <br>
   <a href="https://github.com/owayo/git-smart-commit/actions/workflows/release.yml">
     <img alt="Release" src="https://github.com/owayo/git-smart-commit/actions/workflows/release.yml/badge.svg?branch=main">
   </a>
