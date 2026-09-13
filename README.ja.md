@@ -70,6 +70,14 @@
 brew install owayo/git-sc/git-sc
 ```
 
+### WinGet (Windows)
+
+```powershell
+winget install owayo.git-sc
+```
+
+インストール後は新しいターミナルを開いてください。portable パッケージは `PATH` を書き換えるだけなので、起動中のシェルには反映されません。
+
 ### ソースから
 
 ```bash
@@ -114,7 +122,7 @@ sudo mv git-sc /usr/local/bin/
 
 #### Windows
 
-[Releases](https://github.com/owayo/git-smart-commit/releases) から `git-sc-x86_64-pc-windows-msvc.zip` をダウンロードし、展開して PATH に追加。
+[Releases](https://github.com/owayo/git-smart-commit/releases) から `git-sc-x86_64-pc-windows-msvc.zip` をダウンロードし、展開して PATH に追加。上記の WinGet を使えばこの手順は不要です。
 
 ## クイックスタート
 

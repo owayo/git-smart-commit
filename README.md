@@ -70,6 +70,14 @@
 brew install owayo/git-sc/git-sc
 ```
 
+### WinGet (Windows)
+
+```powershell
+winget install owayo.git-sc
+```
+
+Open a new terminal afterwards: the portable package updates your `PATH`, and already-running shells do not pick up the change.
+
 ### From Source
 
 ```bash
@@ -114,7 +122,7 @@ sudo mv git-sc /usr/local/bin/
 
 #### Windows
 
-Download `git-sc-x86_64-pc-windows-msvc.zip` from [Releases](https://github.com/owayo/git-smart-commit/releases), extract, and add to PATH.
+Download `git-sc-x86_64-pc-windows-msvc.zip` from [Releases](https://github.com/owayo/git-smart-commit/releases), extract, and add to PATH. WinGet (above) does this for you.
 
 ## Quickstart
 

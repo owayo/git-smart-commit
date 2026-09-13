@@ -205,6 +205,12 @@ jobs:
             brew install owayo/git-sc/git-sc
             ```
 
+            #### WinGet (Windows)
+            ```powershell
+            winget install owayo.git-sc
+            ```
+            Open a new terminal afterwards so the updated PATH takes effect.
+
             #### Manual Download
             Download the appropriate binary for your platform and add it to your PATH.
 
@@ -232,7 +238,7 @@ jobs:
             sudo mv git-sc /usr/local/bin/
             ```
 
-            #### Windows
+            #### Windows (manual)
             Download `git-sc-x86_64-pc-windows-msvc.zip`, extract, and add to PATH.
 
           files: release/*
@@ -377,9 +383,43 @@ jobs:
           git commit -m "Update git-sc to ${TAG}"
           git push
 
+  publish-winget:
+    name: Publish to WinGet
+    needs: [prepare-release, release]
+    if: ${{ !inputs.dry_run }}
+    # Komac is cross-platform; windows-latest is not needed
+    runs-on: ubuntu-latest
+    steps:
+      # `secrets` is not available in a job-level `if`, so gate inside a step
+      # to keep a missing token from failing the whole release
+      - name: Check WinGet token
+        id: token
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          if [ -z "${WINGET_TOKEN}" ]; then
+            echo "::warning::WINGET_TOKEN is not set; skipping winget-pkgs submission"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Submit manifest to winget-pkgs
+        if: steps.token.outputs.available == 'true'
+        uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: owayo.git-sc
+          version: ${{ needs.prepare-release.outputs.version }}
+          # workflow_dispatch has no release event, so the tag must be passed explicitly
+          release-tag: ${{ needs.prepare-release.outputs.tag }}
+          # The default regex matches only exe/msi/msix/appx and would select zero assets
+          installers-regex: '-pc-windows-msvc\.zip$'
+          max-versions-to-keep: 5
+          token: ${{ secrets.WINGET_TOKEN }}
+
   release-summary:
     name: Release Summary
-    needs: [prepare-release, release, update-homebrew]
+    needs: [prepare-release, release, update-homebrew, publish-winget]
     if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
     steps:
@@ -395,3 +435,4 @@ jobs:
           echo "  - git-sc-x86_64-pc-windows-msvc.zip"
           echo ""
           echo "🍺 Homebrew tap updated: owayo/homebrew-git-sc"
+          echo "📦 WinGet manifest submitted: owayo.git-sc"
