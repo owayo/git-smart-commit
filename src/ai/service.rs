@@ -5202,7 +5202,7 @@ mod tests {
     fn test_windows_cmd_arg_has_metachar_allows_legitimate_tokens() {
         // 通常のモデル名・パス(空白・括弧・ハイフン・コロン・バックスラッシュ)は安全と判定する
         for ok in [
-            "gpt-5.4-mini",
+            "gpt-5.6-luna",
             "GPT-OSS 120B (Medium)",
             "Gemini 3.5 Flash (Low)",
             "claude",
@@ -5240,11 +5240,11 @@ mod tests {
     fn test_step_label_includes_model_and_account() {
         // ログラベルに model とアカウント(env 由来)が出る
         let mut step = ProviderStep::from_provider("codex");
-        step.model = Some("gpt-5.4-mini".to_string());
+        step.model = Some("gpt-5.6-luna".to_string());
         step.env
             .insert("CODEX_HOME".to_string(), "/home/u/.codex-work".to_string());
         let label = AiService::step_label(&AiProvider::Codex, &step);
-        assert!(label.contains("gpt-5.4-mini"), "label: {label}");
+        assert!(label.contains("gpt-5.6-luna"), "label: {label}");
         assert!(label.contains(".codex-work"), "label: {label}");
     }
 

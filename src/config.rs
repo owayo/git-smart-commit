@@ -48,8 +48,20 @@ fn default_antigravity_model() -> String {
     "GPT-OSS 120B (Medium)".to_string()
 }
 
+/// Codex CLI のデフォルトモデル。
+///
+/// 2026-09-17 (JST) 更新。それまでの `gpt-5.4-mini` は Codex のモデル一覧から消え、
+/// 指定すると HTTP 400 (`The 'gpt-5.4-mini' model is not supported when using Codex
+/// with a ChatGPT account.`) で必ず失敗するようになっていた。失敗はクールダウン扱い
+/// なので、既定のままだと codex ステップが常に落ちてチェーンから外れる。
+/// `codex debug models` の候補 (visibility=list / supported_in_api / medium 対応) を
+/// 固定プロンプト `Reply ok.` で実測した結果、`gpt-5.6-luna` = 19609 が最小
+/// (gpt-5.5 = 20181、gpt-5.6-sol / gpt-5.6-terra = 21174、gpt-6-astra = 22035)。
+/// 2 回の測定で完全に同値、いずれも `ok` を返し tool call なし。
+/// CLI 側の説明も "Fast and affordable agentic coding model" で、コミットメッセージ
+/// 生成という軽量用途と一致する。詳細は AGENTS.md の "Default Codex model note" を参照。
 fn default_codex_model() -> String {
-    "gpt-5.4-mini".to_string()
+    "gpt-5.6-luna".to_string()
 }
 
 fn default_claude_model() -> String {
@@ -991,8 +1003,8 @@ grok = ""
 # env(CODEX_HOME 等の環境変数)を指定できる。同じプロバイダを別モデル・別アカウントで
 # 複数回並べると、それぞれ独立にフォールバック & クールダウンされる。
 # providers = [
-#   {{ provider = "codex", model = "gpt-5.4-mini", env = {{ CODEX_HOME = "~/.codex" }} }},
-#   {{ provider = "codex", model = "gpt-5.4-mini", env = {{ CODEX_HOME = "~/.codex-work" }} }},
+#   {{ provider = "codex", model = "gpt-5.6-luna", env = {{ CODEX_HOME = "~/.codex" }} }},
+#   {{ provider = "codex", model = "gpt-5.6-luna", env = {{ CODEX_HOME = "~/.codex-work" }} }},
 #   {{ provider = "antigravity", model = "Gemini 3.5 Flash (Low)" }},
 #   {{ provider = "antigravity", model = "GPT-OSS 120B (Medium)" }},
 #   "claude",
@@ -1205,8 +1217,8 @@ codex_reasoning_effort = "high"
     fn test_default_codex_model_uses_current_default() {
         // codex debug models で medium reasoning 対応モデルの入力トークンを比較し、
         // 最小の入力トークン数だった現在の既定モデルを固定する。
-        assert_eq!(default_codex_model(), "gpt-5.4-mini");
-        assert_eq!(Config::default().models.codex, "gpt-5.4-mini");
+        assert_eq!(default_codex_model(), "gpt-5.6-luna");
+        assert_eq!(Config::default().models.codex, "gpt-5.6-luna");
     }
 
     #[test]
@@ -1677,7 +1689,7 @@ provider_cooldown_minutes = 60
 
 [models]
 antigravity = "gemini-2.5-flash-lite"
-codex = "gpt-5.4-mini"
+codex = "gpt-5.6-luna"
 claude = "haiku"
 "#;
 
@@ -1691,7 +1703,7 @@ provider_cooldown_minutes = 15
 
 [models]
 antigravity = "pro"
-codex = "gpt-5.4-mini"
+codex = "gpt-5.6-luna"
 claude = "haiku"
 "#;
 
@@ -2770,7 +2782,7 @@ max_total_mb = 1
         assert_eq!(config.models.antigravity, default_antigravity_model());
         assert_eq!(config.models.codex, default_codex_model());
         assert!(content.contains(r#"antigravity = "GPT-OSS 120B (Medium)""#));
-        assert!(content.contains(r#"codex = "gpt-5.4-mini""#));
+        assert!(content.contains(r#"codex = "gpt-5.6-luna""#));
         assert_eq!(config.models.claude, default_claude_model());
         assert_eq!(config.models.opencode, default_opencode_model());
     }
@@ -2890,14 +2902,14 @@ max_total_mb = 1
     fn test_provider_step_parse_table() {
         let toml = r#"
 providers = [
-  { provider = "codex", model = "gpt-5.4-mini", env = { CODEX_HOME = "/a" } },
+  { provider = "codex", model = "gpt-5.6-luna", env = { CODEX_HOME = "/a" } },
 ]
 "#;
         let config = Config::from_str(toml).unwrap();
         assert_eq!(config.providers.len(), 1);
         let s = &config.providers[0];
         assert_eq!(s.provider, "codex");
-        assert_eq!(s.model.as_deref(), Some("gpt-5.4-mini"));
+        assert_eq!(s.model.as_deref(), Some("gpt-5.6-luna"));
         assert_eq!(s.env.get("CODEX_HOME").map(String::as_str), Some("/a"));
     }
 

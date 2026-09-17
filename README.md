@@ -309,7 +309,7 @@ codex_reasoning_effort = "low"
 # An empty string omits `-m` and lets grok pick its own default.
 [models]
 antigravity = "GPT-OSS 120B (Medium)"
-codex = "gpt-5.4-mini"
+codex = "gpt-5.6-luna"
 claude = "haiku"
 opencode = ""
 grok = ""
@@ -338,7 +338,7 @@ provider_timeout_seconds = 60
 | `ai_usage` | Residual quota gate via the `ai-usage` CLI (see "Residual Quota Gate") | disabled |
 | `dev_log` | Developer generation log (global config only; see "Developer Generation Log") | disabled |
 
-Existing global config files are not rewritten automatically. The current Codex default is `gpt-5.4-mini`; to use it in an existing setup, update `models.codex` in `~/.config/git-sc/config.toml`. This default was reselected on June 9, 2026 (JST) by comparing `input_tokens` for Codex models that are API-visible, listed, and support `medium` reasoning, and re-verified on June 29, 2026 (JST). The latest measurement used `Reply ok.` in an empty directory with `--ignore-user-config --ignore-rules --ephemeral --sandbox read-only` and `model_reasoning_effort='medium'`: `gpt-5.5` = 17593, `gpt-5.4` = 16206, `gpt-5.4-mini` = 15856. All accepted runs produced `ok` and no tool calls, so the ranking is stable and the default is unchanged.
+Existing global config files are not rewritten automatically. The current Codex default is `gpt-5.6-luna`; to use it in an existing setup, update `models.codex` in `~/.config/git-sc/config.toml`. **Check this after any Codex CLI update.** The previous default, `gpt-5.6-luna`, has since been removed from Codex, and naming a removed model does not fall back to anything — it returns HTTP 400, which git-sc counts as a provider failure and puts the step into cooldown, so an outdated `models.codex` silently drops Codex out of the fallback chain on every run. This default was reselected on September 17, 2026 (JST) by comparing `input_tokens` for Codex models that are API-visible, listed, and support `medium` reasoning, using `Reply ok.` in an empty directory with `--ignore-user-config --ignore-rules --ephemeral --sandbox read-only` and `model_reasoning_effort='medium'`: `gpt-5.6-luna` = 19609, `gpt-5.5` = 20181, `gpt-5.6-sol` = 21174, `gpt-5.6-terra` = 21174, `gpt-6-astra` = 22035. All runs produced `ok` with no tool calls, and a second round reproduced every figure exactly.
 
 The default Antigravity (`agy`) model is `GPT-OSS 120B (Medium)`, chosen by measurement. `agy` 1.1.10 added `--output-format json` to print mode, which reports a per-request `usage` object, so the same `input_tokens` comparison used for Codex is now possible (earlier agy releases had no machine-readable usage output, and this default originally rested on published pricing instead). Measured August 4, 2026 (JST) with `agy` 1.1.10 using the fixed prompt `Reply ok.` in an empty directory: `gpt-oss-120b-medium` = 13680, `gemini-3.5-flash-medium` = 16994, `gemini-3.5-flash-low` = 16998, `gemini-3.1-pro-low` = 17684, `gemini-3.6-flash-low` = 18175, `gemini-3.6-flash-medium` = 18176, `claude-sonnet-4-6` = 19346. All runs succeeded in a single turn, and `gpt-oss-120b-medium` is the minimum by roughly 19%, so it remains the default. This measures minimal per-request overhead only and says nothing about real-workload quality. To use it in an existing setup, add or update `models.antigravity` in `~/.config/git-sc/config.toml`, or set it to `""` to defer to agy's own default.
 
@@ -351,8 +351,8 @@ Each entry in `providers` can be either a plain string (provider name only) **or
 ```toml
 providers = [
   # Same provider, different accounts (switch via env: CODEX_HOME / CLAUDE_CONFIG_DIR).
-  { provider = "codex", model = "gpt-5.4-mini", env = { CODEX_HOME = "~/.codex" } },       # account 1
-  { provider = "codex", model = "gpt-5.4-mini", env = { CODEX_HOME = "~/.codex-work" } },  # account 2
+  { provider = "codex", model = "gpt-5.6-luna", env = { CODEX_HOME = "~/.codex" } },       # account 1
+  { provider = "codex", model = "gpt-5.6-luna", env = { CODEX_HOME = "~/.codex-work" } },  # account 2
   # Same provider, different model families (separate quotas).
   { provider = "antigravity", model = "Gemini 3.5 Flash (Low)" },
   { provider = "antigravity", model = "GPT-OSS 120B (Medium)" },
