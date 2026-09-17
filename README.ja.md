@@ -610,7 +610,10 @@ Apple Intelligence プロバイダーは、[fm-rs](https://github.com/blacktop/f
 
 - **動作要件**: macOS 26（Tahoe）以降、Apple Silicon、システム設定でApple Intelligenceが有効であること
 - **仕組み**: Apple Intelligence を有効化した状態で実行すると（macOSではデフォルト）、git-scがfm-rs経由でFoundation Modelsを直接呼び出します。コミットメッセージ生成用のinstructionsを設定した `LanguageModelSession` を毎回作成します。instructionsは解決済みのプレフィックス種別から構築されるため、`prefix_type = "none"` / `"bracket"` / `"emoji"` や直近コミットからの自動判定が尊重されます（常に Conventional Commits を強制することはありません）
-- **ビルド**: `cargo build --features apple-ai`（macOSでは `make build` / `make install` で自動的に有効）
+- **コンテキスト長**: オンデバイスモデルのコンテキストは **4096 トークン**で、他のプロバイダーより桁違いに小さいです。git-sc は生成前にプロンプトのトークン数を計測し、収まらない場合は変更ファイル一覧を残したまま diff 本文を縮約してプロンプトを組み直します。この場合はメッセージが変更の一部だけを見て書かれることになるため、警告を表示します。縮約しても収まらないときは、コミットを失敗させずに次のプロバイダーへ進みます。
+- **タイムアウト**: `provider_timeout_seconds`（既定 60 秒）が適用されます。CLI プロバイダーと同じ設定です。
+- **失敗の扱い**: プロンプト起因の失敗（コンテキスト長超過・安全ガードレール・拒否・非対応言語）はクールダウンに入れません。クールダウンに入るのは、モデルが現在使えないことを示す失敗（アセット未取得・レート制限・タイムアウト）だけです。この失敗種別の判定には macOS 27 SDK 以降でのビルドが必要で、macOS 26 ではすべてプロバイダー側の失敗として扱われます。
+- **ビルド**: `cargo build --features apple-ai`（macOSでは `make build` / `make install` で自動的に有効）。macOS 27 以降でビルドすると Foundation Models 27 の機能（正確なトークン数計測・型付きエラー・応答ごとのトークン使用量）も有効になります。macOS 26 も引き続きサポートします。
 - **クロスプラットフォーム**: Linux/WindowsではApple Intelligenceは利用できず、自動的にスキップされます
 
 ## プラットフォームの注意

@@ -610,7 +610,10 @@ Apple Intelligence provider uses [fm-rs](https://github.com/blacktop/fm-rs) (Rus
 
 - **Requirements**: macOS 26 (Tahoe) or later, Apple Silicon, Apple Intelligence enabled in System Settings
 - **How it works**: With Apple Intelligence enabled (default on macOS), git-sc calls Foundation Models directly via fm-rs. A `LanguageModelSession` is created with commit-message-specific instructions for each generation. The instructions are built from the resolved prefix type, so `prefix_type = "none"` / `"bracket"` / `"emoji"` and auto-detection from recent commits are respected instead of always forcing Conventional Commits.
-- **Build**: `cargo build --features apple-ai` (automatic with `make build` / `make install` on macOS)
+- **Context window**: the on-device model holds **4096 tokens**, which is far smaller than every other provider. git-sc measures the prompt before generating and, when it does not fit, rebuilds it from a compacted diff that keeps the full list of changed files and truncates the bodies. A warning is printed when this happens, because the resulting message was written from a partial view of the change. If even the compacted prompt does not fit, the run moves on to the next provider instead of failing the commit.
+- **Timeout**: bounded by `provider_timeout_seconds` (default 60), the same setting the CLI providers use.
+- **Failures**: a failure caused by the prompt itself (context size, safety guardrail, refusal, unsupported language) does not put the provider into cooldown — only failures that mean the model is currently unusable (assets not downloaded, rate limited, timed out) do. Typed failure classification requires building against the macOS 27 SDK or later; on macOS 26 all failures are treated as provider failures.
+- **Build**: `cargo build --features apple-ai` (automatic with `make build` / `make install` on macOS). Building on macOS 27 or later additionally enables Foundation Models 27 features (exact token counts, typed errors, per-response token usage); macOS 26 remains supported.
 - **Cross-platform**: On Linux/Windows, Apple Intelligence is not available and is automatically skipped
 
 ## Platform Notes

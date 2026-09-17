@@ -101,6 +101,34 @@ pub struct AttemptRecord {
     pub decision: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// ネイティブ呼び出し(Apple Intelligence)のトークン実測値。
+    /// サブプロセス経由のプロバイダーは自分の消費量を報告しないので None
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_usage: Option<TokenUsageRecord>,
+}
+
+/// ネイティブ呼び出しのトークン実測値
+///
+/// Apple Intelligence だけはコンテキストが 4096 トークンと小さく、プロンプトが
+/// 収まるかどうかが成否を分ける。あとから「どのくらい余裕がなかったか」
+/// 「縮約がどのくらいの頻度で必要だったか」を実データで見られるようにする。
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct TokenUsageRecord {
+    /// モデルのコンテキスト上限
+    pub context_tokens: u64,
+    /// 実際に送った `instructions + プロンプト` の実測トークン数
+    /// (縮約したならその後の値。チャットテンプレート分は含まない)
+    pub measured_input_tokens: u64,
+    /// 応答に許した上限 (`max_response_tokens`)
+    pub response_limit_tokens: u64,
+    /// framework が報告した入力トークン (Foundation Models 27 以降)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    /// framework が報告した出力トークン (Foundation Models 27 以降)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+    /// コンテキストに収めるため diff を縮約したか
+    pub compacted: bool,
 }
 
 /// 実行 1 回分のログ
@@ -917,6 +945,7 @@ mod tests {
             findings: Vec::new(),
             decision: "pending".to_string(),
             error: None,
+            token_usage: None,
         }
     }
 

@@ -5,9 +5,16 @@ use std::time::Instant;
 
 use colored::Colorize;
 
+#[cfg(all(target_os = "macos", feature = "apple-ai"))]
+use std::time::Duration;
+
+#[cfg(all(target_os = "macos", feature = "apple-ai"))]
+use super::apple::{AppleOutcome, AppleRequest};
 use super::process::TempFile;
 use super::prompt::CleanedResponse;
 use crate::config::{Config, ModelsConfig, ProviderStep, canonical_provider_key};
+#[cfg(all(target_os = "macos", feature = "apple-ai"))]
+use crate::devlog::TokenUsageRecord;
 use crate::devlog::{AttemptRecord, DevLog, Input};
 use crate::error::AppError;
 use crate::state::State;
@@ -399,7 +406,8 @@ impl AiService {
     /// Apple Intelligence のネイティブ呼び出しを試行として記録する
     ///
     /// サブプロセスを介さないので生の応答は捕捉できない。整形後のメッセージと
-    /// 所要時間だけを、他プロバイダーと同じ形で残す。
+    /// 所要時間、そして framework が報告したトークン実測値を、他プロバイダーと
+    /// 同じ形で残す。
     #[cfg(all(target_os = "macos", feature = "apple-ai"))]
     fn record_native_attempt(
         &self,
@@ -408,7 +416,7 @@ impl AiService {
         model: &str,
         retry: u32,
         duration_ms: u64,
-        result: &Result<CleanedResponse, AppError>,
+        result: &Result<AppleOutcome, AppError>,
     ) {
         let Some(dev_log) = &self.dev_log else {
             return;
@@ -429,11 +437,22 @@ impl AiService {
             envelope_tag: result
                 .as_ref()
                 .ok()
-                .and_then(|cleaned| cleaned.envelope_tag.clone()),
-            message: result.as_ref().ok().map(|cleaned| cleaned.message.clone()),
+                .and_then(|outcome| outcome.cleaned.envelope_tag.clone()),
+            message: result
+                .as_ref()
+                .ok()
+                .map(|outcome| outcome.cleaned.message.clone()),
             findings: Vec::new(),
             decision: if result.is_ok() { "pending" } else { "error" }.to_string(),
             error: result.as_ref().err().map(|e| e.to_string()),
+            token_usage: result.as_ref().ok().map(|outcome| TokenUsageRecord {
+                context_tokens: outcome.usage.context_tokens,
+                measured_input_tokens: outcome.usage.measured_input_tokens,
+                response_limit_tokens: outcome.usage.response_limit_tokens,
+                input_tokens: outcome.usage.input_tokens,
+                output_tokens: outcome.usage.output_tokens,
+                compacted: outcome.usage.compacted,
+            }),
         });
     }
 
@@ -445,6 +464,17 @@ impl AiService {
         let provider_name = canonical_provider_key(provider.config_key());
         self.steps = vec![ProviderStep::from_provider(provider_name)];
         self.provider_override = true;
+    }
+
+    /// この失敗でステップをクールダウンさせるべきか
+    ///
+    /// クールダウンは「このプロバイダーは今使えない」を意味するので、プロンプトの
+    /// 内容で決まる失敗(コンテキスト上限超過・ガードレール拒否・非対応言語)を
+    /// 含めてはいけない。たまたま大きい 1 コミットのせいでプロバイダーが 1 時間
+    /// 止まると、そのあとの小さな diff まで巻き添えになる。打ち切り応答や空応答を
+    /// クールダウンの対象外にしている既存の判断と同じ理由。
+    pub(super) fn should_record_failure(error: &AppError) -> bool {
+        !matches!(error, AppError::AiProviderInputError(_))
     }
 
     /// ステップの失敗を記録
@@ -482,20 +512,50 @@ impl AiService {
                     .to_string(),
             ));
         }
+        // Apple Intelligence だけは PATH 上のバイナリではなく OS の機能なので、
+        // `is_step_installed` は feature の有無(コンパイル時)しか見られない。
+        // 他に実行できるステップが 1 つも無いときに限り、実際にこの Mac でモデルが
+        // 使えるかをランタイムに問い合わせる。常に問い合わせないのは、CLI プロバイダー
+        // だけで完結する実行にモデル初期化のコストを載せないため。
+        let mut apple_candidate = false;
         for step in &self.steps {
-            if let Some(provider) = AiProvider::from_str(&step.provider)
-                && self.is_step_installed(step, &provider)
-            {
-                return Ok(());
+            let Some(provider) = AiProvider::from_str(&step.provider) else {
+                continue;
+            };
+            if !self.is_step_installed(step, &provider) {
+                continue;
             }
+            if matches!(provider, AiProvider::AppleIntelligence) {
+                apple_candidate = true;
+                continue;
+            }
+            return Ok(());
         }
+        if apple_candidate {
+            return Self::check_apple_runtime();
+        }
+        Err(AppError::NoAiProviderInstalled)
+    }
+
+    /// Apple Intelligence がこの環境で実際に使えるか
+    ///
+    /// feature が無効なビルドではそもそも `is_step_installed` が false を返すので
+    /// ここには来ないが、型を揃えるために両方の実装を持つ。
+    #[cfg(all(target_os = "macos", feature = "apple-ai"))]
+    fn check_apple_runtime() -> Result<(), AppError> {
+        Self::apple_runtime_available()
+    }
+
+    #[cfg(not(all(target_os = "macos", feature = "apple-ai")))]
+    fn check_apple_runtime() -> Result<(), AppError> {
         Err(AppError::NoAiProviderInstalled)
     }
 
     /// ステップの実行バイナリがインストールされているかチェック。
     /// command 指定があればその先頭バイナリを、なければ provider 既定コマンドを調べる。
     fn is_step_installed(&self, step: &ProviderStep, provider: &AiProvider) -> bool {
-        // Apple Intelligence: apple-ai feature 有効時のみ利用可能（ランタイムで可否判定）
+        // Apple Intelligence: apple-ai feature 有効時のみ利用可能（ランタイム可否は
+        // verify_installation と実呼び出しで確認する）
         if matches!(provider, AiProvider::AppleIntelligence) {
             return cfg!(all(target_os = "macos", feature = "apple-ai"));
         }
@@ -756,23 +816,43 @@ impl AiService {
                 #[cfg(all(target_os = "macos", feature = "apple-ai"))]
                 let result = if matches!(provider, AiProvider::AppleIntelligence) {
                     let started = Instant::now();
-                    let result = Self::call_apple_intelligence_native(
-                        &prompt,
-                        &self.language,
+                    // プロンプトだけでなくその素材も渡す。on-device のコンテキストは
+                    // 4096 トークンしかなく、収まらないときは Apple のステップに限って
+                    // diff を縮めて組み直すため
+                    let outcome = Self::call_apple_intelligence_native(&AppleRequest {
+                        prompt: &prompt,
+                        diff,
+                        recent_commits,
+                        language: &self.language,
                         prefix_type,
-                        !recent_commits.is_empty(),
-                    );
+                        with_body,
+                        agent_context,
+                        timeout: Duration::from_secs(self.timeout_seconds),
+                    });
                     // ネイティブ呼び出しはサブプロセスを介さないため生の応答を捕捉できない。
-                    // 整形後のメッセージだけでも試行として残す
+                    // 整形後のメッセージとトークン実測値だけでも試行として残す
                     self.record_native_attempt(
                         &provider,
                         step,
                         &model,
                         retry,
                         started.elapsed().as_millis() as u64,
-                        &result,
+                        &outcome,
                     );
-                    result
+                    // 縮約が起きたら黙って進めない。生成されたメッセージが diff の
+                    // 一部しか見ていないことになるので、ユーザーが確認時に判断できる
+                    // ようにする
+                    if !silent
+                        && let Ok(outcome) = &outcome
+                        && outcome.usage.compacted
+                    {
+                        eprintln!(
+                            "  {} diff が Apple Intelligence のコンテキスト上限 ({} トークン) を超えたため、ファイル一覧を残して縮約しました",
+                            "⚠".yellow(),
+                            outcome.usage.context_tokens
+                        );
+                    }
+                    outcome.map(|outcome| outcome.cleaned)
                 } else {
                     self.call_provider(&provider, step, &model, &prompt, retry)
                 };
@@ -881,8 +961,8 @@ impl AiService {
                                 e.to_string().red()
                             );
                         }
-                        // 手動指定時は失敗記録をスキップ
-                        if !self.provider_override {
+                        // 手動指定時と、プロンプト起因の失敗では失敗記録をスキップする
+                        if !self.provider_override && Self::should_record_failure(&e) {
                             self.record_provider_failure(step);
                         }
                         last_error = Some(e);
@@ -951,6 +1031,8 @@ impl AiService {
             findings: Vec::new(),
             decision: if result.is_ok() { "pending" } else { "error" }.to_string(),
             error: result.as_ref().err().map(|e| e.to_string()),
+            // サブプロセス経由の CLI は自分のトークン消費量を報告しない
+            token_usage: None,
         });
 
         result
@@ -2705,12 +2787,24 @@ mod tests {
     #[cfg(all(target_os = "macos", feature = "apple-ai"))]
     #[test]
     fn test_apple_instructions_follow_prefix_type() {
-        // conventional: 従来どおり type prefix を強制
+        // conventional: 従来どおり type prefix を強制する。ただし `feat:` のような
+        // 「type + コロン」の形は instructions 内に一切現れてはいけない。~3B の
+        // on-device モデルはそれを説明ではなく出力例として写し取り、
+        // `fix: docs: README を更新` のような二重プレフィックスを書く
+        // (実測 2026-09-17: 縮約が要る大きい diff 4 件すべてで発生し、
+        // コロンを外した表記に変えたところ 0 件になった)
         let conventional =
             AiService::build_apple_instructions("Japanese", Some("conventional"), false);
         assert!(conventional.contains("Japanese"));
-        assert!(conventional.contains("MUST start with a type prefix"));
-        assert!(conventional.contains("feat:"));
+        assert!(conventional.contains("MUST start with exactly ONE type prefix"));
+        assert!(conventional.contains("feat = "));
+        for prefix_type in crate::ai::prompt::CONVENTIONAL_TYPES {
+            assert!(
+                !conventional.contains(&format!("{}: ", prefix_type)),
+                "instructions に `{}: ` が現れるとモデルがそれをオウム返しする",
+                prefix_type
+            );
+        }
 
         // none/plain: prefix の禁止を明示(固定強制の矛盾が解消されていること)
         let none = AiService::build_apple_instructions("Japanese", Some("none"), false);
@@ -2721,7 +2815,7 @@ mod tests {
         // bracket: 角括弧形式を強制
         let bracket = AiService::build_apple_instructions("Japanese", Some("bracket"), false);
         assert!(bracket.contains("[Add]"));
-        assert!(!bracket.contains("MUST start with a type prefix"));
+        assert!(!bracket.contains("MUST start with exactly ONE type prefix"));
 
         // カスタム prefix はそのまま指示に含める
         let custom = AiService::build_apple_instructions("Japanese", Some("MYPROJ-"), false);
@@ -2737,7 +2831,7 @@ mod tests {
         // 自動判定(直近コミットなし): プロンプト側のフォールバックと同じく
         // conventional ルールで揃える
         let auto_empty = AiService::build_apple_instructions("Japanese", None, false);
-        assert!(auto_empty.contains("MUST start with a type prefix"));
+        assert!(auto_empty.contains("MUST start with exactly ONE type prefix"));
     }
 
     #[test]
@@ -2866,8 +2960,17 @@ mod tests {
         }
         let prompt = AiService::build_prompt(diff, &[], "English", prefix_type, with_body, None);
         Some(
-            AiService::call_apple_intelligence_native(&prompt, "English", prefix_type, false)
-                .map(|cleaned| cleaned.message),
+            AiService::call_apple_intelligence_native(&AppleRequest {
+                prompt: &prompt,
+                diff,
+                recent_commits: &[],
+                language: "English",
+                prefix_type,
+                with_body,
+                agent_context: None,
+                timeout: Duration::from_secs(60),
+            })
+            .map(|outcome| outcome.cleaned.message),
         )
     }
 
@@ -3264,8 +3367,17 @@ mod tests {
         }
         let prompt = AiService::build_prompt(diff, &[], "Japanese", prefix_type, false, None);
         Some(
-            AiService::call_apple_intelligence_native(&prompt, "Japanese", prefix_type, false)
-                .map(|cleaned| cleaned.message),
+            AiService::call_apple_intelligence_native(&AppleRequest {
+                prompt: &prompt,
+                diff,
+                recent_commits: &[],
+                language: "Japanese",
+                prefix_type,
+                with_body: false,
+                agent_context: None,
+                timeout: Duration::from_secs(60),
+            })
+            .map(|outcome| outcome.cleaned.message),
         )
     }
 
@@ -5293,6 +5405,32 @@ mod tests {
         assert!(
             final_steps.is_empty(),
             "gate_blocked=true のときフォールバックせず空のまま(default_steps に戻さない)"
+        );
+    }
+
+    /// プロンプト起因の失敗はクールダウンに入れないこと
+    ///
+    /// Apple Intelligence のコンテキストは実測 4096 トークンしかなく、実リポジトリの
+    /// diff では 1 割弱がこれを超える。超過を通常の失敗として扱うと、たまたま大きい
+    /// 1 コミットのせいでプロバイダーが 1 時間使えなくなり、そのあとの小さな diff まで
+    /// 巻き添えになる。打ち切り応答・空応答をクールダウン対象外にしているのと同じ判断。
+    #[test]
+    fn test_prompt_errors_do_not_trigger_cooldown() {
+        assert!(
+            !AiService::should_record_failure(&AppError::AiProviderInputError(
+                "context size exceeded".to_string()
+            )),
+            "プロンプト起因の失敗はクールダウンに入れない"
+        );
+        assert!(
+            AiService::should_record_failure(&AppError::AiProviderError(
+                "CLI not responding".to_string()
+            )),
+            "プロバイダー側の失敗は従来どおりクールダウンに入れる"
+        );
+        assert!(
+            AiService::should_record_failure(&AppError::NoAiProviderInstalled),
+            "その他のエラーも従来どおりクールダウンに入れる"
         );
     }
 }

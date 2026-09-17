@@ -22,6 +22,17 @@ pub enum AppError {
     #[error("{0}")]
     AiProviderError(String),
 
+    /// プロンプトそのものが原因でプロバイダーが応答できなかった失敗。
+    ///
+    /// `AiProviderError` と分けているのはクールダウンの扱いが逆になるため。
+    /// コンテキスト上限超過・ガードレール拒否のように「この diff だから失敗した」
+    /// ものは、プロバイダー自体は健全で次の diff なら成功する。ここで
+    /// `record_provider_failure` を呼ぶと、たまたま大きい 1 コミットのせいで
+    /// プロバイダーが 1 時間使えなくなる。打ち切り応答や空応答をクールダウンの
+    /// 対象外にしている既存の判断と同じ理由で、これも対象外にする。
+    #[error("{0}")]
+    AiProviderInputError(String),
+
     #[error("Gitコマンドが失敗しました: {0}")]
     GitError(String),
 
