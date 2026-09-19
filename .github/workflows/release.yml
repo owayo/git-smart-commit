@@ -389,6 +389,10 @@ jobs:
     if: ${{ !inputs.dry_run }}
     # Komac is cross-platform; windows-latest is not needed
     runs-on: ubuntu-latest
+    outputs:
+      submitted: ${{ steps.submit.outcome == 'success' }}
+    env:
+      WINGET_IDENTIFIER: owayo.git-sc
     steps:
       # `secrets` is not available in a job-level `if`, so gate inside a step
       # to keep a missing token from failing the whole release
@@ -404,11 +408,60 @@ jobs:
             echo "available=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Submit manifest to winget-pkgs
+      # A brand-new package needs a moderator to approve its first winget-pkgs PR,
+      # which can sit for days. winget-releaser exits 1 in that window
+      # ("Package ... does not exist in the winget-pkgs repository"), so check the
+      # registration first and skip: "not merged yet" is the normal state while
+      # waiting, not a release failure. continue-on-error is deliberately avoided
+      # because it would also hide a revoked PAT or a wrong installers-regex.
+      - name: Check winget-pkgs registration
+        id: registration
         if: steps.token.outputs.available == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Same path winget-releaser checks: manifests/<initial>/<Publisher>/<Package>
+          INITIAL=$(printf '%s' "${WINGET_IDENTIFIER}" | cut -c1 | tr '[:upper:]' '[:lower:]')
+          MANIFEST_DIR="manifests/${INITIAL}/${WINGET_IDENTIFIER//.//}"
+
+          # `bash -e` would abort the step on a connection failure, so swallow it
+          # and judge by the HTTP status alone
+          http_status() {
+            curl --silent --output /dev/null --write-out '%{http_code}' "$@" || true
+          }
+
+          STATUS=$(http_status \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/microsoft/winget-pkgs/contents/${MANIFEST_DIR}")
+
+          # Re-check over the plain web path when the API is unusable (rate limit etc.)
+          if [ "${STATUS}" != "200" ] && [ "${STATUS}" != "404" ]; then
+            STATUS=$(http_status "https://github.com/microsoft/winget-pkgs/tree/master/${MANIFEST_DIR}")
+          fi
+
+          case "${STATUS}" in
+            200)
+              echo "registered=true" >> "$GITHUB_OUTPUT"
+              ;;
+            404)
+              echo "::notice::${WINGET_IDENTIFIER} is not in winget-pkgs yet (initial PR awaiting moderator approval); skipping submission"
+              echo "registered=false" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              # Undetermined: submit anyway, so a permanently failing lookup cannot
+              # silently stop updates forever
+              echo "::warning::Could not determine winget-pkgs registration (HTTP ${STATUS}); attempting submission"
+              echo "registered=true" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+      - name: Submit manifest to winget-pkgs
+        id: submit
+        if: steps.registration.outputs.registered == 'true'
         uses: vedantmgoyal9/winget-releaser@v2
         with:
-          identifier: owayo.git-sc
+          identifier: ${{ env.WINGET_IDENTIFIER }}
           version: ${{ needs.prepare-release.outputs.version }}
           # workflow_dispatch has no release event, so the tag must be passed explicitly
           release-tag: ${{ needs.prepare-release.outputs.tag }}
@@ -435,4 +488,8 @@ jobs:
           echo "  - git-sc-x86_64-pc-windows-msvc.zip"
           echo ""
           echo "🍺 Homebrew tap updated: owayo/homebrew-git-sc"
-          echo "📦 WinGet manifest submitted: owayo.git-sc"
+          if [ "${{ needs.publish-winget.outputs.submitted }}" = "true" ]; then
+            echo "📦 WinGet manifest submitted: owayo.git-sc"
+          else
+            echo "📦 WinGet submission skipped (owayo.git-sc not in winget-pkgs yet, or WINGET_TOKEN unset)"
+          fi

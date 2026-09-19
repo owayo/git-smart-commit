@@ -30,6 +30,14 @@ pub enum AppError {
     /// `record_provider_failure` を呼ぶと、たまたま大きい 1 コミットのせいで
     /// プロバイダーが 1 時間使えなくなる。打ち切り応答や空応答をクールダウンの
     /// 対象外にしている既存の判断と同じ理由で、これも対象外にする。
+    ///
+    /// このバリアントを構築するのは `ai/apple.rs` だけで、そこは
+    /// `all(target_os = "macos", feature = "apple-ai")` でゲートされている
+    /// (`ai/mod.rs`)。判定側の `AiService::should_record_failure` は cfg なしで
+    /// 参照するためバリアント定義自体はゲートできず、結果として feature を
+    /// 外したビルド (Linux CI の `cargo clippy -- -D warnings` が該当) では
+    /// 構築側が消えて `dead_code` になる。そこだけ許可する。
+    #[cfg_attr(not(all(target_os = "macos", feature = "apple-ai")), allow(dead_code))]
     #[error("{0}")]
     AiProviderInputError(String),
 
