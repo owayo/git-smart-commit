@@ -60,7 +60,7 @@
   - Claude Code: `curl -fsSL https://claude.ai/install.sh | bash`
   - opencode: `curl -fsSL https://opencode.ai/install | bash`
   - Grok CLI (`grok`, xAI): bundled with [cmux](https://github.com/manaflow-ai/cmux) at `/Applications/cmux.app/Contents/Resources/bin/grok`. If `grok` is not on `PATH`, the step is skipped and the chain moves on.
-  - Apple Intelligence: Built-in on macOS (macOS 26+ with Apple Silicon required)
+  - Apple Intelligence: available only when built from source on macOS (`make install` enables it automatically; macOS 26+ with Apple Silicon required; not included in the Homebrew or GitHub Releases binaries)
 
 ## Installation
 
@@ -338,7 +338,7 @@ provider_timeout_seconds = 60
 | `ai_usage` | Residual quota gate via the `ai-usage` CLI (see "Residual Quota Gate") | disabled |
 | `dev_log` | Developer generation log (global config only; see "Developer Generation Log") | disabled |
 
-Existing global config files are not rewritten automatically. The current Codex default is `gpt-5.6-luna`; to use it in an existing setup, update `models.codex` in `~/.config/git-sc/config.toml`. **Check this after any Codex CLI update.** The previous default, `gpt-5.6-luna`, has since been removed from Codex, and naming a removed model does not fall back to anything — it returns HTTP 400, which git-sc counts as a provider failure and puts the step into cooldown, so an outdated `models.codex` silently drops Codex out of the fallback chain on every run. This default was reselected on September 17, 2026 (JST) by comparing `input_tokens` for Codex models that are API-visible, listed, and support `medium` reasoning, using `Reply ok.` in an empty directory with `--ignore-user-config --ignore-rules --ephemeral --sandbox read-only` and `model_reasoning_effort='medium'`: `gpt-5.6-luna` = 19609, `gpt-5.5` = 20181, `gpt-5.6-sol` = 21174, `gpt-5.6-terra` = 21174, `gpt-6-astra` = 22035. All runs produced `ok` with no tool calls, and a second round reproduced every figure exactly.
+Existing global config files are not rewritten automatically. The current Codex default is `gpt-5.6-luna`; to use it in an existing setup, update `models.codex` in `~/.config/git-sc/config.toml`. **Check this after any Codex CLI update.** The previous default, `gpt-5.4-mini`, has since been removed from Codex, and naming a removed model does not fall back to anything — it returns HTTP 400, which git-sc counts as a provider failure and puts the step into cooldown, so an outdated `models.codex` silently drops Codex out of the fallback chain on every run. This default was reselected on September 17, 2026 (JST) by comparing `input_tokens` for Codex models that are API-visible, listed, and support `medium` reasoning, using `Reply ok.` in an empty directory with `--ignore-user-config --ignore-rules --ephemeral --sandbox read-only` and `model_reasoning_effort='medium'`: `gpt-5.6-luna` = 19609, `gpt-5.5` = 20181, `gpt-5.6-sol` = 21174, `gpt-5.6-terra` = 21174, `gpt-6-astra` = 22035. All runs produced `ok` with no tool calls, and a second round reproduced every figure exactly.
 
 The default Antigravity (`agy`) model is `GPT-OSS 120B (Medium)`, chosen by measurement. `agy` 1.1.10 added `--output-format json` to print mode, which reports a per-request `usage` object, so the same `input_tokens` comparison used for Codex is now possible (earlier agy releases had no machine-readable usage output, and this default originally rested on published pricing instead). Measured August 4, 2026 (JST) with `agy` 1.1.10 using the fixed prompt `Reply ok.` in an empty directory: `gpt-oss-120b-medium` = 13680, `gemini-3.5-flash-medium` = 16994, `gemini-3.5-flash-low` = 16998, `gemini-3.1-pro-low` = 17684, `gemini-3.6-flash-low` = 18175, `gemini-3.6-flash-medium` = 18176, `claude-sonnet-4-6` = 19346. All runs succeeded in a single turn, and `gpt-oss-120b-medium` is the minimum by roughly 19%, so it remains the default. This measures minimal per-request overhead only and says nothing about real-workload quality. To use it in an existing setup, add or update `models.antigravity` in `~/.config/git-sc/config.toml`, or set it to `""` to defer to agy's own default.
 
@@ -379,12 +379,12 @@ Per-step fields:
 
 | Value | Example | Description |
 |-------|---------|-------------|
-| `conventional` | `feat: add feature` | Conventional Commits format |
-| `bracket` | `[feat] add feature` | Bracket-style prefix |
-| `colon` | `feat: add feature` | Simple colon prefix |
-| `emoji` | `:sparkles: add feature` | Emoji prefix |
-| `plain` | `Add feature` | No prefix |
-| `none` | `add feature` | No prefix, lowercase |
+| `conventional` | `feat: add new feature` | Conventional Commits format |
+| `bracket` | `[Add] new feature` | Bracket-style prefix |
+| `colon` | `Add: new feature` | Simple colon prefix |
+| `emoji` | `✨ add new feature` | Emoji prefix |
+| `plain` | `Add new feature` | No prefix |
+| `none` | `Add new feature` | No prefix (same as `plain`) |
 
 ### Prefix Rules
 
@@ -427,7 +427,7 @@ echo "conventional"
 ## Diff Processing
 
 - Whitespace-only changes excluded
-- Binary files excluded
+- Binary files replaced with a one-line summary (e.g. `[Binary] modified: <path>`) instead of their contents
 - Quoted diff headers with spaces or non-ASCII file paths are handled correctly
 - `.git-sc-ignore` patterns applied
 - Truncated at 10,000 characters
@@ -438,7 +438,7 @@ echo "conventional"
 - Reword message temporary files use the same private-file behavior.
 - The provider cooldown state file (`~/.config/git-sc/.providers-state`) is also created with no group/other permissions, because its cooldown keys embed each step's `env` values verbatim.
 - **`.git-sc-ignore` failures stop the run.** If the file exists but cannot be read or parsed, git-sc exits with an error instead of continuing without exclusions. A malformed ignore file would otherwise silently send the very files you meant to withhold to the AI provider.
-- **`.git-sc-ignore` is not affected by your diff-formatting Git config.** Exclusion works by reading file paths out of the `diff --git a/… b/…` header, so settings that reshape that line — `diff.noprefix`, `diff.mnemonicPrefix`, `diff.srcPrefix` / `diff.dstPrefix`, `color.ui = always`, `diff.external` — would otherwise make every pattern silently stop matching. git-sc requests the diff with the prefixes, colors, and path base pinned, so your patterns apply the same way regardless of those settings. This also covers `diff.relative`, which additionally would have hidden any change outside the directory you ran git-sc from — with it pinned, the message is always written from the full staged diff no matter which subdirectory you are in.
+- **`.git-sc-ignore` is not affected by your diff-formatting Git config.** Exclusion works by reading file paths out of the `diff --git a/… b/…` header, so settings that reshape that line — `diff.noprefix`, `diff.mnemonicPrefix`, `diff.srcPrefix` / `diff.dstPrefix`, `color.ui = always`, `diff.external` — would otherwise make every pattern silently stop matching. git-sc requests the diff with the prefixes, colors, and path base pinned, so your patterns apply the same way regardless of those settings. This also covers `diff.relative`, which additionally would have hidden any change outside the directory you ran git-sc from — with it pinned, the message is always written from the full staged diff no matter which subdirectory you are in. The submodule settings are pinned too: `diff.submodule = log` would reshape a submodule's block header so patterns stopped matching it, and `diff.ignoreSubmodules = all` — including when it comes from a repository's committed `.gitmodules` rather than your own config — would drop staged submodule pointer changes from the diff and from the staged-changes check, so `--squash` could fold in a change the AI never saw.
 - **A project-level `.git-sc` can run code.** `providers[].command`, `prefix_scripts[].script`, and `ai_usage.command` name executables that git-sc launches, and a repository-local `.git-sc` is merged in like any other config. Cloning an untrusted repository and running git-sc in it — including automatically, via an agent stop hook — therefore executes whatever those fields point at. `env` keys are validated and dynamic-loader / interpreter pre-load names are rejected, but that does not constrain these three fields. Review a repository's `.git-sc` before running git-sc inside it, the same way you would review a `Makefile` or a git hook.
 
 ### .git-sc-ignore
@@ -567,7 +567,7 @@ When git-sc is used with [claw-hooks](https://github.com/owayo/claw-hooks), it a
 git-sc -a -y -q
 ```
 
-When the environment variable is set, the prompt includes an "Agent Context" section that guides the AI to prioritize the developer's intent.
+When the environment variable is set, the prompt includes an `<agent-context>` block that guides the AI to prioritize the developer's intent.
 This applies to standard commit generation as well as `--amend`, `--reword`, `--squash`, and `--generate-for`.
 
 ## How It Works

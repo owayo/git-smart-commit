@@ -1852,3 +1852,389 @@ fn test_ignore_patterns_apply_to_merge_commit_combined_diff() {
         "除外していないファイルまでプロンプトから消えている"
     );
 }
+
+// ============================================================
+// `git-sc init` の上書き確認
+// ============================================================
+
+/// 既存の設定ファイルがあるとき、`init` は上書き前に確認を求め、
+/// 「いいえ」と答えたら中身を書き換えずに失敗する。
+///
+/// `--force` なしの経路と `confirm_overwrite` の応答判定は、対話入力を伴うため
+/// ユニットテストからは踏めない(テストハーネスの stdin は端末に繋がったままになる)。
+/// 実バイナリに stdin を与える統合テストでのみ検証できる。
+#[test]
+fn test_init_refuses_to_overwrite_when_answer_is_no() {
+    let home = TempDir::new().unwrap();
+    let config_path = home.path().join(".config/git-sc/config.toml");
+    std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+    std::fs::write(&config_path, "# SENTINEL-ORIGINAL\n").unwrap();
+
+    git_sc!()
+        .arg("init")
+        .env("HOME", home.path())
+        .write_stdin("n\n")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("操作がキャンセルされました"));
+
+    assert_eq!(
+        std::fs::read_to_string(&config_path).unwrap(),
+        "# SENTINEL-ORIGINAL\n",
+        "上書きを拒否したのに既存の設定ファイルが書き換えられている"
+    );
+}
+
+/// 上書き確認に「はい」と答えたら、既存の設定ファイルを既定値で作り直す。
+#[test]
+fn test_init_overwrites_when_answer_is_yes() {
+    let home = TempDir::new().unwrap();
+    let config_path = home.path().join(".config/git-sc/config.toml");
+    std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+    std::fs::write(&config_path, "# SENTINEL-ORIGINAL\n").unwrap();
+
+    git_sc!()
+        .arg("init")
+        .env("HOME", home.path())
+        .write_stdin("y\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created config file"));
+
+    let content = std::fs::read_to_string(&config_path).unwrap();
+    assert!(
+        !content.contains("SENTINEL-ORIGINAL"),
+        "上書きを承諾したのに既存の内容が残っている"
+    );
+    assert!(
+        content.contains("[models]"),
+        "既定の設定内容が書き込まれていない"
+    );
+}
+
+/// stdin が EOF (パイプが閉じている) のときは、空行を「はい」と解釈せず拒否する。
+/// 確認プロンプトの既定は `[y/N]` なので、EOF は上書きしない側へ倒れる必要がある。
+#[test]
+fn test_init_treats_stdin_eof_as_refusal() {
+    let home = TempDir::new().unwrap();
+    let config_path = home.path().join(".config/git-sc/config.toml");
+    std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+    std::fs::write(&config_path, "# SENTINEL-ORIGINAL\n").unwrap();
+
+    git_sc!()
+        .arg("init")
+        .env("HOME", home.path())
+        .write_stdin("")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("操作がキャンセルされました"));
+
+    assert_eq!(
+        std::fs::read_to_string(&config_path).unwrap(),
+        "# SENTINEL-ORIGINAL\n"
+    );
+}
+
+/// `--force` は確認を挟まずに上書きする。
+#[test]
+fn test_init_force_overwrites_without_prompt() {
+    let home = TempDir::new().unwrap();
+    let config_path = home.path().join(".config/git-sc/config.toml");
+    std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+    std::fs::write(&config_path, "# SENTINEL-ORIGINAL\n").unwrap();
+
+    let assert = git_sc!()
+        .args(["init", "--force"])
+        .env("HOME", home.path())
+        .write_stdin("")
+        .assert()
+        .success();
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        !stderr.contains("上書きしますか"),
+        "--force 指定時に確認プロンプトが表示されている: {stderr}"
+    );
+
+    let content = std::fs::read_to_string(&config_path).unwrap();
+    assert!(!content.contains("SENTINEL-ORIGINAL"));
+}
+
+// ============================================================
+// prefix ルール / スクリプトの url_pattern が不正な正規表現のとき
+// ============================================================
+
+/// `url_pattern` が正規表現としてコンパイルできない場合、そのルールを黙って
+/// 飛ばすのではなく警告を出す。
+///
+/// 黙って飛ばすと「prefix を設定したのに付かない」理由がユーザーからまったく
+/// 見えなくなる(`--debug` でも件数しか出ない)。同じループ内の不正な `prefix_type`
+/// は既に警告して continue しているため、設定値の不正はそちらに揃える。
+#[test]
+fn test_invalid_prefix_rule_url_pattern_warns_instead_of_silently_skipping() {
+    let dir = setup_git_repo_with_commit();
+    let path = setup_fake_opencode_path(&dir);
+
+    std::process::Command::new("git")
+        .args([
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/example/demo.git",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // 閉じ括弧が無いので Regex::new は Err になる
+    std::fs::write(
+        dir.path().join(".git-sc"),
+        "[[prefix_rules]]\nurl_pattern = \"github\\\\.com/(example\"\nprefix_type = \"bracket\"\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("change.txt"), "content\n").unwrap();
+
+    let assert = git_sc!()
+        .args(["--all", "--dry-run"])
+        .env("PATH", path)
+        .env("HOME", dir.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        stderr.contains("url_pattern") && stderr.contains("正規表現として不正"),
+        "不正な url_pattern が警告なしで無視されている: {stderr}"
+    );
+}
+
+/// `prefix_scripts` 側の `url_pattern` も同様に警告する。
+#[test]
+fn test_invalid_prefix_script_url_pattern_warns_instead_of_silently_skipping() {
+    let dir = setup_git_repo_with_commit();
+    let path = setup_fake_opencode_path(&dir);
+
+    std::process::Command::new("git")
+        .args([
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/example/demo.git",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    std::fs::write(
+        dir.path().join(".git-sc"),
+        "[[prefix_scripts]]\nurl_pattern = \"github\\\\.com/(example\"\nscript = \"./prefix.sh\"\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("change.txt"), "content\n").unwrap();
+
+    let assert = git_sc!()
+        .args(["--all", "--dry-run"])
+        .env("PATH", path)
+        .env("HOME", dir.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        stderr.contains("url_pattern") && stderr.contains("正規表現として不正"),
+        "不正な url_pattern が警告なしで無視されている: {stderr}"
+    );
+}
+
+// ============================================================
+// サブモジュール関連の diff 設定
+// ============================================================
+
+/// サブモジュールを 1 つ持つリポジトリを作る。
+///
+/// 戻り値は (親リポジトリ, サブモジュール本体) で、後者は TempDir を保持するためだけに
+/// 返している(drop されるとサブモジュールの参照先が消える)。
+/// サブモジュールのポインタは 1 つ前のコミットに戻した状態にしてあるので、
+/// `git add vendor/sub` で「ポインタ更新だけが staged」の状態を作れる。
+fn setup_repo_with_submodule() -> (TempDir, TempDir) {
+    let sub = TempDir::new().unwrap();
+    let sub_git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(sub.path())
+            .output()
+            .unwrap();
+    };
+    sub_git(&["init", "-q", "."]);
+    sub_git(&["config", "user.email", "test@example.com"]);
+    sub_git(&["config", "user.name", "Test User"]);
+    std::fs::write(sub.path().join("f.txt"), "v1\n").unwrap();
+    sub_git(&["add", "-A"]);
+    sub_git(&["commit", "-qm", "sub c1"]);
+    let first = String::from_utf8(
+        std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(sub.path())
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+    std::fs::write(sub.path().join("f.txt"), "v2\n").unwrap();
+    sub_git(&["commit", "-qam", "sub c2"]);
+
+    let main = setup_git_repo();
+    let main_git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(main.path())
+            .output()
+            .unwrap()
+    };
+    main_git(&[
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        &sub.path().to_string_lossy(),
+        "vendor/sub",
+    ]);
+    // サブモジュールを 1 つ前のコミットに戻して init コミットを作る
+    std::process::Command::new("git")
+        .args(["checkout", "-q", &first])
+        .current_dir(main.path().join("vendor/sub"))
+        .output()
+        .unwrap();
+    std::fs::write(main.path().join("a.txt"), "base\n").unwrap();
+    main_git(&["add", "-A"]);
+    main_git(&["commit", "-qm", "initial commit"]);
+
+    (main, sub)
+}
+
+/// `.gitmodules` の `ignore = all` があっても、staged 済みのサブモジュール
+/// ポインタ変更を見落とさない。
+///
+/// `.gitmodules` は**リポジトリにコミットされるファイル**なので、ローカル設定の
+/// ミスを必要とせず clone しただけで成立する。見落とすと (a) ポインタ更新だけを
+/// stage した通常コミットが「ステージ済みの変更がありません」で拒否され、
+/// (b) `--squash` のガードが素通りして AI が一度も見ていない変更が squash コミット
+/// へ混入する。これは AGENTS.md が `diff.relative` について記録した失敗と同一。
+#[test]
+fn test_staged_submodule_pointer_is_seen_despite_gitmodules_ignore_all() {
+    let (dir, _sub) = setup_repo_with_submodule();
+    let path = setup_fake_opencode_path(&dir);
+
+    // サブモジュールを最新へ進めてポインタ更新だけを stage する
+    let head = String::from_utf8(
+        std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(dir.path().join("vendor/sub"))
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    assert!(!head.trim().is_empty());
+    std::process::Command::new("git")
+        .args(["checkout", "-q", "-"])
+        .current_dir(dir.path().join("vendor/sub"))
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["add", "vendor/sub"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // clone 相手から持ち込まれる想定の設定
+    std::process::Command::new("git")
+        .args([
+            "config",
+            "-f",
+            ".gitmodules",
+            "submodule.vendor/sub.ignore",
+            "all",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    let assert = git_sc!()
+        .args(["--dry-run", "--debug"])
+        .env("PATH", path)
+        .env("HOME", dir.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&assert.get_output().stdout),
+        String::from_utf8_lossy(&assert.get_output().stderr)
+    );
+    assert!(
+        !combined.contains("ステージ済みの変更がありません"),
+        "ignore = all のせいで staged なサブモジュール変更が見落とされている: {combined}"
+    );
+    assert!(
+        combined.contains("vendor/sub"),
+        "diff にサブモジュールの変更が含まれていない: {combined}"
+    );
+}
+
+/// `diff.submodule = log` でもサブモジュールのブロックヘッダーが `diff --git` のまま
+/// 保たれ、`.git-sc-ignore` の除外が効く。
+///
+/// この設定はブロック開始行を `Submodule <path> <a>..<b>:` に変えるため、
+/// `is_diff_block_start` が認識できず除外が丸ごと no-op になる。
+#[test]
+fn test_ignore_patterns_apply_to_submodule_under_diff_submodule_log() {
+    let (dir, _sub) = setup_repo_with_submodule();
+    let path = setup_fake_opencode_path(&dir);
+
+    std::process::Command::new("git")
+        .args(["checkout", "-q", "-"])
+        .current_dir(dir.path().join("vendor/sub"))
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "diff.submodule", "log"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    std::fs::write(dir.path().join(".git-sc-ignore"), "vendor/sub\n").unwrap();
+    std::fs::write(dir.path().join("public.txt"), "visible\n").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "vendor/sub", "public.txt"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    let assert = git_sc!()
+        .args(["--dry-run", "--debug"])
+        .env("PATH", path)
+        .env("HOME", dir.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&assert.get_output().stdout),
+        String::from_utf8_lossy(&assert.get_output().stderr)
+    );
+    assert!(
+        !combined.contains("vendor/sub"),
+        "diff.submodule = log で除外対象のサブモジュールがプロンプトへ送られている: {combined}"
+    );
+    assert!(
+        combined.contains("public.txt"),
+        "除外していないファイルまでプロンプトから消えている: {combined}"
+    );
+}

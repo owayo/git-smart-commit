@@ -1173,4 +1173,108 @@ failed_at = 1700000002
             }
         }
     }
+
+    /// 新旧両形式に同じ cooldown_key のエントリがある場合、`failed_at` が新しい方を採用する。
+    ///
+    /// 旧形式の方が新しいケース: 既存の新形式エントリの `failed_at` が上書きされる。
+    /// エントリが重複して 2 件になってはいけない(同じステップのクールダウンが
+    /// 二重計上されると、期限切れ判定が古い方に引きずられる)。
+    #[test]
+    fn test_load_prefers_newer_failed_at_when_legacy_entry_is_newer() {
+        let _lock = crate::test_support::lock_env();
+
+        let temp = tempfile::tempdir().unwrap();
+        let original_home = std::env::var_os("HOME");
+        unsafe {
+            std::env::set_var("HOME", temp.path());
+        }
+
+        // cooldown_key には US(0x1F) 区切りが入るため、TOML は手書きせず
+        // State をシリアライズして旧形式のテーブルを継ぎ足す。
+        let existing = State {
+            failures: vec![ProviderFailure {
+                key: ProviderStep::from_provider("codex").cooldown_key(),
+                provider: Some("codex".to_string()),
+                failed_at: 1700000000,
+            }],
+        };
+        let content = format!(
+            "{}\n[provider_failures.codex]\nfailed_at = 1700009999\n",
+            toml::to_string_pretty(&existing).unwrap()
+        );
+
+        let path = State::state_path().unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, content).unwrap();
+
+        let state = State::load().unwrap();
+
+        assert_eq!(
+            state.failures.len(),
+            1,
+            "同一キーが新旧両形式にあるのにエントリが重複している: {:?}",
+            state.failures
+        );
+        assert_eq!(
+            state.failures[0].failed_at, 1700009999,
+            "旧形式の方が新しいのに failed_at が更新されていない"
+        );
+
+        unsafe {
+            match original_home {
+                Some(prev) => std::env::set_var("HOME", prev),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+    }
+
+    /// 新旧両形式に同じ cooldown_key があり、旧形式の方が古い場合は新形式の値を維持する。
+    #[test]
+    fn test_load_keeps_newer_failed_at_when_legacy_entry_is_older() {
+        let _lock = crate::test_support::lock_env();
+
+        let temp = tempfile::tempdir().unwrap();
+        let original_home = std::env::var_os("HOME");
+        unsafe {
+            std::env::set_var("HOME", temp.path());
+        }
+
+        // 旧 `gemini` キーは `antigravity` の cooldown_key に合流するため、
+        // エイリアス経由でも同一キーの衝突が起きることを併せて確認する。
+        let existing = State {
+            failures: vec![ProviderFailure {
+                key: ProviderStep::from_provider("antigravity").cooldown_key(),
+                provider: Some("antigravity".to_string()),
+                failed_at: 1700009999,
+            }],
+        };
+        let content = format!(
+            "{}\n[provider_failures.gemini]\nfailed_at = 1700000000\n",
+            toml::to_string_pretty(&existing).unwrap()
+        );
+
+        let path = State::state_path().unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, content).unwrap();
+
+        let state = State::load().unwrap();
+
+        assert_eq!(
+            state.failures.len(),
+            1,
+            "エイリアス経由の旧キーが別エントリとして残っている: {:?}",
+            state.failures
+        );
+        assert_eq!(
+            state.failures[0].failed_at, 1700009999,
+            "旧形式の方が古いのに failed_at が巻き戻っている"
+        );
+
+        unsafe {
+            match original_home {
+                Some(prev) => std::env::set_var("HOME", prev),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+    }
 }

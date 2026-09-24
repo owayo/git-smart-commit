@@ -35,11 +35,25 @@ const MAX_DIFF_CHARS: usize = 10000;
 ///
 /// の 2 つが同時に起きる。`--no-relative` で常に Git ルート基準に固定する。
 ///
+/// サブモジュール関連の 2 つも同じ 2 系統に分かれる。
+///
+/// - `diff.ignoreSubmodules = all`(および `.gitmodules` の
+///   `submodule.<name>.ignore = all`)は `diff.relative` と同じ「変更が diff から
+///   丸ごと消える」側で、サブモジュールのポインタ変更(160000 エントリ)が見えなくなる。
+///   `.gitmodules` は**リポジトリにコミットされるファイル**なので、ローカル設定の
+///   ミスを必要とせず clone しただけで成立する。`--ignore-submodules=none` で固定する。
+/// - `diff.submodule = log` / `= diff` は「ヘッダー形状が変わる」側で、ブロック開始行が
+///   `Submodule <path> <a>..<b>:` になり `diff --git` で始まらなくなる
+///   (`is_diff_block_start` が認識できず、除外が丸ごと no-op になる)。
+///   `--submodule=short` で標準のポインタヘッダーに固定する。
+///
 /// 除外は fail-closed が設計要件なので、ユーザー設定に左右されないよう形式を固定する。
 const DIFF_FORMAT_ARGS: &[&str] = &[
     "--no-ext-diff",
     "--no-color",
     "--no-relative",
+    "--ignore-submodules=none",
+    "--submodule=short",
     "--src-prefix=a/",
     "--dst-prefix=b/",
 ];
@@ -532,8 +546,17 @@ impl GitService {
                     let escaped = *bytes.get(i)?;
 
                     match escaped {
+                        // Git の `quote.c` (sq_lookup) が文字エスケープとして使うのは
+                        // \a \b \t \n \v \f \r " \ の 9 種。取りこぼすと下の `other`
+                        // 分岐でリテラルの英字になり(`se\acret/` が `secret/` ではなく
+                        // `seacret/` に復元される)、`.git-sc-ignore` の照合が
+                        // 実在しないパスに対して行われて除外が外れる。
+                        b'a' => decoded.push(0x07),
+                        b'b' => decoded.push(0x08),
                         b'n' => decoded.push(b'\n'),
                         b't' => decoded.push(b'\t'),
+                        b'v' => decoded.push(0x0b),
+                        b'f' => decoded.push(0x0c),
                         b'r' => decoded.push(b'\r'),
                         b'\\' => decoded.push(b'\\'),
                         b'"' => decoded.push(b'"'),
@@ -820,8 +843,20 @@ impl GitService {
         // 「無し」と誤判定する。差分取得は `--no-relative` で全体を見ているため、
         // 「メッセージは生成できたのにコミットはスキップされる」「squash 前のガードが
         // 素通りして無関係な staged 変更が squash コミットへ混入する」という食い違いになる。
+        //
+        // `--ignore-submodules=none` も同じ理由で必要。`diff.ignoreSubmodules = all` や
+        // `.gitmodules` の `submodule.<name>.ignore = all` があると、staged 済みの
+        // サブモジュールポインタ変更が `--quiet` から見えず exit 0(= 変更なし)になる。
+        // `--submodule` は出力形式だけを変える設定なので、presence のみを見る
+        // `--quiet` には影響せず、ここでは不要。
         Command::new("git")
-            .args(["diff", "--cached", "--quiet", "--no-relative"])
+            .args([
+                "diff",
+                "--cached",
+                "--quiet",
+                "--no-relative",
+                "--ignore-submodules=none",
+            ])
             .current_dir(&self.repo_path)
             .output()
             .map(|o| !o.status.success())
@@ -1337,6 +1372,7 @@ impl Default for GitService {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
     use std::process::Command;
 
     // ============================================================
@@ -3162,6 +3198,32 @@ index 555..666 100644
         // 未知のエスケープ文字はそのまま通過する
         let result = GitService::decode_quoted_diff_path(r#"a/file\xname.txt""#);
         assert_eq!(result, Some("a/filexname.txt".to_string()));
+    }
+
+    /// Git の `quote.c` が使う文字エスケープ 9 種すべてを復号する。
+    ///
+    /// `\a` `\b` `\v` `\f` を取りこぼすと未知エスケープ扱いでリテラルの英字になり
+    /// (`se\acret/` → `seacret/`)、`.git-sc-ignore` の照合が実在しないパスに対して
+    /// 行われて除外が無言で外れる。git 2.55 で実際にこの形が出力されることを確認済み。
+    #[rstest]
+    #[case(r#"a/bel\ax.txt""#, "a/bel\u{07}x.txt")]
+    #[case(r#"a/bs\bx.txt""#, "a/bs\u{08}x.txt")]
+    #[case(r#"a/tab\tx.txt""#, "a/tab\tx.txt")]
+    #[case(r#"a/nl\nx.txt""#, "a/nl\nx.txt")]
+    #[case(r#"a/vt\vx.txt""#, "a/vt\u{0b}x.txt")]
+    #[case(r#"a/ff\fx.txt""#, "a/ff\u{0c}x.txt")]
+    #[case(r#"a/cr\rx.txt""#, "a/cr\rx.txt")]
+    #[case(r#"a/dq\"x.txt""#, "a/dq\"x.txt")]
+    #[case(r#"a/bsl\\x.txt""#, "a/bsl\\x.txt")]
+    fn test_decode_quoted_path_decodes_all_git_char_escapes(
+        #[case] input: &str,
+        #[case] expected: &str,
+    ) {
+        assert_eq!(
+            GitService::decode_quoted_diff_path(input),
+            Some(expected.to_string()),
+            "Git の文字エスケープ {input} が正しく復号されていない"
+        );
     }
 
     #[test]

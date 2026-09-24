@@ -14,7 +14,7 @@ use colored::Colorize;
 use crate::error::AppError;
 
 use super::prompt::CleanedResponse;
-use super::service::{AiProvider, AiService};
+use super::service::{AiProvider, AiService, CapturedOutput};
 
 /// 一時ファイルの RAII ガード。Drop 時に自動でクリーンアップする。
 ///
@@ -109,12 +109,17 @@ impl AiService {
 
     /// stdout/stderr をスレッドで読み取り、タイムアウト付きでプロセス完了を待機する。
     /// 返り値: (ExitStatus, stdout, stderr)
+    ///
+    /// `captured` を渡すと、エラーで抜ける経路でもそこまでに読めた出力を書き込む。
+    /// `CapturedOutput` が戻り値ではなく出力引数である理由そのもの(タイムアウトした
+    /// 呼び出しの生出力は、生成ログで最も見たいデータ)なので、`Err` を返す前に必ず埋める。
     pub(super) fn run_process_with_timeout(
         &self,
         child: &mut Child,
         provider: &AiProvider,
         uses_stdin: bool,
         prompt: &str,
+        captured: Option<&mut CapturedOutput>,
     ) -> Result<(ExitStatus, String, String), AppError> {
         let is_debug = self.debug;
         let silent = self.debug_to_stderr;
@@ -250,6 +255,15 @@ impl AiService {
         };
         let (stdout_str, stdout_read_error) = stdout_thread.join().unwrap_or_default();
         let stderr_str = stderr_thread.join().unwrap_or_default();
+
+        // 以降にはタイムアウト・stdin 書き込み失敗・stdout 読み取り失敗の 3 つの
+        // エラー経路がある。ここまでに読めた出力は手元にあるので、`Err` で抜ける前に
+        // 生成ログ用のバッファへ写す(呼び出し側は `?` で即座に伝播するため、
+        // ここで埋めないとタイムアウトした試行の生出力が丸ごと失われる)。
+        if let Some(captured) = captured {
+            captured.stdout = stdout_str.clone();
+            captured.stderr = stderr_str.clone();
+        }
 
         let exit_status = wait_result?;
 

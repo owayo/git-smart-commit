@@ -464,6 +464,13 @@ impl AiService {
         let provider_name = canonical_provider_key(provider.config_key());
         self.steps = vec![ProviderStep::from_provider(provider_name)];
         self.provider_override = true;
+        // ai-usage の判定は「設定に書かれたチェーンの各ステップ」に対して下したもの。
+        // 明示指定はそのチェーンを丸ごと差し替えるため、ここで指定されたステップは
+        // 一度も評価されていない。フラグを残すと `verify_installation` が
+        // 「全 provider が閾値超過」として弾き、`-p` で回避する手段が無くなる。
+        // gate は「このチェーンを呼ぶ価値があるか」の判断であって、ユーザーの明示指定を
+        // 覆すためのものではない(cooldown を `provider_override` で無視するのと同じ理由)。
+        self.ai_usage_gate_blocked = false;
     }
 
     /// この失敗でステップをクールダウンさせるべきか
@@ -723,6 +730,24 @@ impl AiService {
         )
     }
 
+    /// diff に含まれる変更ファイル数(= diff ブロック数)を数える
+    ///
+    /// マージコミットの diff は combined diff になり、ブロック開始行は
+    /// `diff --cc <path>` / `diff --combined <path>` で `diff --git` を 1 行も含まない。
+    /// `diff --git` だけを数えると、マージコミットでは必ず 0 になり
+    /// `diff_bytes` が正の値であることと矛盾した記録が残る。
+    /// 行頭一致にしているのは、diff 本文中に現れる `+diff --git ...`
+    /// (パッチファイル自体の変更など)を数えないため。
+    fn count_diff_blocks(diff: &str) -> usize {
+        diff.lines()
+            .filter(|line| {
+                line.starts_with("diff --git ")
+                    || line.starts_with("diff --cc ")
+                    || line.starts_with("diff --combined ")
+            })
+            .count()
+    }
+
     /// 内部実装: コミットメッセージ生成
     /// 返り値: (メッセージ, プロバイダー名)
     fn generate_commit_message_internal(
@@ -751,7 +776,7 @@ impl AiService {
                 Input {
                     diff_bytes: diff.len(),
                     diff_lines: diff.lines().count(),
-                    files_changed: diff.matches("diff --git ").count(),
+                    files_changed: Self::count_diff_blocks(diff),
                     diff_digest: crate::devlog::digest(diff),
                     language: self.language.clone(),
                     prefix_mode: prefix_type.unwrap_or("auto").to_string(),
@@ -1103,8 +1128,14 @@ impl AiService {
         // stdin 書き込みと stdout/stderr 読み取りを並行させることで、
         // 大きいプロンプト使用時のパイプ双方向デッドロックを防ぐ
         // (詳細は run_process_with_timeout のコメントを参照)。
-        let (exit_status, stdout_str, stderr_str) =
-            self.run_process_with_timeout(&mut child, provider, uses_stdin, prompt)?;
+        let (exit_status, stdout_str, stderr_str) = self.run_process_with_timeout(
+            &mut child,
+            provider,
+            uses_stdin,
+            prompt,
+            // ログ無効時は複製しない
+            self.dev_log.is_some().then_some(&mut *captured),
+        )?;
 
         let stdout_str = if let Some(output_file) = &codex_output_file {
             fs::read_to_string(output_file.path()).map_err(|e| {
@@ -3482,7 +3513,7 @@ mod tests {
         service.timeout_seconds = 5;
 
         let (status, stdout, stderr) = service
-            .run_process_with_timeout(&mut child, &AiProvider::Codex, false, "")
+            .run_process_with_timeout(&mut child, &AiProvider::Codex, false, "", None)
             .unwrap();
 
         assert!(status.success());
@@ -3503,7 +3534,8 @@ mod tests {
         let mut service = AiService::new();
         service.timeout_seconds = 0;
 
-        let result = service.run_process_with_timeout(&mut child, &AiProvider::Codex, false, "");
+        let result =
+            service.run_process_with_timeout(&mut child, &AiProvider::Codex, false, "", None);
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("timed out"));
@@ -3535,7 +3567,7 @@ mod tests {
         let large_prompt = "x".repeat(1_000_000);
 
         let (status, stdout, _stderr) = service
-            .run_process_with_timeout(&mut child, &AiProvider::Codex, true, &large_prompt)
+            .run_process_with_timeout(&mut child, &AiProvider::Codex, true, &large_prompt, None)
             .unwrap();
 
         // デッドロックせず子は正常終了し、stdout も全量読み取れている
@@ -3565,8 +3597,13 @@ mod tests {
         // メインの try_wait ループがタイムアウトを検出して kill するためデッドロックしない。
         let large_prompt = "x".repeat(1_000_000);
 
-        let result =
-            service.run_process_with_timeout(&mut child, &AiProvider::Codex, true, &large_prompt);
+        let result = service.run_process_with_timeout(
+            &mut child,
+            &AiProvider::Codex,
+            true,
+            &large_prompt,
+            None,
+        );
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("timed out"));
@@ -3595,8 +3632,13 @@ mod tests {
         // パイプバッファを超える大きさ。子が読まずに終了するため write_all は BrokenPipe になる。
         let large_prompt = "x".repeat(1_000_000);
 
-        let result =
-            service.run_process_with_timeout(&mut child, &AiProvider::Codex, true, &large_prompt);
+        let result = service.run_process_with_timeout(
+            &mut child,
+            &AiProvider::Codex,
+            true,
+            &large_prompt,
+            None,
+        );
 
         assert!(result.is_err());
         assert!(
@@ -3605,6 +3647,151 @@ mod tests {
                 .to_string()
                 .contains("Failed to write prompt"),
             "stdin 書き込み失敗かつ exit 0 のときは provider エラーになるべき"
+        );
+    }
+
+    /// タイムアウトで Err を返す経路でも、そこまでに読めた出力を `CapturedOutput` に残す。
+    ///
+    /// `CapturedOutput` が戻り値ではなく出力引数である理由そのもの。生成ログで最も
+    /// 見たいのは「応答が返らなかった試行が何を出していたか」なので、`?` で伝播する
+    /// 前に埋めておかないとそのデータが丸ごと失われる。
+    #[cfg(unix)]
+    #[test]
+    fn test_run_process_with_timeout_fills_captured_output_on_timeout() {
+        // 子: 先に 1 行出力してから、タイムアウトより長く生き続ける
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("printf 'partial answer\\n'; printf 'warming up\\n' >&2; sleep 30")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut service = AiService::new();
+        service.timeout_seconds = 1;
+
+        let mut captured = CapturedOutput::default();
+        let result = service.run_process_with_timeout(
+            &mut child,
+            &AiProvider::Codex,
+            false,
+            "",
+            Some(&mut captured),
+        );
+
+        assert!(result.is_err(), "タイムアウトで Err になるはず");
+        assert!(result.unwrap_err().to_string().contains("timed out"));
+        assert_eq!(
+            captured.stdout, "partial answer\n",
+            "タイムアウト経路で stdout が記録されていない"
+        );
+        assert_eq!(
+            captured.stderr, "warming up\n",
+            "タイムアウト経路で stderr が記録されていない"
+        );
+    }
+
+    /// stdin 書き込み失敗で Err を返す経路でも、読めた出力を `CapturedOutput` に残す。
+    #[cfg(unix)]
+    #[test]
+    fn test_run_process_with_timeout_fills_captured_output_on_stdin_failure() {
+        // 子: stdin を読まず、1 行出力して exit 0 → write_all は BrokenPipe になる
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("printf 'partial answer\\n'; exit 0")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut service = AiService::new();
+        service.timeout_seconds = 5;
+
+        let large_prompt = "x".repeat(1_000_000);
+        let mut captured = CapturedOutput::default();
+        let result = service.run_process_with_timeout(
+            &mut child,
+            &AiProvider::Codex,
+            true,
+            &large_prompt,
+            Some(&mut captured),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            captured.stdout, "partial answer\n",
+            "stdin 書き込み失敗の経路で stdout が記録されていない"
+        );
+    }
+
+    /// `files_changed` はマージコミットの combined diff (`diff --cc` / `diff --combined`)
+    /// も数える。`diff --git` だけを数えると、マージコミットで必ず 0 になり
+    /// `diff_bytes` が正であることと矛盾した生成ログが残る。
+    #[test]
+    fn test_count_diff_blocks_counts_combined_diff_headers() {
+        let combined = "diff --cc secrets/key.txt\n\
+             index 1111111,2222222..3333333\n\
+             --- a/secrets/key.txt\n\
+             +++ b/secrets/key.txt\n\
+             @@@ -1,1 -1,1 +1,1 @@@\n\
+             +RESOLVED\n\
+             diff --combined public.txt\n\
+             @@@ -1,1 -1,1 +1,1 @@@\n\
+             +RESOLVED\n";
+        assert_eq!(AiService::count_diff_blocks(combined), 2);
+
+        let normal = "diff --git a/a.txt b/a.txt\n\
+             @@ -1 +1 @@\n\
+             -a\n\
+             +b\n\
+             diff --git a/b.txt b/b.txt\n\
+             @@ -1 +1 @@\n\
+             -a\n\
+             +b\n";
+        assert_eq!(AiService::count_diff_blocks(normal), 2);
+    }
+
+    /// diff 本文に現れる `diff --git` 行(パッチファイル自体の変更など)は数えない。
+    /// 部分文字列一致だと二重計上になる。
+    #[test]
+    fn test_count_diff_blocks_ignores_diff_headers_inside_diff_body() {
+        let diff = "diff --git a/sample.patch b/sample.patch\n\
+             @@ -1,2 +1,2 @@\n\
+             -diff --git a/old.txt b/old.txt\n\
+             +diff --git a/new.txt b/new.txt\n";
+        assert_eq!(
+            AiService::count_diff_blocks(diff),
+            1,
+            "diff 本文中の diff --git 行まで変更ファイルとして数えている"
+        );
+    }
+
+    /// 空の diff は 0 件。
+    #[test]
+    fn test_count_diff_blocks_on_empty_diff() {
+        assert_eq!(AiService::count_diff_blocks(""), 0);
+    }
+
+    /// `-p` によるプロバイダー明示指定は ai-usage ゲートの判定を引き継がない。
+    ///
+    /// ゲートは「設定に書かれたチェーンの各ステップ」に対する判定であり、
+    /// 明示指定はそのチェーンを丸ごと差し替えるため、指定されたステップは未評価。
+    /// フラグが残ると `verify_installation` が「全 provider が閾値超過」で弾き、
+    /// `-p` で回避する手段が無くなる。
+    #[test]
+    fn test_set_provider_override_clears_ai_usage_gate_blocked() {
+        let mut service = AiService::new();
+        service.ai_usage_gate_blocked = true;
+
+        service.set_provider_override(AiProvider::Claude);
+
+        assert!(
+            !service.ai_usage_gate_blocked,
+            "明示指定後も ai-usage ゲートの判定が残っている"
+        );
+        let err = service.verify_installation().err();
+        assert!(
+            !matches!(err, Some(AppError::AiUsageError(_))),
+            "-p 指定なのに ai-usage の閾値超過エラーで弾かれている: {err:?}"
         );
     }
 

@@ -334,9 +334,25 @@ impl App {
         silent: bool,
     ) -> Option<PrefixMode> {
         for script_config in &self.prefix_scripts {
-            if let Ok(re) = Regex::new(&script_config.url_pattern)
-                && re.is_match(remote_url)
-            {
+            let re = match Regex::new(&script_config.url_pattern) {
+                Ok(re) => re,
+                Err(e) => {
+                    // 正規表現として不正なパターンを黙って捨てると、prefix が付かない
+                    // 理由がユーザーからまったく見えなくなる(--debug でも件数しか出ない)。
+                    // 同じループ内の不正な prefix_type は警告して continue しており、
+                    // 設定値の不正はこちらに揃える。
+                    eprintln!(
+                        "{}",
+                        format!(
+                            "警告: prefix_script の url_pattern '{}' は正規表現として不正です: {}",
+                            script_config.url_pattern, e
+                        )
+                        .yellow()
+                    );
+                    continue;
+                }
+            };
+            if re.is_match(remote_url) {
                 if !silent {
                     println!(
                         "{}",
@@ -409,9 +425,21 @@ impl App {
     /// マッチが無ければ None を返し、呼び出し側は手順3へ進む。
     fn try_prefix_rules(&self, remote_url: &str, silent: bool) -> Option<PrefixMode> {
         for rule_config in &self.prefix_rules {
-            if let Ok(re) = Regex::new(&rule_config.url_pattern)
-                && re.is_match(remote_url)
-            {
+            let re = match Regex::new(&rule_config.url_pattern) {
+                Ok(re) => re,
+                Err(e) => {
+                    eprintln!(
+                        "{}",
+                        format!(
+                            "警告: prefix_rule の url_pattern '{}' は正規表現として不正です: {}",
+                            rule_config.url_pattern, e
+                        )
+                        .yellow()
+                    );
+                    continue;
+                }
+            };
+            if re.is_match(remote_url) {
                 if !is_valid_prefix_type(&rule_config.prefix_type) {
                     eprintln!(
                         "{}",

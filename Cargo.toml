@@ -17,8 +17,8 @@ regex = "1.13.1"
 colored = "3.1.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-toml = "1.1.4"
-dirs = "6.0.0"
+toml = "1.1.5"
+dirs = "7.0.0"
 ignore = "0.4.33"
 shellexpand = "3.1.2"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
@@ -27,7 +27,7 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock", "s
 fm-rs = { version = "=0.3.0", optional = true }
 
 [dev-dependencies]
-rstest = "0.26.1"
+rstest = "0.27.0"
 pretty_assertions = "1.4.1"
 tempfile = "3.27.0"
 assert_cmd = "2.2.2"
