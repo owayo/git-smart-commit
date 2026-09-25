@@ -1164,7 +1164,9 @@ impl Default for AiService {
 
 #[cfg(test)]
 mod tests {
-    use std::process::{Command, ExitStatus, Stdio};
+    #[cfg(unix)]
+    use std::process::Stdio;
+    use std::process::{Command, ExitStatus};
 
     use super::*;
     use crate::ai_usage::{AiUsageAccount, AiUsageSnapshot, UsageWindowData};
@@ -4362,7 +4364,10 @@ mod tests {
     #[test]
     fn test_process_provider_output_gemini_stderr_whitespace_only() {
         // Geminiでstderrが空白のみの場合、エラー扱いにならない
+        #[cfg(unix)]
         use std::os::unix::process::ExitStatusExt;
+        #[cfg(windows)]
+        use std::os::windows::process::ExitStatusExt;
         let status = ExitStatus::from_raw(0);
         let result = AiService::process_provider_output(
             &AiProvider::Antigravity,
@@ -4377,7 +4382,10 @@ mod tests {
     #[test]
     fn test_process_provider_output_gemini_stderr_with_error_keyword() {
         // Gemini（Codex/Claude以外）でstderrに "error:" が含まれる場合はエラー
+        #[cfg(unix)]
         use std::os::unix::process::ExitStatusExt;
+        #[cfg(windows)]
+        use std::os::windows::process::ExitStatusExt;
         let status = ExitStatus::from_raw(0);
         let result = AiService::process_provider_output(
             &AiProvider::Antigravity,
@@ -4391,7 +4399,10 @@ mod tests {
     #[test]
     fn test_process_provider_output_codex_stderr_with_error_ignored() {
         // Codexではstderrのerror検出をスキップ（誤検出防止）
+        #[cfg(unix)]
         use std::os::unix::process::ExitStatusExt;
+        #[cfg(windows)]
+        use std::os::windows::process::ExitStatusExt;
         let status = ExitStatus::from_raw(0);
         let result = AiService::process_provider_output(
             &AiProvider::Codex,
@@ -4405,7 +4416,10 @@ mod tests {
     #[test]
     fn test_process_provider_output_stdout_becomes_empty_after_clean() {
         // clean_message後に空になるケース
+        #[cfg(unix)]
         use std::os::unix::process::ExitStatusExt;
+        #[cfg(windows)]
+        use std::os::windows::process::ExitStatusExt;
         let status = ExitStatus::from_raw(0);
         let result =
             AiService::process_provider_output(&AiProvider::Antigravity, status, "  \"\"  \n", "");
