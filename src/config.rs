@@ -3188,7 +3188,11 @@ providers = [
         env.insert("CODEX_HOME".to_string(), "~/.codex".to_string());
         let out = expand_step_env(&env, "test").unwrap();
         let v = out.get("CODEX_HOME").unwrap();
-        assert!(v.starts_with('/'), "~ は絶対パスに展開されるべき: {v}");
+        // Windows の絶対パスは `C:\` で始まるので、先頭の `/` ではなく Path で判定する
+        assert!(
+            std::path::Path::new(v).is_absolute(),
+            "~ は絶対パスに展開されるべき: {v}"
+        );
         assert!(!v.contains('~'));
     }
 
@@ -3208,7 +3212,7 @@ providers = [
 
         let command = &config.ai_usage.as_ref().unwrap().command;
         assert!(
-            command[0].starts_with('/') && !command[0].contains('~'),
+            std::path::Path::new(&command[0]).is_absolute() && !command[0].contains('~'),
             "~ は絶対パスに展開されるべき: {}",
             command[0]
         );

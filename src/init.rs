@@ -123,6 +123,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "Windows の dirs::home_dir() は HOME を見ないため、本物の設定ファイルを上書きしてしまう"
+    )]
     fn test_execute_force_creates_config_file_with_current_defaults() {
         let _lock = crate::test_support::lock_env();
         let temp_home = tempfile::tempdir().unwrap();

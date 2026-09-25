@@ -2651,7 +2651,11 @@ mod tests {
         assert!(debug.contains("\"--max-turns\""));
         assert!(debug.contains("\"--verbatim\""));
         assert!(debug.contains("\"--prompt-file\""));
-        assert!(debug.contains(&prompt_file.path().to_string_lossy().to_string()));
+        // Debug 表記は Windows でパスの `\` を `\\` にエスケープするので、引数そのものと比べる
+        assert!(
+            cmd.get_args()
+                .any(|arg| arg == prompt_file.path().as_os_str())
+        );
     }
 
     /// Grok: モデル指定があれば `-m <model>` を付与すること
@@ -2718,7 +2722,11 @@ mod tests {
 
         assert!(uses_stdin);
         assert!(debug.contains("\"-o\""));
-        assert!(debug.contains(&output_file.path().to_string_lossy().to_string()));
+        // Debug 表記は Windows でパスの `\` を `\\` にエスケープするので、引数そのものと比べる
+        assert!(
+            cmd.get_args()
+                .any(|arg| arg == output_file.path().as_os_str())
+        );
     }
 
     /// Windows では全プロバイダーを `cmd /C` 経由で起動するが、cmd.exe は Rust 標準の

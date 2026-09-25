@@ -4,6 +4,10 @@ use predicates::prelude::*;
 use std::os::unix::fs::PermissionsExt;
 use tempfile::TempDir;
 
+// Windows の `dirs::home_dir()` は HOME ではなくユーザーのプロファイル (Known Folder) を返す。
+// `.env("HOME", …)` で設定と状態 (`~/.config/git-sc`) を一時ディレクトリへ逃がすテストは、
+// Windows では本物の設定と状態を読み書きしてしまうので `cfg_attr(windows, ignore)` で外している。
+
 /// テスト用ヘルパー: git-sc コマンドを取得
 macro_rules! git_sc {
     () => {
@@ -613,6 +617,10 @@ fn test_reword_multibyte_hash_does_not_panic() {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows の dirs::home_dir() は HOME を見ないため、設定と状態をテスト用に分けられない"
+)]
 fn test_quiet_reword_hash_outside_head_history_fails() {
     let dir = setup_git_repo_with_commit();
     let path = setup_fake_opencode_path(&dir);
@@ -670,6 +678,10 @@ fn test_quiet_reword_merge_commit_target_fails() {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows の dirs::home_dir() は HOME を見ないため、設定と状態をテスト用に分けられない"
+)]
 fn test_quiet_dry_run_with_ai_generation_suppresses_provider_output() {
     let dir = setup_git_repo_with_commit();
     let path = setup_fake_opencode_path(&dir);
@@ -712,6 +724,10 @@ fn setup_repo_with_ignored_secret(dir: &TempDir) {
 /// ファイルがそのまま AI へ送られる。`.git-sc-ignore` は fail-closed が設計要件なので、
 /// ユーザーの Git 設定に左右されてはいけない。
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows の dirs::home_dir() は HOME を見ないため、設定と状態をテスト用に分けられない"
+)]
 fn test_ignore_patterns_apply_regardless_of_diff_format_config() {
     let external_diff = std::env::temp_dir().join("git-sc-test-external-diff.sh");
     std::fs::write(&external_diff, "#!/bin/sh\necho 'EXTERNAL DIFF'\n").unwrap();
@@ -772,6 +788,10 @@ fn test_ignore_patterns_apply_regardless_of_diff_format_config() {
 /// さらに cwd の外にある変更は diff から丸ごと消えて、コミットされる内容の一部しか
 /// 見ないままメッセージが書かれる。
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows の dirs::home_dir() は HOME を見ないため、設定と状態をテスト用に分けられない"
+)]
 fn test_ignore_and_full_diff_survive_diff_relative_from_subdirectory() {
     let dir = setup_git_repo_with_commit();
     let path = setup_fake_opencode_path(&dir);
@@ -810,6 +830,10 @@ fn test_ignore_and_full_diff_survive_diff_relative_from_subdirectory() {
 /// `--quiet` の役目ではない。両者を混同すると、同じ実行の中で
 /// 「AI Prompt は stdout、AI Provider Command は stderr」という食い違いが起きる。
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows の dirs::home_dir() は HOME を見ないため、設定と状態をテスト用に分けられない"
+)]
 fn test_quiet_with_debug_keeps_debug_output_on_stdout() {
     let dir = setup_git_repo_with_commit();
     let path = setup_fake_opencode_path(&dir);
@@ -859,6 +883,10 @@ fn test_codex_provider_uses_output_file_not_transcript_stdout() {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows の dirs::home_dir() は HOME を見ないため、設定と状態をテスト用に分けられない"
+)]
 fn test_empty_repo_with_localized_git_stderr_still_generates_message() {
     let dir = setup_git_repo();
     let path = setup_fake_opencode_and_localized_git_path(&dir);
@@ -883,6 +911,10 @@ fn test_empty_repo_with_localized_git_stderr_still_generates_message() {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows の dirs::home_dir() は HOME を見ないため、設定と状態をテスト用に分けられない"
+)]
 fn test_quiet_amend_dry_run_with_ai_generation_suppresses_provider_output() {
     let dir = setup_git_repo_with_commit();
     let path = setup_fake_opencode_path(&dir);
@@ -901,6 +933,10 @@ fn test_quiet_amend_dry_run_with_ai_generation_suppresses_provider_output() {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows の dirs::home_dir() は HOME を見ないため、設定と状態をテスト用に分けられない"
+)]
 fn test_amend_dry_run_with_single_commit_repo() {
     let dir = setup_git_repo_with_commit();
     let path = setup_fake_opencode_path(&dir);
@@ -917,6 +953,10 @@ fn test_amend_dry_run_with_single_commit_repo() {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows の dirs::home_dir() は HOME を見ないため、設定と状態をテスト用に分けられない"
+)]
 fn test_quiet_reword_dry_run_with_ai_generation_suppresses_provider_output() {
     let dir = setup_git_repo_with_commit();
     let path = setup_fake_opencode_path(&dir);
@@ -942,6 +982,10 @@ fn test_quiet_reword_dry_run_with_ai_generation_suppresses_provider_output() {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows の dirs::home_dir() は HOME を見ないため、設定と状態をテスト用に分けられない"
+)]
 fn test_quiet_squash_dry_run_with_ai_generation_suppresses_provider_output() {
     let dir = setup_git_repo_with_commit();
     let path = setup_fake_opencode_path(&dir);
@@ -1033,6 +1077,10 @@ fn test_squash_with_existing_staged_changes_fails_before_reset() {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows の dirs::home_dir() は HOME を見ないため、設定と状態をテスト用に分けられない"
+)]
 fn test_agent_context_is_included_in_amend_debug_prompt() {
     let dir = setup_git_repo_with_commit();
     let path = setup_fake_opencode_path(&dir);
@@ -1051,6 +1099,10 @@ fn test_agent_context_is_included_in_amend_debug_prompt() {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows の dirs::home_dir() は HOME を見ないため、設定と状態をテスト用に分けられない"
+)]
 fn test_agent_context_is_included_in_reword_debug_prompt() {
     let dir = setup_git_repo_with_commit();
     let path = setup_fake_opencode_path(&dir);
@@ -1069,6 +1121,10 @@ fn test_agent_context_is_included_in_reword_debug_prompt() {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows の dirs::home_dir() は HOME を見ないため、設定と状態をテスト用に分けられない"
+)]
 fn test_agent_context_is_included_in_squash_debug_prompt() {
     let dir = setup_git_repo_with_commit();
     let path = setup_fake_opencode_path(&dir);
@@ -1102,6 +1158,10 @@ fn test_agent_context_is_included_in_squash_debug_prompt() {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows の dirs::home_dir() は HOME を見ないため、設定と状態をテスト用に分けられない"
+)]
 fn test_agent_context_is_included_in_generate_for_debug_prompt() {
     let dir = setup_git_repo_with_commit();
     let path = setup_fake_opencode_path(&dir);
@@ -1120,6 +1180,10 @@ fn test_agent_context_is_included_in_generate_for_debug_prompt() {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows の dirs::home_dir() は HOME を見ないため、設定と状態をテスト用に分けられない"
+)]
 fn test_generate_for_combined_diff_is_truncated_to_max_chars() {
     // 回帰テスト: --generate-for は複数コミットの diff を結合する。
     // 各コミットの diff は個別に MAX_DIFF_CHARS(10000) 以下でも、結合後の総量は
@@ -1278,6 +1342,10 @@ script = "{}"
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows の dirs::home_dir() は HOME を見ないため、設定と状態をテスト用に分けられない"
+)]
 fn test_reword_succeeds_with_rebase_abbreviate_commands_true() {
     let dir = setup_git_repo_with_commit();
     let path = setup_fake_opencode_path(&dir);
@@ -1410,6 +1478,10 @@ fn test_squash_commit_failure_restores_original_head() {
 /// --debug を併用してもデバッグ出力(設定・コマンド・ストリーミング)は
 /// すべて stderr へ出力され、stdout がメッセージのみであることを確認する
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows の dirs::home_dir() は HOME を見ないため、設定と状態をテスト用に分けられない"
+)]
 fn test_generate_for_debug_keeps_stdout_message_only() {
     let dir = setup_git_repo_with_commit();
     let path = setup_fake_opencode_path(&dir);
@@ -1864,6 +1936,10 @@ fn test_ignore_patterns_apply_to_merge_commit_combined_diff() {
 /// ユニットテストからは踏めない(テストハーネスの stdin は端末に繋がったままになる)。
 /// 実バイナリに stdin を与える統合テストでのみ検証できる。
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows の dirs::home_dir() は HOME を見ないため、設定と状態をテスト用に分けられない"
+)]
 fn test_init_refuses_to_overwrite_when_answer_is_no() {
     let home = TempDir::new().unwrap();
     let config_path = home.path().join(".config/git-sc/config.toml");
@@ -1887,6 +1963,10 @@ fn test_init_refuses_to_overwrite_when_answer_is_no() {
 
 /// 上書き確認に「はい」と答えたら、既存の設定ファイルを既定値で作り直す。
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows の dirs::home_dir() は HOME を見ないため、設定と状態をテスト用に分けられない"
+)]
 fn test_init_overwrites_when_answer_is_yes() {
     let home = TempDir::new().unwrap();
     let config_path = home.path().join(".config/git-sc/config.toml");
@@ -1915,6 +1995,10 @@ fn test_init_overwrites_when_answer_is_yes() {
 /// stdin が EOF (パイプが閉じている) のときは、空行を「はい」と解釈せず拒否する。
 /// 確認プロンプトの既定は `[y/N]` なので、EOF は上書きしない側へ倒れる必要がある。
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows の dirs::home_dir() は HOME を見ないため、設定と状態をテスト用に分けられない"
+)]
 fn test_init_treats_stdin_eof_as_refusal() {
     let home = TempDir::new().unwrap();
     let config_path = home.path().join(".config/git-sc/config.toml");
@@ -1937,6 +2021,10 @@ fn test_init_treats_stdin_eof_as_refusal() {
 
 /// `--force` は確認を挟まずに上書きする。
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows の dirs::home_dir() は HOME を見ないため、設定と状態をテスト用に分けられない"
+)]
 fn test_init_force_overwrites_without_prompt() {
     let home = TempDir::new().unwrap();
     let config_path = home.path().join(".config/git-sc/config.toml");
@@ -1971,6 +2059,10 @@ fn test_init_force_overwrites_without_prompt() {
 /// 見えなくなる(`--debug` でも件数しか出ない)。同じループ内の不正な `prefix_type`
 /// は既に警告して continue しているため、設定値の不正はそちらに揃える。
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows の dirs::home_dir() は HOME を見ないため、設定と状態をテスト用に分けられない"
+)]
 fn test_invalid_prefix_rule_url_pattern_warns_instead_of_silently_skipping() {
     let dir = setup_git_repo_with_commit();
     let path = setup_fake_opencode_path(&dir);
@@ -2011,6 +2103,10 @@ fn test_invalid_prefix_rule_url_pattern_warns_instead_of_silently_skipping() {
 
 /// `prefix_scripts` 側の `url_pattern` も同様に警告する。
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows の dirs::home_dir() は HOME を見ないため、設定と状態をテスト用に分けられない"
+)]
 fn test_invalid_prefix_script_url_pattern_warns_instead_of_silently_skipping() {
     let dir = setup_git_repo_with_commit();
     let path = setup_fake_opencode_path(&dir);
@@ -2126,6 +2222,10 @@ fn setup_repo_with_submodule() -> (TempDir, TempDir) {
 /// (b) `--squash` のガードが素通りして AI が一度も見ていない変更が squash コミット
 /// へ混入する。これは AGENTS.md が `diff.relative` について記録した失敗と同一。
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows の dirs::home_dir() は HOME を見ないため、設定と状態をテスト用に分けられない"
+)]
 fn test_staged_submodule_pointer_is_seen_despite_gitmodules_ignore_all() {
     let (dir, _sub) = setup_repo_with_submodule();
     let path = setup_fake_opencode_path(&dir);
@@ -2194,6 +2294,10 @@ fn test_staged_submodule_pointer_is_seen_despite_gitmodules_ignore_all() {
 /// この設定はブロック開始行を `Submodule <path> <a>..<b>:` に変えるため、
 /// `is_diff_block_start` が認識できず除外が丸ごと no-op になる。
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows の dirs::home_dir() は HOME を見ないため、設定と状態をテスト用に分けられない"
+)]
 fn test_ignore_patterns_apply_to_submodule_under_diff_submodule_log() {
     let (dir, _sub) = setup_repo_with_submodule();
     let path = setup_fake_opencode_path(&dir);
