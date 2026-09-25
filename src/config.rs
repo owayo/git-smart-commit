@@ -2787,22 +2787,38 @@ max_total_mb = 1
         assert_eq!(config.models.opencode, default_opencode_model());
     }
 
+    /// 設定例を載せている文書。README には短い例、docs/configuration には全項目の例がある
+    const CONFIG_EXAMPLE_DOCS: [(&str, &str); 4] = [
+        ("README.md", include_str!("../README.md")),
+        ("README.ja.md", include_str!("../README.ja.md")),
+        (
+            "docs/configuration.md",
+            include_str!("../docs/configuration.md"),
+        ),
+        (
+            "docs/configuration.ja.md",
+            include_str!("../docs/configuration.ja.md"),
+        ),
+    ];
+
     #[test]
     fn test_readme_examples_use_current_codex_default_model() {
-        // README の設定例もコード上の既定モデルと同じ値を示す必要がある。
+        // README と docs/configuration の設定例もコード上の既定モデルと同じ値を示す必要がある。
         let expected = format!(r#"codex = "{}""#, default_codex_model());
 
-        assert!(include_str!("../README.md").contains(&expected));
-        assert!(include_str!("../README.ja.md").contains(&expected));
+        for (name, text) in CONFIG_EXAMPLE_DOCS {
+            assert!(text.contains(&expected), "{name} に {expected} が無い");
+        }
     }
 
     #[test]
     fn test_readme_examples_use_current_antigravity_default_model() {
-        // README の設定例も Antigravity の既定モデルと同期させる。
+        // README と docs/configuration の設定例も Antigravity の既定モデルと同期させる。
         let expected = format!(r#"antigravity = "{}""#, default_antigravity_model());
 
-        assert!(include_str!("../README.md").contains(&expected));
-        assert!(include_str!("../README.ja.md").contains(&expected));
+        for (name, text) in CONFIG_EXAMPLE_DOCS {
+            assert!(text.contains(&expected), "{name} に {expected} が無い");
+        }
     }
 
     #[test]
