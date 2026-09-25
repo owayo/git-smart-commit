@@ -2651,10 +2651,12 @@ mod tests {
         assert!(debug.contains("\"--max-turns\""));
         assert!(debug.contains("\"--verbatim\""));
         assert!(debug.contains("\"--prompt-file\""));
-        // Debug 表記は Windows でパスの `\` を `\\` にエスケープするので、引数そのものと比べる
+        // grok にはパスの `\` を `/` に正規化して渡す (provider_command.rs)。Debug 表記は
+        // Windows でパスの `\` をエスケープするので、正規化したパスと引数そのものを比べる
+        let expected = prompt_file.path().to_string_lossy().replace('\\', "/");
         assert!(
-            cmd.get_args()
-                .any(|arg| arg == prompt_file.path().as_os_str())
+            cmd.get_args().any(|arg| arg.to_string_lossy() == expected),
+            "--prompt-file に {expected} が渡っていない: {debug}"
         );
     }
 
