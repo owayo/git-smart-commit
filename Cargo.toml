@@ -3,9 +3,10 @@ name = "git-sc"
 version = "26.9.100"
 edition = "2024"
 rust-version = "1.98"
-authors = ["owayo <yoheiowa@gmail.com>"]
+authors = ["owayo"]
 description = "AI-powered smart commit message generator with multi-provider fallback"
 license = "MIT"
+repository = "https://github.com/owayo/git-smart-commit"
 
 [features]
 apple-ai = ["fm-rs"]
