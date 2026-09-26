@@ -205,8 +205,11 @@ impl App {
                 line.push_str(&format!("  command={:?}", command));
             }
             if !step.env.is_empty() {
-                // env はアカウント切替の要。debug で「どの step に何の env を渡すか」を可視化する。
-                line.push_str(&format!("  env={:?}", step.env));
+                // 値には API トークンが入りうるため、キーだけ表示する。
+                line.push_str(&format!(
+                    "  env=[{}] (values hidden)",
+                    step.env.keys().cloned().collect::<Vec<_>>().join(", ")
+                ));
             }
             if let Some(name) = &step.name {
                 line.push_str(&format!("  name={}", name));

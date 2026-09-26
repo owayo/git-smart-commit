@@ -127,7 +127,7 @@ providers = [
 | `env` | 任意。このステップの起動時に `Command::env()` で明示的に設定する環境変数。値の `~` は展開され、キーは POSIX の変数名でなければならない。動的ローダーやインタープリターの事前ロード系のキー（`LD_PRELOAD`、`DYLD_INSERT_LIBRARIES`、`NODE_OPTIONS`、`PYTHONPATH` など）は、プロジェクト側の `.git-sc` からのコード注入を防ぐため、大文字小文字を区別せずに設定エラーとして拒否する。 |
 | `name` | 任意。クールダウンキーとログ表示に使う識別子。省略時は `provider` + `model` + `env` + `command` の組み合わせから決まった規則で導出する。 |
 
-**アカウントの切り替え（推奨: `env`）。** Codex と Claude Code は、`CODEX_HOME` / `CLAUDE_CONFIG_DIR` を見て使うアカウントと認証情報を決めます。これらをステップごとに `env` で設定すると、クォータが別々のアカウントをまたいでフォールバックできます。git-sc は `Command::env()` で明示的に上書きするので、git-sc を起動したシェルで `CODEX_HOME` / `CLAUDE_CONFIG_DIR` が export されていても、起動される CLI はその影響を受けません。（`command` でラッパースクリプトを使う方法もありますが、`env` のほうが明示的で `--debug` にも表示されるため、こちらを推奨します。）
+**アカウントの切り替え（推奨: `env`）。** Codex と Claude Code は、`CODEX_HOME` / `CLAUDE_CONFIG_DIR` を見て使うアカウントと認証情報を決めます。これらをステップごとに `env` で設定すると、クォータが別々のアカウントをまたいでフォールバックできます。git-sc は `Command::env()` で明示的に上書きするので、git-sc を起動したシェルで `CODEX_HOME` / `CLAUDE_CONFIG_DIR` が export されていても、起動される CLI はその影響を受けません。`command` でラッパースクリプトを使う方法もありますが、`env` のほうが明示的で、`--debug` にはキーを表示します。認証情報を含みうる値は伏せます。AI プロンプトは全文を表示し、ステージした差分が含まれる場合があります。
 
 **独立したクールダウン。** クールダウンキーには `provider` + `model` + `env`（と `command`、または明示した `name`）が含まれるため、ステップごとに独立して優先度が下がります。`codex` のアカウント 1 がレート制限に達しても、`codex` のアカウント 2 や、別モデルの `antigravity` は引き続き使えます。
 

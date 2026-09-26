@@ -19,7 +19,7 @@ impl AiService {
     /// デバッグ用にコマンド文字列をフォーマット
     ///
     /// `model` は解決済みモデル(空なら省略)、`step` は env と command(実行バイナリ)の
-    /// 表示に使う。env は `KEY='val' ` の形でコマンドの前に表示する。
+    /// 表示に使う。env の値は資格情報を含みうるので伏せる。
     pub(super) fn format_command_for_debug(
         &self,
         provider: &AiProvider,
@@ -29,11 +29,11 @@ impl AiService {
         temp_file_path: Option<&std::path::Path>,
     ) -> String {
         let escaped_prompt = prompt.replace('\'', "'\\''");
-        // 明示上書きされる env を `KEY='val' ` の形でコマンド前に表示する。
+        // 明示上書きされる env はキーだけを示し、値を伏せる。
         let env_prefix = step
             .env
-            .iter()
-            .map(|(k, v)| format!("{k}='{}' ", v.replace('\'', "'\\''")))
+            .keys()
+            .map(|k| format!("{k}='<redacted>' "))
             .collect::<String>();
         // 実行バイナリ(command 指定があれば優先)と、その固定引数。
         let bin = step
@@ -386,19 +386,13 @@ impl AiService {
         );
         Self::emit_debug_line(silent, &"─".repeat(50).dimmed().to_string());
         Self::emit_debug_line(silent, &cmd_str.cyan().to_string());
-        // env 明示上書きと cooldown_key を表示する(どの step に何を渡したか = バグ調査の起点)。
+        // env の値と cooldown_key は資格情報を含みうるので表示しない。
         if !step.env.is_empty() {
             Self::emit_debug_line(silent, &"  env (explicit override):".dimmed().to_string());
-            for (key, value) in &step.env {
-                Self::emit_debug_line(silent, &format!("    {key}={value}"));
+            for key in step.env.keys() {
+                Self::emit_debug_line(silent, &format!("    {key}=<redacted>"));
             }
         }
-        Self::emit_debug_line(
-            silent,
-            &format!("  cooldown_key: {}", step.cooldown_key())
-                .dimmed()
-                .to_string(),
-        );
         // 一時ファイル使用時はファイル情報を表示
         if let Some(tf) = temp_file {
             match fs::metadata(tf.path()) {

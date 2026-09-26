@@ -17,6 +17,76 @@ macro_rules! git_sc {
 
 #[test]
 #[cfg_attr(windows, ignore)]
+fn test_debug_output_does_not_expose_provider_env_values() {
+    let dir = setup_git_repo_with_commit();
+    let path = setup_fake_opencode_path(&dir);
+    let secret = "git-sc-secret-sentinel-42";
+    std::fs::write(
+        dir.path().join(".git-sc"),
+        format!(
+            "providers = [{{ provider = \"opencode\", env = {{ TEST_API_TOKEN = \"{secret}\" }} }}]\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("README.md"), "# Updated\n").unwrap();
+    let staged = std::process::Command::new("git")
+        .args(["add", "README.md"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(staged.status.success());
+
+    let output = git_sc!()
+        .args(["--dry-run", "--debug"])
+        .env("PATH", path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let trace = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(trace.contains("TEST_API_TOKEN"), "{trace}");
+    assert!(!trace.contains(secret), "{trace}");
+}
+
+#[test]
+#[cfg(unix)]
+fn test_invalid_utf8_stderr_does_not_hide_provider_error() {
+    let dir = setup_git_repo_with_commit();
+    let path = setup_fake_opencode_path(&dir);
+    std::fs::write(
+        dir.path().join("fake-bin/opencode"),
+        "#!/bin/sh\nprintf '\\377\\nerror: provider failed\\n' >&2\nprintf 'fix: untrustworthy response\\n'\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join(".git-sc"), "providers = [\"opencode\"]\n").unwrap();
+    std::fs::write(dir.path().join("README.md"), "# Updated\n").unwrap();
+    let staged = std::process::Command::new("git")
+        .args(["add", "README.md"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(staged.status.success());
+
+    git_sc!()
+        .arg("--dry-run")
+        .env("PATH", path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("error: provider failed"));
+}
+
+#[test]
+#[cfg_attr(windows, ignore)]
 fn test_lockfile_contents_are_omitted_from_prompts_in_all_modes() {
     let dir = setup_git_repo_with_commit();
     let path = setup_fake_opencode_path(&dir);

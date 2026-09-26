@@ -199,20 +199,37 @@ impl AiService {
 
         // stderr 読み取りスレッド（デバッグ時はリアルタイム表示）
         let stderr_thread = std::thread::spawn(move || {
-            use colored::Colorize;
             use std::io::BufRead;
             let mut buf = String::new();
+            let mut read_error: Option<std::io::Error> = None;
             if let Some(pipe) = stderr_pipe {
-                let reader = std::io::BufReader::new(pipe);
-                for line in reader.lines().map_while(Result::ok) {
-                    if is_debug {
-                        eprintln!("  {}", line.red());
+                let mut reader = std::io::BufReader::new(pipe);
+                let mut line = Vec::new();
+                loop {
+                    line.clear();
+                    match reader.read_until(b'\n', &mut line) {
+                        Ok(0) => break,
+                        Ok(_) => {
+                            // 非 UTF-8 の診断行があっても、後続の error: 行まで読み進める。
+                            let decoded = String::from_utf8_lossy(&line);
+                            let without_newline = decoded.strip_suffix('\n').unwrap_or(&decoded);
+                            let text = without_newline
+                                .strip_suffix('\r')
+                                .unwrap_or(without_newline);
+                            if is_debug {
+                                eprintln!("  {}", text.red());
+                            }
+                            buf.push_str(text);
+                            buf.push('\n');
+                        }
+                        Err(e) => {
+                            read_error = Some(e);
+                            break;
+                        }
                     }
-                    buf.push_str(&line);
-                    buf.push('\n');
                 }
             }
-            buf
+            (buf, read_error)
         });
 
         // タイムアウト付きでプロセス完了を待機
@@ -254,9 +271,9 @@ impl AiService {
             None => Ok(()),
         };
         let (stdout_str, stdout_read_error) = stdout_thread.join().unwrap_or_default();
-        let stderr_str = stderr_thread.join().unwrap_or_default();
+        let (stderr_str, stderr_read_error) = stderr_thread.join().unwrap_or_default();
 
-        // 以降にはタイムアウト・stdin 書き込み失敗・stdout 読み取り失敗の 3 つの
+        // 以降にはタイムアウト・stdin 書き込み失敗・stdout/stderr 読み取り失敗の
         // エラー経路がある。ここまでに読めた出力は手元にあるので、`Err` で抜ける前に
         // 生成ログ用のバッファへ写す(呼び出し側は `?` で即座に伝播するため、
         // ここで埋めないとタイムアウトした試行の生出力が丸ごと失われる)。
@@ -294,6 +311,18 @@ impl AiService {
         {
             return Err(AppError::AiProviderError(format!(
                 "Failed to read {} stdout: {}",
+                provider.name(),
+                e
+            )));
+        }
+
+        // stderr の読み取りが途中で失敗した場合、後続のエラー行を見落とすため
+        // 応答を採用しない。非 UTF-8 バイト自体は上で置換して読み続ける。
+        if exit_status.success()
+            && let Some(e) = stderr_read_error
+        {
+            return Err(AppError::AiProviderError(format!(
+                "Failed to read {} stderr: {}",
                 provider.name(),
                 e
             )));
