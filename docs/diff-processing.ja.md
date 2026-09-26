@@ -23,7 +23,7 @@ flowchart LR
 
 - 空白のみの変更は除外
 - バイナリファイルは中身を送らず、`[Binary] modified: <パス>` のような 1 行の要約に置き換え
-- lock ファイルは本文を送らず、`[Lockfile] modified: Cargo.lock` のようにパスと変更種別（追加・変更・削除・rename）だけを送信
+- lock ファイルは本文を送らず、`[Lockfile] modified: Cargo.lock` のようにパスと変更種別（追加・変更・削除・rename・copy）だけを送信。rename・copy は変更前後のパスを残し、パスに含まれる改行などの制御文字はエスケープ
 - スペースや非 ASCII 文字を含むパスの、クォートされた diff ヘッダーも正しく解析
 - `.git-sc-ignore` パターンを適用
 - 10,000 文字で切り詰め

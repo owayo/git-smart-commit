@@ -739,15 +739,18 @@ impl AiService {
     /// 行頭一致にしているのは、diff 本文中に現れる `+diff --git ...`
     /// (パッチファイル自体の変更など)を数えないため。
     fn count_diff_blocks(diff: &str) -> usize {
-        diff.lines()
-            .filter(|line| {
-                line.starts_with("diff --git ")
-                    || line.starts_with("diff --cc ")
-                    || line.starts_with("diff --combined ")
-                    || line.starts_with("[Lockfile] ")
-                    || line.starts_with("[Binary] ")
-            })
-            .count()
+        Self::diff_file_entries(diff).count()
+    }
+
+    /// ログ集計と Apple の縮約で共用する、変更ファイルのヘッダー・要約行。
+    pub(super) fn diff_file_entries(diff: &str) -> impl Iterator<Item = &str> {
+        diff.lines().filter(|line| {
+            line.starts_with("diff --git ")
+                || line.starts_with("diff --cc ")
+                || line.starts_with("diff --combined ")
+                || line.starts_with("[Lockfile] ")
+                || line.starts_with("[Binary] ")
+        })
     }
 
     /// 内部実装: コミットメッセージ生成

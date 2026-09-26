@@ -197,21 +197,11 @@ impl AiService {
     ///
     /// 頭から切るだけにしないのは、コミットメッセージが最も必要とする情報が
     /// 「どのファイルが変わったか」だからで、本文を削ってもこの一覧は残す。
-    /// 判定は `diff --git` / `diff --cc` / `diff --combined` のブロック開始行で、
-    /// マージコミットの combined diff も拾える。
+    /// combined diff のヘッダーや lock・バイナリファイルの要約も一覧に含める。
     pub(super) fn compact_diff_for_apple(diff: &str, target_chars: usize) -> String {
-        const NOTICE: &str = "... (diff truncated to fit the on-device context window; the file list above is complete)";
+        const NOTICE: &str = "... (diff truncated to fit the on-device context window)";
 
-        let headers: Vec<&str> = diff
-            .lines()
-            .filter(|line| {
-                line.starts_with("diff --git ")
-                    || line.starts_with("diff --cc ")
-                    || line.starts_with("diff --combined ")
-                    || line.starts_with("[Lockfile] ")
-                    || line.starts_with("[Binary] ")
-            })
-            .collect();
+        let headers: Vec<&str> = Self::diff_file_entries(diff).collect();
 
         // ファイル一覧に割り当てるのは予算の半分まで。変更ファイルが数百ある
         // コミットで一覧が予算を食い尽くし、本文が消えるのを避ける
@@ -570,6 +560,7 @@ mod tests {
             compacted.contains("more changed files"),
             "一覧が打ち切られたことを示す注記がない:\n{compacted}"
         );
+        assert!(!compacted.contains("file list above is complete"));
         assert!(
             compacted.contains("@@ -1,3 +1,4 @@"),
             "一覧に食われて diff 本文が残っていない:\n{compacted}"

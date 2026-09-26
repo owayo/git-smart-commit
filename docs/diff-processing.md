@@ -23,7 +23,7 @@ flowchart LR
 
 - Whitespace-only changes excluded
 - Binary files replaced with a one-line summary (e.g. `[Binary] modified: <path>`) instead of their contents
-- Lockfile contents replaced with a path and change kind (added, modified, deleted, or renamed), e.g. `[Lockfile] modified: Cargo.lock`
+- Lockfile contents replaced with a path and change kind (added, modified, deleted, renamed, or copied), e.g. `[Lockfile] modified: Cargo.lock`. Renames and copies retain both paths; control characters such as newlines in paths are escaped.
 - Quoted diff headers with spaces or non-ASCII file paths are handled correctly
 - `.git-sc-ignore` patterns applied
 - Truncated at 10,000 characters

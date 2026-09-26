@@ -669,83 +669,111 @@ impl GitService {
             )
     }
 
-    /// バイナリ・lock ファイルの本文を省き、パスと変更種別のみを出力する。
-    fn summarize_diff(diff_text: &str) -> String {
-        if diff_text.is_empty() {
-            return String::new();
+    /// デコード済みパスを一行で表示する。制御文字で要約行が分裂するのを防ぐ。
+    fn summary_path(path: &str) -> String {
+        if path.chars().any(char::is_control) || path.contains(['"', '\\']) {
+            format!("{path:?}")
+        } else {
+            path.to_string()
+        }
+    }
+
+    /// rename/copy メタデータのパスには a/・b/ プレフィックスが付かない。
+    fn decode_diff_metadata_path(path: &str) -> Option<String> {
+        match path.strip_prefix('"') {
+            Some(quoted) => Self::decode_quoted_diff_path_with_rest(quoted).map(|(path, _)| path),
+            None => Some(path.to_string()),
+        }
+    }
+
+    /// 本文を省略するブロックだけ要約を返す。
+    fn summarize_diff_block(block: &[&str]) -> Option<String> {
+        let mut is_binary = false;
+        let mut change = "modified";
+        let mut path_from = None;
+        let mut path_to = None;
+        for line in block
+            .iter()
+            .skip(1)
+            .take_while(|line| !line.starts_with("@@"))
+        {
+            if line.starts_with("Binary files") {
+                is_binary = true;
+            } else if line.starts_with("new file mode") {
+                change = "added";
+            } else if line.starts_with("deleted file mode") {
+                change = "deleted";
+            } else if let Some(from) = line.strip_prefix("rename from ") {
+                change = "renamed";
+                path_from = Some(from);
+            } else if let Some(from) = line.strip_prefix("copy from ") {
+                change = "copied";
+                path_from = Some(from);
+            } else if let Some(to) = line
+                .strip_prefix("rename to ")
+                .or_else(|| line.strip_prefix("copy to "))
+            {
+                path_to = Some(to);
+            }
+        }
+        // スペースを含む非クォートのヘッダーは分割が曖昧なため、移動・コピーは
+        // 一行に一つのパスを持つメタデータを優先する（例: b/new b/path.lock）。
+        let file_paths = path_from
+            .zip(path_to)
+            .and_then(|(from, to)| {
+                Some((
+                    Self::decode_diff_metadata_path(from)?,
+                    Self::decode_diff_metadata_path(to)?,
+                ))
+            })
+            .or_else(|| {
+                block
+                    .first()
+                    .and_then(|header| Self::extract_file_paths_from_diff_header(header))
+            });
+        // rename / copy の片側だけが lock ファイルでも本文は送らない。
+        let is_lockfile = file_paths
+            .as_ref()
+            .is_some_and(|(before, after)| Self::is_lockfile(before) || Self::is_lockfile(after));
+        if !is_binary && !is_lockfile {
+            return None;
         }
 
+        let kind = if is_lockfile { "Lockfile" } else { "Binary" };
+        let paths = match file_paths {
+            Some((before, after)) if matches!(change, "renamed" | "copied") => {
+                format!(
+                    "{} -> {}",
+                    Self::summary_path(&before),
+                    Self::summary_path(&after)
+                )
+            }
+            Some((before, _)) if change == "deleted" => Self::summary_path(&before),
+            Some((_, after)) => Self::summary_path(&after),
+            None => "unknown".to_string(),
+        };
+        Some(format!("[{kind}] {change}: {paths}"))
+    }
+
+    /// バイナリ・lock ファイルの本文を省き、パスと変更種別のみを出力する。
+    fn summarize_diff(diff_text: &str) -> String {
         let lines: Vec<&str> = diff_text.lines().collect();
         let mut filtered_lines = Vec::new();
         let mut i = 0;
-
         while i < lines.len() {
-            let line = lines[i];
-
-            if Self::is_diff_block_start(line) {
-                // 新しいdiffブロックの開始
-                let block_start = i;
-                let file_paths = Self::extract_file_paths_from_diff_header(line);
-                let file_path = file_paths
-                    .as_ref()
-                    .map(|(before, _)| before.as_str())
-                    .unwrap_or("unknown");
-                // rename の片側だけが lock ファイルでも本文は送らない。
-                let is_lockfile = file_paths.as_ref().is_some_and(|(before, after)| {
-                    Self::is_lockfile(before) || Self::is_lockfile(after)
-                });
-                i += 1;
-
-                // ブロック内の情報を収集
-                let mut is_binary = false;
-                let mut is_new_file = false;
-                let mut is_deleted = false;
-                let mut rename_from: Option<String> = None;
-                let mut rename_to: Option<String> = None;
-
+            let block_start = i;
+            i += 1;
+            if Self::is_diff_block_start(lines[block_start]) {
                 while i < lines.len() && !Self::is_diff_block_start(lines[i]) {
-                    let current_line = lines[i];
-
-                    if current_line.starts_with("Binary files") {
-                        is_binary = true;
-                    } else if current_line.starts_with("new file mode") {
-                        is_new_file = true;
-                    } else if current_line.starts_with("deleted file mode") {
-                        is_deleted = true;
-                    } else if let Some(from) = current_line.strip_prefix("rename from ") {
-                        rename_from = Some(from.to_string());
-                    } else if let Some(to) = current_line.strip_prefix("rename to ") {
-                        rename_to = Some(to.to_string());
-                    }
                     i += 1;
                 }
-
-                if is_binary || is_lockfile {
-                    // バイナリ形式の lock ファイルも Lockfile として扱う。
-                    let kind = if is_lockfile { "Lockfile" } else { "Binary" };
-                    let summary = if let (Some(from), Some(to)) = (&rename_from, &rename_to) {
-                        format!("[{kind}] renamed: {} -> {}", from, to)
-                    } else if is_new_file {
-                        format!("[{kind}] added: {}", file_path)
-                    } else if is_deleted {
-                        format!("[{kind}] deleted: {}", file_path)
-                    } else {
-                        format!("[{kind}] modified: {}", file_path)
-                    };
+                if let Some(summary) = Self::summarize_diff_block(&lines[block_start..i]) {
                     filtered_lines.push(summary);
-                } else {
-                    // テキストファイルはそのまま出力
-                    for line in lines.iter().take(i).skip(block_start) {
-                        filtered_lines.push((*line).to_string());
-                    }
+                    continue;
                 }
-                continue;
-            } else {
-                filtered_lines.push(line.to_string());
             }
-            i += 1;
+            filtered_lines.extend(lines[block_start..i].iter().map(|line| (*line).to_string()));
         }
-
         filtered_lines.join("\n")
     }
 
@@ -1405,6 +1433,69 @@ mod tests {
     // summarize_diff のテスト
     // ============================================================
 
+    #[test]
+    fn test_staged_lockfile_copy_with_git_copy_detection() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = dir.path();
+        run_git_in(repo, &["init"]);
+        run_git_in(repo, &["config", "user.name", "Test"]);
+        run_git_in(repo, &["config", "user.email", "test@example.com"]);
+        run_git_in(repo, &["config", "diff.renames", "copies"]);
+        let content = "dependency content\n".repeat(100);
+        std::fs::write(repo.join("template.txt"), &content).unwrap();
+        run_git_in(repo, &["add", "template.txt"]);
+        run_git_in(repo, &["commit", "-m", "initial"]);
+        std::fs::write(repo.join("Cargo.lock"), &content).unwrap();
+        std::fs::write(repo.join("template.txt"), format!("{content}new line\n")).unwrap();
+        run_git_in(repo, &["add", "template.txt", "Cargo.lock"]);
+        let diff = GitService::with_repo_path(repo.to_path_buf())
+            .get_staged_diff()
+            .unwrap();
+        assert!(
+            diff.contains("[Lockfile] copied: template.txt -> Cargo.lock"),
+            "{diff}"
+        );
+        assert!(diff.contains("+new line"));
+        // 元ファイルの hunk ヘッダーには既存行が表示されることがある。
+        assert!(!diff.contains("+dependency content"));
+    }
+
+    #[test]
+    fn test_summarize_lockfile_copy_keeps_source_and_destination() {
+        let diff = "diff --git a/Cargo.lock b/nested/Cargo.lock\n\
+                    similarity index 100%\n\
+                    copy from Cargo.lock\n\
+                    copy to nested/Cargo.lock";
+        assert_eq!(
+            GitService::summarize_diff(diff),
+            "[Lockfile] copied: Cargo.lock -> nested/Cargo.lock"
+        );
+    }
+
+    #[test]
+    fn test_summarize_lockfile_control_characters_stay_on_one_line() {
+        let diff = r#"diff --git "a/line\nbreak.lock" "b/line\nbreak.lock"
+@@ -1 +1 @@
+-old
++new"#;
+        assert_eq!(
+            GitService::summarize_diff(diff),
+            r#"[Lockfile] modified: "line\nbreak.lock""#
+        );
+    }
+
+    #[test]
+    fn test_summarize_lockfile_rename_decodes_both_paths() {
+        let diff = r#"diff --git "a/\303\251.lock" "b/new\303\251.lock"
+similarity index 100%
+rename from "\303\251.lock"
+rename to "new\303\251.lock""#;
+        assert_eq!(
+            GitService::summarize_diff(diff),
+            "[Lockfile] renamed: é.lock -> newé.lock"
+        );
+    }
+
     #[rstest]
     #[case(".lock")]
     #[case("Cargo.lock")]
@@ -1463,6 +1554,8 @@ mod tests {
     #[rstest]
     #[case("old name.txt", "new name.lock")]
     #[case("old name.lock", "new name.txt")]
+    #[case("Cargo.lock", "new b/path.lock")]
+    #[case("Cargo.lock", "new b/path.txt")]
     fn test_summarize_lockfile_rename_checks_both_paths(#[case] from: &str, #[case] to: &str) {
         let diff = format!(
             "diff --git a/{from} b/{to}\nsimilarity index 90%\nrename from {from}\nrename to {to}\n@@ -1 +1 @@\n-old\n+new"
