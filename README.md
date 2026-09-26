@@ -114,7 +114,7 @@ make install
 
 After installing with winget, open a new terminal: the portable package updates your `PATH`, and already-running shells do not pick up the change.
 
-Apple Intelligence is not included in the Homebrew, winget, Cargo, or GitHub Releases builds. On macOS, installing from source enables it: `make install` builds with the `apple-ai` feature, signs a temporary copy ad hoc, and then atomically replaces the installed binary (this avoids stale per-inode code-signature validation after reinstalling over an existing command).
+Apple Intelligence is not included in the Homebrew, winget, Cargo, or GitHub Releases builds. On macOS, installing from source enables it: `make install` builds with the `apple-ai` feature, copies it to a temporary file, and then atomically replaces the installed binary (this avoids stale per-inode code-signature validation after reinstalling over an existing command).
 
 ## Quickstart
 

@@ -91,18 +91,16 @@ ci: check test ## Run the same checks as CI (no changes)
 # Replace the binary through a temporary file and a rename instead of copying over it. macOS
 # caches the code signature check per inode, so a binary copied over one that is running (or ran
 # a moment ago) is killed with SIGKILL right after it starts (exit 137). The temporary file sits
-# in the same directory so that the rename swaps the inode, and on macOS it is signed (ad hoc)
-# before the rename. The trap removes the temporary file when copying or signing fails.
-install: release ## Install the release binary to INSTALL_PATH (default /usr/local/bin), signed ad hoc on macOS
+# in the same directory so that the rename swaps the inode. The binary is not re-signed: the linker
+# already signs it ad hoc, and a fixed identifier would not keep permissions across versions.
+# The trap removes the temporary file when copying fails.
+install: release ## Install the release binary to INSTALL_PATH (default /usr/local/bin)
 	@mkdir -p "$(INSTALL_PATH)"
 	@set -eu; \
 		temp_path=$$(mktemp "$(INSTALL_PATH)/.$(BINARY_NAME).tmp.XXXXXX"); \
 		trap 'rm -f "$$temp_path"' 0 1 2 15; \
 		cp "target/release/$(BINARY_NAME)" "$$temp_path"; \
 		chmod 0755 "$$temp_path"; \
-		if [ "$(UNAME_S)" = "Darwin" ]; then \
-			codesign --force --sign - "$$temp_path"; \
-		fi; \
 		mv -f "$$temp_path" "$(INSTALL_PATH)/$(BINARY_NAME)"
 
 uninstall: ## Remove the binary from INSTALL_PATH

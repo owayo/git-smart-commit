@@ -114,7 +114,7 @@ make install
 
 winget で入れた後は、新しいターミナルを開いてください。portable パッケージは `PATH` を書き換えるだけなので、起動中のシェルには反映されません。
 
-Homebrew・winget・Cargo・GitHub Releases のバイナリには Apple Intelligence が入っていません。macOS でソースから入れると有効になります。`make install` は `apple-ai` 機能を付けてビルドし、一時コピーをアドホック署名してから、インストール済みのバイナリをアトミックに置き換えます。再インストール時に、inode 単位の古いコード署名検証キャッシュが残る問題を防ぐためです。
+Homebrew・winget・Cargo・GitHub Releases のバイナリには Apple Intelligence が入っていません。macOS でソースから入れると有効になります。`make install` は `apple-ai` 機能を付けてビルドし、一時ファイルにコピーしてから、インストール済みのバイナリをアトミックに置き換えます。再インストール時に、inode 単位の古いコード署名検証キャッシュが残る問題を防ぐためです。
 
 ## クイックスタート
 
