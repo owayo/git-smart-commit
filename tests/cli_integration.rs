@@ -15,6 +15,71 @@ macro_rules! git_sc {
     };
 }
 
+#[test]
+#[cfg_attr(windows, ignore)]
+fn test_lockfile_contents_are_omitted_from_prompts_in_all_modes() {
+    let dir = setup_git_repo_with_commit();
+    let path = setup_fake_opencode_path(&dir);
+    std::fs::write(dir.path().join(".git-sc"), "providers = [\"opencode\"]\n").unwrap();
+    let base = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(base.status.success());
+    let base = String::from_utf8(base.stdout).unwrap();
+    std::fs::write(
+        dir.path().join("Cargo.lock"),
+        "LOCKFILE_CONTENT_MUST_NOT_REACH_AI\n".repeat(1000),
+    )
+    .unwrap();
+    let staged = std::process::Command::new("git")
+        .args(["add", "Cargo.lock"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(staged.status.success());
+
+    let check_prompt = |mode: &[&str]| {
+        let output = git_sc!()
+            .args(["--dry-run", "--debug", "-p", "opencode"])
+            .args(mode)
+            .env("PATH", &path)
+            .env("HOME", dir.path())
+            .env("XDG_CONFIG_HOME", dir.path())
+            .current_dir(dir.path())
+            .assert()
+            .success()
+            .get_output()
+            .clone();
+        let trace = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            trace.contains("[Lockfile] added: Cargo.lock"),
+            "{mode:?}: {trace}"
+        );
+        assert!(
+            !trace.contains("LOCKFILE_CONTENT_MUST_NOT_REACH_AI"),
+            "{mode:?}"
+        );
+        assert!(!trace.contains("diff truncated"), "{mode:?}");
+    };
+    check_prompt(&[]);
+    let committed = std::process::Command::new("git")
+        .args(["commit", "-m", "build: add lockfile"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(committed.status.success());
+    check_prompt(&["--amend"]);
+    check_prompt(&["--reword", "HEAD"]);
+    check_prompt(&["--squash", base.trim()]);
+    check_prompt(&["--generate-for", "HEAD"]);
+}
+
 /// テスト用ヘルパー: 一時的なGitリポジトリを作成
 fn setup_git_repo() -> TempDir {
     let dir = TempDir::new().unwrap();

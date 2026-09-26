@@ -744,6 +744,8 @@ impl AiService {
                 line.starts_with("diff --git ")
                     || line.starts_with("diff --cc ")
                     || line.starts_with("diff --combined ")
+                    || line.starts_with("[Lockfile] ")
+                    || line.starts_with("[Binary] ")
             })
             .count()
     }
@@ -3775,6 +3777,17 @@ mod tests {
             1,
             "diff 本文中の diff --git 行まで変更ファイルとして数えている"
         );
+    }
+
+    #[test]
+    fn test_count_diff_blocks_includes_summaries() {
+        let diff = "diff --git a/example.txt b/example.txt\n\
+                    +[Lockfile] modified: fake.lock\n\
+                    +[Binary] added: fake.png\n\
+                    [Lockfile] modified: Cargo.lock\n\
+                    [Binary] added: logo.png";
+        assert_eq!(AiService::count_diff_blocks(diff), 3);
+        assert_eq!(AiService::count_diff_blocks("[Lockfile] added: go.sum"), 1);
     }
 
     /// 空の diff は 0 件。

@@ -208,6 +208,8 @@ impl AiService {
                 line.starts_with("diff --git ")
                     || line.starts_with("diff --cc ")
                     || line.starts_with("diff --combined ")
+                    || line.starts_with("[Lockfile] ")
+                    || line.starts_with("[Binary] ")
             })
             .collect();
 
@@ -520,6 +522,19 @@ mod tests {
             compacted.chars().count() < diff.chars().count(),
             "縮約されていない"
         );
+    }
+
+    #[test]
+    fn test_compact_diff_keeps_lockfile_and_binary_summaries() {
+        let diff = format!(
+            "{}{}\n[Lockfile] modified: Cargo.lock\n[Binary] added: logo.png",
+            sample_diff(1),
+            "+additional content\n".repeat(100)
+        );
+        let compacted = AiService::compact_diff_for_apple(&diff, 300);
+        assert!(compacted.contains("[Lockfile] modified: Cargo.lock"));
+        assert!(compacted.contains("[Binary] added: logo.png"));
+        assert!(compacted.len() < diff.len());
     }
 
     /// マージコミットの combined diff (`diff --cc`) もファイル一覧に拾うこと

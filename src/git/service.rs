@@ -516,6 +516,7 @@ impl GitService {
     }
 
     /// diffヘッダーからファイルパスを抽出
+    #[cfg(test)]
     fn extract_file_path_from_diff_header(header: &str) -> Option<String> {
         Self::extract_file_paths_from_diff_header(header).map(|(path, _)| path)
     }
@@ -636,7 +637,7 @@ impl GitService {
     fn apply_all_filters(&self, diff: &str) -> Result<String, AppError> {
         // 1. .git-sc-ignore パターンにマッチするファイルを除外
         //    バイナリフィルタより先に実行する必要がある。
-        //    filter_binary_diff は diff --git ヘッダーをサマリー行に変換するため、
+        //    summarize_diff は diff --git ヘッダーをサマリー行に変換するため、
         //    先に実行するとignoreパターンがバイナリファイルに適用されなくなる。
         let filtered = if let Some(ignore) = self.load_ignore_patterns()? {
             Self::filter_ignored_files(diff, &ignore)
@@ -644,15 +645,32 @@ impl GitService {
             diff.to_string()
         };
 
-        // 2. バイナリファイルをサマリーに変換
-        let filtered = Self::filter_binary_diff(&filtered);
+        // 2. バイナリ・lock ファイルをサマリーに変換
+        let filtered = Self::summarize_diff(&filtered);
 
         // 3. 文字数制限を適用
         Ok(Self::truncate_diff(&filtered))
     }
 
-    /// git diffの出力からバイナリファイルの詳細差分を除外し、変更種別のみを出力
-    fn filter_binary_diff(diff_text: &str) -> String {
+    /// Git のパスはプラットフォームによらず `/` 区切り。
+    /// 親ディレクトリ名ではなく、ファイル名だけで lock ファイルを判定する。
+    fn is_lockfile(path: &str) -> bool {
+        let name = path.rsplit('/').next().unwrap_or(path);
+        name.ends_with(".lock")
+            || name.ends_with(".lockb")
+            || name.ends_with(".lockfile")
+            || matches!(
+                name,
+                "package-lock.json"
+                    | "npm-shrinkwrap.json"
+                    | "pnpm-lock.yaml"
+                    | "go.sum"
+                    | "Package.resolved"
+            )
+    }
+
+    /// バイナリ・lock ファイルの本文を省き、パスと変更種別のみを出力する。
+    fn summarize_diff(diff_text: &str) -> String {
         if diff_text.is_empty() {
             return String::new();
         }
@@ -667,8 +685,15 @@ impl GitService {
             if Self::is_diff_block_start(line) {
                 // 新しいdiffブロックの開始
                 let block_start = i;
-                let file_path = Self::extract_file_path_from_diff_header(line)
-                    .unwrap_or_else(|| "unknown".to_string());
+                let file_paths = Self::extract_file_paths_from_diff_header(line);
+                let file_path = file_paths
+                    .as_ref()
+                    .map(|(before, _)| before.as_str())
+                    .unwrap_or("unknown");
+                // rename の片側だけが lock ファイルでも本文は送らない。
+                let is_lockfile = file_paths.as_ref().is_some_and(|(before, after)| {
+                    Self::is_lockfile(before) || Self::is_lockfile(after)
+                });
                 i += 1;
 
                 // ブロック内の情報を収集
@@ -695,16 +720,17 @@ impl GitService {
                     i += 1;
                 }
 
-                if is_binary {
-                    // バイナリファイルは変更種別のサマリーのみ出力
+                if is_binary || is_lockfile {
+                    // バイナリ形式の lock ファイルも Lockfile として扱う。
+                    let kind = if is_lockfile { "Lockfile" } else { "Binary" };
                     let summary = if let (Some(from), Some(to)) = (&rename_from, &rename_to) {
-                        format!("[Binary] renamed: {} -> {}", from, to)
+                        format!("[{kind}] renamed: {} -> {}", from, to)
                     } else if is_new_file {
-                        format!("[Binary] added: {}", file_path)
+                        format!("[{kind}] added: {}", file_path)
                     } else if is_deleted {
-                        format!("[Binary] deleted: {}", file_path)
+                        format!("[{kind}] deleted: {}", file_path)
                     } else {
-                        format!("[Binary] modified: {}", file_path)
+                        format!("[{kind}] modified: {}", file_path)
                     };
                     filtered_lines.push(summary);
                 } else {
@@ -1376,12 +1402,113 @@ mod tests {
     use std::process::Command;
 
     // ============================================================
-    // filter_binary_diff のテスト
+    // summarize_diff のテスト
     // ============================================================
+
+    #[rstest]
+    #[case(".lock")]
+    #[case("Cargo.lock")]
+    #[case("yarn.lock")]
+    #[case("Gemfile.lock")]
+    #[case("uv.lock")]
+    #[case("composer.lock")]
+    #[case("bun.lock")]
+    #[case("bun.lockb")]
+    #[case(".lockb")]
+    #[case("project.lockfile")]
+    #[case(".lockfile")]
+    #[case("package-lock.json")]
+    #[case("npm-shrinkwrap.json")]
+    #[case("pnpm-lock.yaml")]
+    #[case("go.sum")]
+    #[case("Package.resolved")]
+    fn test_summarize_lockfile_contents(#[case] name: &str) {
+        for path in [name.to_string(), format!("nested dir/{name}")] {
+            let diff = format!(
+                "diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-old dependency\n+new dependency"
+            );
+            assert_eq!(
+                GitService::summarize_diff(&diff),
+                format!("[Lockfile] modified: {path}")
+            );
+        }
+    }
+
+    #[rstest]
+    #[case("package.json")]
+    #[case("Cargo.toml")]
+    #[case("go.mod")]
+    #[case("Cargo.lock.backup")]
+    #[case("vendor.lock/src.rs")]
+    #[case("pnpm-lock.yaml/readme.md")]
+    fn test_summarize_diff_preserves_non_lockfiles(#[case] path: &str) {
+        let diff = format!("diff --git a/{path} b/{path}\n@@ -1 +1 @@\n-old\n+new");
+        assert_eq!(GitService::summarize_diff(&diff), diff);
+    }
+
+    #[rstest]
+    #[case("new file mode 100644", "added")]
+    #[case("deleted file mode 100644", "deleted")]
+    #[case("old mode 100644\nnew mode 100755", "modified")]
+    #[case("Binary files a/bun.lockb and b/bun.lockb differ", "modified")]
+    #[case("GIT binary patch\nliteral 4\nencoded-content", "modified")]
+    fn test_summarize_lockfile_change_kind(#[case] metadata: &str, #[case] kind: &str) {
+        let diff = format!("diff --git a/bun.lockb b/bun.lockb\n{metadata}\n+content");
+        assert_eq!(
+            GitService::summarize_diff(&diff),
+            format!("[Lockfile] {kind}: bun.lockb")
+        );
+    }
+
+    #[rstest]
+    #[case("old name.txt", "new name.lock")]
+    #[case("old name.lock", "new name.txt")]
+    fn test_summarize_lockfile_rename_checks_both_paths(#[case] from: &str, #[case] to: &str) {
+        let diff = format!(
+            "diff --git a/{from} b/{to}\nsimilarity index 90%\nrename from {from}\nrename to {to}\n@@ -1 +1 @@\n-old\n+new"
+        );
+        assert_eq!(
+            GitService::summarize_diff(&diff),
+            format!("[Lockfile] renamed: {from} -> {to}")
+        );
+    }
+
+    #[rstest]
+    #[case("diff --cc nested dir/Cargo.lock", "nested dir/Cargo.lock")]
+    #[case("diff --combined pnpm-lock.yaml", "pnpm-lock.yaml")]
+    #[case(
+        r#"diff --git "a/\303\251/Cargo.lock" "b/\303\251/Cargo.lock""#,
+        "é/Cargo.lock"
+    )]
+    fn test_summarize_lockfile_combined_and_quoted_paths(#[case] header: &str, #[case] path: &str) {
+        let diff = format!("{header}\nindex abc,def..123\n@@@ -1 -1 +1 @@@\n++content");
+        assert_eq!(
+            GitService::summarize_diff(&diff),
+            format!("[Lockfile] modified: {path}")
+        );
+    }
+
+    #[test]
+    fn test_lockfile_summary_precedes_truncation_and_respects_ignore() {
+        let dir = tempfile::TempDir::new().unwrap();
+        run_git_in(dir.path(), &["init"]);
+        let service = GitService::with_repo_path(dir.path().to_path_buf());
+        let text_diff = "diff --git a/src/main.rs b/src/main.rs\n@@ -1 +1 @@\n-old code\n+new code";
+        let diff = format!(
+            "diff --git a/Cargo.lock b/Cargo.lock\n@@ -1 +1 @@\n{}\n{text_diff}",
+            "+dependency content\n".repeat(MAX_DIFF_CHARS)
+        );
+        assert_eq!(
+            service.apply_all_filters(&diff).unwrap(),
+            format!("[Lockfile] modified: Cargo.lock\n{text_diff}")
+        );
+        std::fs::write(dir.path().join(".git-sc-ignore"), "Cargo.lock\n").unwrap();
+        assert_eq!(service.apply_all_filters(&diff).unwrap(), text_diff);
+    }
 
     #[test]
     fn test_filter_binary_diff_empty_input() {
-        let result = GitService::filter_binary_diff("");
+        let result = GitService::summarize_diff("");
         assert_eq!(result, "");
     }
 
@@ -1395,7 +1522,7 @@ index 1234567..abcdefg 100644
  fn main() {
 +    println!("Hello");
  }"#;
-        let result = GitService::filter_binary_diff(diff);
+        let result = GitService::summarize_diff(diff);
         assert_eq!(result, diff);
     }
 
@@ -1412,7 +1539,7 @@ index 1234567..abcdefg 100644
 diff --git a/image.png b/image.png
 Binary files a/image.png and b/image.png differ"#;
 
-        let result = GitService::filter_binary_diff(diff);
+        let result = GitService::summarize_diff(diff);
 
         // テキストファイルの差分が含まれる
         assert!(result.contains("src/main.rs"));
@@ -1428,7 +1555,7 @@ Binary files a/image.png and b/image.png differ"#;
         let diff = r#"diff --git a/image.png b/image.png
 Binary files a/image.png and b/image.png differ"#;
 
-        let result = GitService::filter_binary_diff(diff);
+        let result = GitService::summarize_diff(diff);
         assert_eq!(result, "[Binary] modified: image.png");
     }
 
@@ -1451,7 +1578,7 @@ index 1111111..2222222 100644
 @@ -1 +1,2 @@
 +key = "value""#;
 
-        let result = GitService::filter_binary_diff(diff);
+        let result = GitService::summarize_diff(diff);
 
         // テキストファイルの変更が含まれる
         assert!(result.contains("src/lib.rs"));
@@ -1474,7 +1601,7 @@ index aaa..bbb 100644
 @@ -1 +1,2 @@
 +# Title"#;
 
-        let result = GitService::filter_binary_diff(diff);
+        let result = GitService::summarize_diff(diff);
 
         // バイナリファイルは変更種別として出力される
         assert!(result.contains("[Binary] modified: logo.svg"));
@@ -1488,7 +1615,7 @@ index aaa..bbb 100644
 new file mode 100644
 Binary files /dev/null and b/new_image.png differ"#;
 
-        let result = GitService::filter_binary_diff(diff);
+        let result = GitService::summarize_diff(diff);
         assert_eq!(result, "[Binary] added: new_image.png");
     }
 
@@ -1498,7 +1625,7 @@ Binary files /dev/null and b/new_image.png differ"#;
 deleted file mode 100644
 Binary files a/old_image.png and /dev/null differ"#;
 
-        let result = GitService::filter_binary_diff(diff);
+        let result = GitService::summarize_diff(diff);
         assert_eq!(result, "[Binary] deleted: old_image.png");
     }
 
@@ -1509,7 +1636,7 @@ similarity index 100%
 rename from old_name.png
 rename to new_name.png"#;
 
-        let result = GitService::filter_binary_diff(diff);
+        let result = GitService::summarize_diff(diff);
         // リネームはテキストファイルとして扱われる（Binary filesがないため）
         assert!(result.contains("rename from old_name.png"));
     }
@@ -1522,7 +1649,7 @@ rename from old_name.png
 rename to new_name.png
 Binary files a/old_name.png and b/new_name.png differ"#;
 
-        let result = GitService::filter_binary_diff(diff);
+        let result = GitService::summarize_diff(diff);
         assert_eq!(result, "[Binary] renamed: old_name.png -> new_name.png");
     }
 
@@ -1537,7 +1664,7 @@ index 1234567..abcdefg 100644
 +// Binary search implementation
  fn search() {}"#;
 
-        let result = GitService::filter_binary_diff(diff);
+        let result = GitService::summarize_diff(diff);
         assert!(result.contains("Binary search implementation"));
     }
 
@@ -1981,7 +2108,7 @@ index 1234567..abcdefg 100644
     #[test]
     fn test_filter_ignored_files_no_ignore() {
         // ignoreパターンがない場合（実際にはGitignore構築が必要なので
-        // filter_binary_diffと同様の動作を確認）
+        // summarize_diffと同様の動作を確認）
         let diff = r#"diff --git a/src/main.rs b/src/main.rs
 index 1234567..abcdefg 100644
 --- a/src/main.rs
@@ -1996,7 +2123,7 @@ index 1234567..abcdefg 100644
         let service = GitService::new();
 
         // .git-sc-ignoreがない状態でテスト
-        // この場合、apply_all_filtersはfilter_binary_diff + truncate_diffのみ適用
+        // この場合、apply_all_filtersはsummarize_diff + truncate_diffのみ適用
         let result = service.apply_all_filters(diff).unwrap();
         assert!(result.contains("src/main.rs"));
         assert!(result.contains("println"));
@@ -2275,7 +2402,7 @@ index 1234567..abcdefg 100644
     }
 
     // ============================================================
-    // filter_binary_diff の追加エッジケーステスト
+    // summarize_diff の追加エッジケーステスト
     // ============================================================
 
     #[test]
@@ -2287,7 +2414,7 @@ index 1234567..abcdefg 100644
 @@ -1 +1,2 @@
 +// binary helper code"#;
 
-        let result = GitService::filter_binary_diff(diff);
+        let result = GitService::summarize_diff(diff);
         assert!(result.contains("binary_helper.rs"));
         assert!(result.contains("binary helper code"));
     }
@@ -2313,7 +2440,7 @@ index 555..666 100644
 @@ -1 +1,2 @@
 +// c"#;
 
-        let result = GitService::filter_binary_diff(diff);
+        let result = GitService::summarize_diff(diff);
         assert!(result.contains("src/a.rs"));
         assert!(result.contains("src/b.rs"));
         assert!(result.contains("src/c.rs"));
@@ -2400,7 +2527,7 @@ index 555..666 100644
 
     /// ignoreパターンがバイナリファイルにも正しく適用されることを検証
     ///
-    /// filter_ignored_files が filter_binary_diff より先に実行されなければ、
+    /// filter_ignored_files が summarize_diff より先に実行されなければ、
     /// バイナリファイルの diff --git ヘッダーがサマリー行に変換されてしまい、
     /// ignore パターンが適用されなくなる。
     #[test]
@@ -3082,7 +3209,7 @@ index 555..666 100644
     }
 
     // ============================================================
-    // filter_binary_diff: パス抽出失敗時のフォールバック
+    // summarize_diff: パス抽出失敗時のフォールバック
     // ============================================================
 
     #[test]
@@ -3090,7 +3217,7 @@ index 555..666 100644
         // extract_file_path_from_diff_header が None を返すケース
         let diff = "diff --git \n\
                      Binary files /dev/null and b/something differ";
-        let result = GitService::filter_binary_diff(diff);
+        let result = GitService::summarize_diff(diff);
         assert!(result.contains("[Binary]"));
         assert!(result.contains("unknown"));
     }
@@ -3590,13 +3717,13 @@ index 555..666 100644
     }
 
     // ============================================================
-    // filter_binary_diff: バイナリファイル除外テスト（追加）
+    // summarize_diff: バイナリファイル除外テスト（追加）
     // ============================================================
 
     #[test]
     fn test_filter_binary_diff_multiple_binary_files() {
         let diff = "diff --git a/a.png b/a.png\nnew file mode 100644\nBinary files /dev/null and b/a.png differ\ndiff --git a/b.jpg b/b.jpg\nBinary files a/b.jpg and b/b.jpg differ";
-        let result = GitService::filter_binary_diff(diff);
+        let result = GitService::summarize_diff(diff);
         assert!(result.contains("[Binary] added: a.png"));
         assert!(result.contains("[Binary] modified: b.jpg"));
     }
@@ -3727,7 +3854,7 @@ index 555..666 100644
     }
 
     // ============================================================
-    // filter_binary_diff: リネーム済みテキストファイルのテスト
+    // summarize_diff: リネーム済みテキストファイルのテスト
     // ============================================================
 
     #[test]
@@ -3742,7 +3869,7 @@ index 555..666 100644
                      @@ -1,3 +1,3 @@\n\
                      -old line\n\
                      +new line";
-        let result = GitService::filter_binary_diff(diff);
+        let result = GitService::summarize_diff(diff);
         // テキストファイルのリネームはそのまま保持
         assert!(result.contains("rename from old_name.rs"));
         assert!(result.contains("rename to new_name.rs"));
@@ -3756,7 +3883,7 @@ index 555..666 100644
         let diff = "diff --git a/image.png b/image.png\n\
                      deleted file mode 100644\n\
                      Binary files a/image.png and /dev/null differ";
-        let result = GitService::filter_binary_diff(diff);
+        let result = GitService::summarize_diff(diff);
         assert_eq!(result, "[Binary] deleted: image.png");
     }
 
@@ -4082,7 +4209,7 @@ index 555..666 100644
     }
 
     // ============================================================
-    // filter_binary_diff: リネーム・モード変更のエッジケース
+    // summarize_diff: リネーム・モード変更のエッジケース
     // ============================================================
 
     #[test]
@@ -4093,7 +4220,7 @@ similarity index 100%
 rename from old.png
 rename to new.png
 Binary files a/old.png and b/new.png differ"#;
-        let result = GitService::filter_binary_diff(diff);
+        let result = GitService::summarize_diff(diff);
         assert_eq!(result, "[Binary] renamed: old.png -> new.png");
     }
 
@@ -4103,7 +4230,7 @@ Binary files a/old.png and b/new.png differ"#;
         let diff = r#"diff --git a/script.bin b/script.bin
 new file mode 100755
 Binary files /dev/null and b/script.bin differ"#;
-        let result = GitService::filter_binary_diff(diff);
+        let result = GitService::summarize_diff(diff);
         assert_eq!(result, "[Binary] added: script.bin");
     }
 
@@ -4301,7 +4428,7 @@ Binary files /dev/null and b/script.bin differ"#;
     }
 
     // ============================================================
-    // filter_binary_diff: 追加エッジケース
+    // summarize_diff: 追加エッジケース
     // ============================================================
 
     #[test]
@@ -4313,7 +4440,7 @@ Binary files /dev/null and b/script.bin differ"#;
                      diff --git a/b.jpg b/b.jpg\n\
                      deleted file mode 100644\n\
                      Binary files a/b.jpg and /dev/null differ";
-        let result = GitService::filter_binary_diff(diff);
+        let result = GitService::summarize_diff(diff);
         assert!(result.contains("[Binary] added: a.png"));
         assert!(result.contains("[Binary] deleted: b.jpg"));
     }
@@ -4329,7 +4456,7 @@ Binary files /dev/null and b/script.bin differ"#;
                      @@ -1 +1 @@\n\
                      -old\n\
                      +new";
-        let result = GitService::filter_binary_diff(diff);
+        let result = GitService::summarize_diff(diff);
         assert!(result.contains("[Binary] modified: icon.png"));
         assert!(result.contains("+new"));
         assert!(result.contains("-old"));

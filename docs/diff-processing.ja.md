@@ -23,9 +23,14 @@ flowchart LR
 
 - 空白のみの変更は除外
 - バイナリファイルは中身を送らず、`[Binary] modified: <パス>` のような 1 行の要約に置き換え
+- lock ファイルは本文を送らず、`[Lockfile] modified: Cargo.lock` のようにパスと変更種別（追加・変更・削除・rename）だけを送信
 - スペースや非 ASCII 文字を含むパスの、クォートされた diff ヘッダーも正しく解析
 - `.git-sc-ignore` パターンを適用
 - 10,000 文字で切り詰め
+
+lock ファイルの要約は設定不要で、通常のコミット・amend・squash・reword・`--generate-for` に適用します。対象は任意のディレクトリにある `*.lock`、`*.lockb`、`*.lockfile`、`package-lock.json`、`npm-shrinkwrap.json`、`pnpm-lock.yaml`、`go.sum`、`Package.resolved` です。`.lock`・`.lockb`・`.lockfile` というファイル名自体も対象です。`Cargo.lock`、`yarn.lock`、`Gemfile.lock`、`composer.lock`、`uv.lock`、`bun.lock` などは拡張子で判定されます。
+
+要約は文字数制限の適用前に行うため、大きな lock ファイルの本文で他のファイルの差分が切り詰められるのを防げます。lock ファイルだけの変更でも生成できます。`.git-sc-ignore` に指定した場合は、パスを含む要約ごと除外します。
 
 ## セキュリティメモ
 

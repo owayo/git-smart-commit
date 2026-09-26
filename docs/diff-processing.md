@@ -23,9 +23,14 @@ flowchart LR
 
 - Whitespace-only changes excluded
 - Binary files replaced with a one-line summary (e.g. `[Binary] modified: <path>`) instead of their contents
+- Lockfile contents replaced with a path and change kind (added, modified, deleted, or renamed), e.g. `[Lockfile] modified: Cargo.lock`
 - Quoted diff headers with spaces or non-ASCII file paths are handled correctly
 - `.git-sc-ignore` patterns applied
 - Truncated at 10,000 characters
+
+Lockfile summaries need no configuration and apply to normal commits, amend, squash, reword, and `--generate-for`. Matching filenames in any directory are `*.lock`, `*.lockb`, `*.lockfile`, `package-lock.json`, `npm-shrinkwrap.json`, `pnpm-lock.yaml`, `go.sum`, and `Package.resolved`. The literal filenames `.lock`, `.lockb`, and `.lockfile` also match. The suffix rules cover files such as `Cargo.lock`, `yarn.lock`, `Gemfile.lock`, `composer.lock`, `uv.lock`, and `bun.lock`.
+
+Summaries are produced before the character limit is applied, so large lockfile contents do not crowd out other changes. Lockfile-only changes can still generate a message. Matching `.git-sc-ignore` patterns exclude the entire summary, including its path.
 
 ## Security Notes
 
