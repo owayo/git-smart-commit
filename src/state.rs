@@ -990,7 +990,7 @@ mod tests {
     fn test_same_provider_different_model_demoted_independently() {
         // antigravity(Gemini系) が失敗しても antigravity(GPT-OSS系) は生きる
         let mut state = State::default();
-        let gemini = step_with_model("antigravity", "Gemini 3.5 Flash (Low)");
+        let gemini = step_with_model("antigravity", "Gemini 3.8 Flash (Low)");
         let gptoss = step_with_model("antigravity", "GPT-OSS 120B (Medium)");
         state.record_failure(&gemini);
         assert!(state.is_demoted(&gemini, 60));

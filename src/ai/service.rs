@@ -5431,7 +5431,7 @@ mod tests {
         for ok in [
             "gpt-5.6-luna",
             "GPT-OSS 120B (Medium)",
-            "Gemini 3.5 Flash (Low)",
+            "Gemini 3.8 Flash (Low)",
             "claude",
             r"C:\tools\codex.cmd",
             "provider:model-name",

@@ -53,9 +53,9 @@ codex_reasoning_effort = "low"
 # モデル設定
 # Antigravity CLI (`agy`) は `--model` に対応。`antigravity` の値はそのまま
 # `agy --model "<名前>"` に渡されます。表示名 (例: "GPT-OSS 120B (Medium)"、
-# "Gemini 3.5 Flash (Low)") と slug (例: "gpt-oss-120b-medium"、
-# "gemini-3.5-flash-low") のどちらでも指定できます。`agy models` がどちらを表示するかは
-# agy のバージョンで変わります (1.0.x は表示名、1.1.10 は slug)。未知の名前は
+# "Gemini 3.8 Flash (Low)") と slug (例: "gpt-oss-120b-medium"、
+# "gemini-3.8-flash-low") のどちらでも指定できます。`agy models` がどちらを表示するかは
+# agy のバージョンで変わります (1.0.x は表示名、1.1.10 は slug、1.2.13 は両方)。未知の名前は
 # 非ゼロ終了で明示的に弾かれ、既定モデルへ黙って落ちることはないため、
 # 打ち間違いはそのステップの失敗として現れます。
 # 空文字列なら `--model` を省略し agy 自身の既定モデルに委ねます。
@@ -110,7 +110,7 @@ providers = [
   { provider = "codex", model = "gpt-5.6-luna", env = { CODEX_HOME = "~/.codex" } },       # アカウント1
   { provider = "codex", model = "gpt-5.6-luna", env = { CODEX_HOME = "~/.codex-work" } },  # アカウント2
   # 同じプロバイダー・別モデル系統(クォータが別)
-  { provider = "antigravity", model = "Gemini 3.5 Flash (Low)" },
+  { provider = "antigravity", model = "Gemini 3.8 Flash (Low)" },
   { provider = "antigravity", model = "GPT-OSS 120B (Medium)" },
   # 従来どおり文字列(プロバイダー名のみ)も使えます
   "claude",

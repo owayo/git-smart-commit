@@ -1005,7 +1005,7 @@ grok = ""
 # providers = [
 #   {{ provider = "codex", model = "gpt-5.6-luna", env = {{ CODEX_HOME = "~/.codex" }} }},
 #   {{ provider = "codex", model = "gpt-5.6-luna", env = {{ CODEX_HOME = "~/.codex-work" }} }},
-#   {{ provider = "antigravity", model = "Gemini 3.5 Flash (Low)" }},
+#   {{ provider = "antigravity", model = "Gemini 3.8 Flash (Low)" }},
 #   {{ provider = "antigravity", model = "GPT-OSS 120B (Medium)" }},
 #   "claude",
 # ]
@@ -1044,7 +1044,7 @@ grok = ""
 #      env = {{ CLAUDE_CONFIG_DIR = "~/.claude" }} }},
 #   {{ provider = "antigravity", model = "GPT-OSS 120B (Medium)",
 #      ai_usage_group = "Claude&GPT" }},   # Gemini 系が枯れてもこの系統は使える
-#   {{ provider = "antigravity", model = "Gemini 3.5 Flash (Low)",
+#   {{ provider = "antigravity", model = "Gemini 3.8 Flash (Low)",
 #      ai_usage_group = "Gemini" }},
 #   "opencode",  # profile 未指定は auto-select (最も残量が多い account を採用)
 # ]
@@ -2991,7 +2991,7 @@ providers = [
 providers = [
   { provider = "antigravity", model = "GPT-OSS 120B (Medium)",
     ai_usage_profile = "Antigravity", ai_usage_group = "Claude&GPT" },
-  { provider = "antigravity", model = "Gemini 3.5 Flash (Low)",
+  { provider = "antigravity", model = "Gemini 3.8 Flash (Low)",
     ai_usage_profile = "Antigravity", ai_usage_group = "Gemini" },
 ]
 "#;

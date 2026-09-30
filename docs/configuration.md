@@ -54,9 +54,9 @@ codex_reasoning_effort = "low"
 # Model configuration
 # Antigravity CLI (`agy`) supports `--model`: the `antigravity` value is passed straight
 # to `agy --model "<name>"`. Either spelling works — the display name
-# (e.g. "GPT-OSS 120B (Medium)", "Gemini 3.5 Flash (Low)") or the slug
-# (e.g. "gpt-oss-120b-medium", "gemini-3.5-flash-low"). Which one `agy models` prints
-# varies by agy version (1.0.x: display names, 1.1.10: slugs). An unknown name is
+# (e.g. "GPT-OSS 120B (Medium)", "Gemini 3.8 Flash (Low)") or the slug
+# (e.g. "gpt-oss-120b-medium", "gemini-3.8-flash-low"). Which one `agy models` prints
+# varies by agy version (1.0.x: display names, 1.1.10: slugs, 1.2.13: both). An unknown name is
 # rejected with a non-zero exit rather than silently falling back, so a typo just
 # fails the step. An empty string omits `--model` and lets agy pick its own default. A legacy `gemini = "..."` key is still
 # accepted as an input alias and is promoted to `antigravity` (an explicit `antigravity`
@@ -110,7 +110,7 @@ providers = [
   { provider = "codex", model = "gpt-5.6-luna", env = { CODEX_HOME = "~/.codex" } },       # account 1
   { provider = "codex", model = "gpt-5.6-luna", env = { CODEX_HOME = "~/.codex-work" } },  # account 2
   # Same provider, different model families (separate quotas).
-  { provider = "antigravity", model = "Gemini 3.5 Flash (Low)" },
+  { provider = "antigravity", model = "Gemini 3.8 Flash (Low)" },
   { provider = "antigravity", model = "GPT-OSS 120B (Medium)" },
   # A plain string is still accepted (provider name only).
   "claude",
