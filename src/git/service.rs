@@ -1842,11 +1842,13 @@ index 1234567..abcdefg 100644
 
     #[test]
     fn test_get_current_branch() {
-        let service = GitService::new();
-        let branch = service.get_current_branch();
-        // ブランチ名が取得できること（空でないこと）
-        assert!(branch.is_some());
-        assert!(!branch.unwrap().is_empty());
+        let temp_dir = setup_temp_git_repo();
+        let repo = temp_dir.path();
+        run_git_in(repo, &["symbolic-ref", "HEAD", "refs/heads/test-branch"]);
+        run_git_in(repo, &["commit", "--allow-empty", "-m", "initial"]);
+        let service = GitService::with_repo_path(repo.to_path_buf());
+
+        assert_eq!(service.get_current_branch().as_deref(), Some("test-branch"));
     }
 
     #[test]
@@ -1896,11 +1898,13 @@ index 1234567..abcdefg 100644
 
     #[test]
     fn test_branch_exists_main() {
-        let service = GitService::new();
-        // main または master ブランチが存在するはず
-        let main_exists = service.branch_exists("main");
-        let master_exists = service.branch_exists("master");
-        assert!(main_exists || master_exists);
+        let temp_dir = setup_temp_git_repo();
+        let repo = temp_dir.path();
+        run_git_in(repo, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+        run_git_in(repo, &["commit", "--allow-empty", "-m", "initial"]);
+        let service = GitService::with_repo_path(repo.to_path_buf());
+
+        assert!(service.branch_exists("main"));
     }
 
     #[test]
