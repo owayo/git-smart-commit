@@ -711,9 +711,6 @@ impl App {
         // claw-hooks stop hook から渡されるエージェントコンテキスト
         let agent_context = std::env::var("CLAW_HOOKS_AGENT_MESSAGE").ok();
 
-        // Gitリポジトリかどうかを確認
-        self.git.verify_repository()?;
-
         if let Some(dev_log) = &self.dev_log {
             dev_log.set_invocation(Invocation {
                 mode: Self::run_mode(cli).to_string(),
@@ -724,23 +721,32 @@ impl App {
                 stage_all: cli.stage_all,
                 from_agent_hook: agent_context.is_some(),
             });
-            dev_log.set_repository(Repository {
-                path: self
-                    .git
-                    .get_git_root()
-                    .map(|root| root.to_string_lossy().into_owned()),
-                branch: self.git.get_current_branch(),
-            });
         }
 
-        let result = match self.dispatch_special_mode(cli, agent_context.as_deref()) {
-            Some(result) => result,
-            None => self.run_commit(cli, agent_context.as_deref()),
-        };
+        // 検証段階のエラーも共通の終了処理へ流す。
+        let result = self.git.verify_repository().and_then(|()| {
+            if let Some(dev_log) = &self.dev_log {
+                dev_log.set_repository(Repository {
+                    path: self
+                        .git
+                        .get_git_root()
+                        .map(|root| root.to_string_lossy().into_owned()),
+                    branch: self.git.get_current_branch(),
+                });
+            }
+
+            match self.dispatch_special_mode(cli, agent_context.as_deref()) {
+                Some(result) => result,
+                None => self.run_commit(cli, agent_context.as_deref()),
+            }
+        });
 
         // 生成ログはここで 1 度だけ書き出す。各モードの戻り先を 1 箇所に絞ることで、
         // 出口を増やしても記録漏れが起きないようにする。
-        if let Some(dev_log) = &self.dev_log {
+        // リポジトリ外での起動は main が exit 0 として扱う通常スキップ。
+        if let Some(dev_log) = &self.dev_log
+            && !matches!(result, Err(AppError::NotGitRepository))
+        {
             dev_log.finish(result.as_ref().err().map(|e| e.to_string()));
         }
 

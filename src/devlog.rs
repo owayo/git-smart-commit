@@ -144,7 +144,7 @@ struct RunRecord {
     invocation: Invocation,
     repository: Repository,
     input: Input,
-    prompt: PromptInfo,
+    prompt: Option<PromptInfo>,
     provider_plan: Vec<String>,
     attempts: Vec<AttemptRecord>,
     result: RunResult,
@@ -350,24 +350,23 @@ impl DevLog {
 
     /// 実行結果を書き出す
     ///
-    /// 生成に至らなかった実行(ステージ済みの変更が無い等)は記録しない。改善パイプラインで
-    /// 見たいのは「プロンプトと応答の対」であって、起動回数ではないため。
+    /// 生成に至らなかった正常なスキップは記録しない。失敗は生成前でも記録し、
+    /// その場合は prompt を null として生成した実行と区別する。
     ///
     /// 書き込みに失敗してもエラーは返さない。ログのために生成やコミットを
     /// 止めるのは本末転倒なので、警告を 1 行出して続行する。
     pub fn finish(&self, error: Option<String>) {
         let run = self.run.borrow();
-        let Some(prompt) = run.prompt.as_deref() else {
-            return;
-        };
-
         let mut result = run.result.clone();
-        if result.status.is_empty() {
-            // set_result まで到達しなかった = 途中で失敗した実行
-            result.status = "failed".to_string();
-        }
         if result.error.is_none() {
             result.error = error;
+        }
+        if run.prompt.is_none() && result.error.is_none() && result.status != "failed" {
+            return;
+        }
+        if result.error.is_some() || result.status.is_empty() {
+            // set_result まで到達しなかった、または記録後に失敗した実行
+            result.status = "failed".to_string();
         }
 
         let run_id = Self::new_run_id(self.started_at_unix_ms);
@@ -382,14 +381,14 @@ impl DevLog {
             invocation: run.invocation.clone(),
             repository: run.repository.clone(),
             input: run.input.clone(),
-            prompt: PromptInfo {
+            prompt: run.prompt.as_deref().map(|prompt| PromptInfo {
                 bytes: prompt.len(),
                 digest: digest(prompt),
                 content: match self.content_level {
                     ContentLevel::Full => Some(prompt.to_string()),
                     ContentLevel::Metadata => None,
                 },
-            },
+            }),
             provider_plan: run.provider_plan.clone(),
             attempts: self.attempts.borrow().clone(),
             result,
@@ -713,7 +712,7 @@ mod tests {
         assert_eq!(written["prompt"]["content"], "prompt body");
     }
 
-    /// 生成に至らなかった実行(ステージ済みの変更が無い等)はログを残さない
+    /// 生成せず正常にスキップした実行はログを残さない
     #[test]
     fn test_run_without_generation_is_not_recorded() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -741,6 +740,39 @@ mod tests {
         let written = read_single_record(dir.path());
         assert_eq!(written["result"]["status"], "failed");
         assert_eq!(written["result"]["error"], "all providers failed");
+    }
+
+    /// プロンプトを作る前の失敗も、生成情報なしでエラーを残す
+    #[test]
+    fn test_failed_run_before_generation_records_error() {
+        for content in ["metadata", "full"] {
+            let dir = tempfile::TempDir::new().unwrap();
+            let log = DevLog::from_config(&enabled_config(dir.path(), content), true).unwrap();
+            log.finish(Some("staging failed".to_string()));
+
+            let written = read_single_record(dir.path());
+            assert_eq!(written["result"]["status"], "failed");
+            assert_eq!(written["result"]["error"], "staging failed");
+            assert_eq!(written.get("prompt"), Some(&serde_json::Value::Null));
+            assert!(written["attempts"].as_array().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn test_explicit_failure_before_generation_records_error() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let log = DevLog::from_config(&enabled_config(dir.path(), "metadata"), true).unwrap();
+        log.set_result(RunResult {
+            status: "failed".to_string(),
+            error: Some("staging failed".to_string()),
+            ..RunResult::default()
+        });
+        log.finish(None);
+
+        let written = read_single_record(dir.path());
+        assert_eq!(written["result"]["status"], "failed");
+        assert_eq!(written["result"]["error"], "staging failed");
+        assert_eq!(written.get("prompt"), Some(&serde_json::Value::Null));
     }
 
     #[test]

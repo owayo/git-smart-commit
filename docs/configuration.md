@@ -240,6 +240,8 @@ max_total_mb = 500
 
 Each run writes one JSON file to `~/.config/git-sc/logs/YYYY-MM-DD/`, containing the prompt digest and diff statistics, every provider attempt (raw response before cleanup, model, duration, quality findings, and whether it was accepted, retried, or fell through), and the outcome — including the commit hash when one was made. Files are written to a temporary name and renamed into place, so concurrent `git-sc` runs never interleave, and partially written records never appear as finished ones.
 
+Failures before prompt construction, such as staging failures, are also recorded with `result.status = "failed"`, the error in `result.error`, and `prompt = null`. Successful runs that skip generation (for example, `--all` with no changes or invocation outside a repository) do not create a log. Logging begins after configuration has loaded, so configuration-loading errors are not recorded.
+
 Analyze them by streaming the files into JSONL:
 
 ```bash

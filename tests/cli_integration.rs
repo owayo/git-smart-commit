@@ -617,6 +617,108 @@ fn test_run_outside_git_repo() {
 // --all で変更がない場合のテスト
 // ============================================================
 
+/// 生成前の失敗が 1 実行 1 ファイルとして残ったことを確かめる
+fn read_single_dev_log(config_dir: &std::path::Path) -> serde_json::Value {
+    let logs: Vec<_> = std::fs::read_dir(config_dir.join("logs"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.is_dir())
+        .flat_map(|day| std::fs::read_dir(day).unwrap())
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+        .collect();
+    assert_eq!(logs.len(), 1, "失敗した実行のログは 1 件だけ残る");
+    serde_json::from_slice(&std::fs::read(&logs[0]).unwrap()).unwrap()
+}
+
+/// index.lock による生成前のステージング失敗も、quiet モードでログに残る
+#[test]
+#[cfg_attr(windows, ignore)]
+fn test_dev_log_records_staging_failure_before_generation() {
+    let dir = setup_git_repo_with_commit();
+    let home = TempDir::new().unwrap();
+    let config_dir = home.path().join(".config/git-sc");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "nano_buddy = false\n[dev_log]\nenabled = true\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("README.md"), "# Updated\n").unwrap();
+    std::fs::write(dir.path().join(".git/index.lock"), "").unwrap();
+
+    let output = git_sc!()
+        .args(["--all", "--yes", "--quiet"])
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("index.lock"))
+        .get_output()
+        .clone();
+    assert!(output.stdout.is_empty());
+
+    let record = read_single_dev_log(&config_dir);
+    assert_eq!(record["result"]["status"], "failed");
+    assert_eq!(
+        record["result"]["error"].as_str().unwrap(),
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .trim()
+            .strip_prefix("Error: ")
+            .unwrap()
+    );
+    assert_eq!(record.get("prompt"), Some(&serde_json::Value::Null));
+    assert!(record["attempts"].as_array().unwrap().is_empty());
+    assert_eq!(record["invocation"]["mode"], "commit");
+    assert_eq!(record["invocation"]["quiet"], true);
+    assert_eq!(record["invocation"]["stage_all"], true);
+    assert_eq!(record["invocation"]["auto_confirm"], true);
+}
+
+#[test]
+#[cfg_attr(windows, ignore)]
+fn test_dev_log_records_git_verification_failure_but_skips_non_repository() {
+    let dir = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let config_dir = home.path().join(".config/git-sc");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "nano_buddy = false\n[dev_log]\nenabled = true\n",
+    )
+    .unwrap();
+
+    // リポジトリ外での実行は exit 0 の通常スキップなので記録しない。
+    git_sc!()
+        .arg("--quiet")
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    assert!(!config_dir.join("logs").exists());
+
+    // Git 自体を起動できないエラーは、検証段階でも記録する。
+    let empty_path = TempDir::new().unwrap();
+    git_sc!()
+        .arg("--quiet")
+        .env("PATH", empty_path.path())
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure();
+    let record = read_single_dev_log(&config_dir);
+    assert_eq!(record["result"]["status"], "failed");
+    assert!(!record["result"]["error"].as_str().unwrap().is_empty());
+    assert_eq!(record.get("prompt"), Some(&serde_json::Value::Null));
+    assert!(record["attempts"].as_array().unwrap().is_empty());
+    assert_eq!(record["invocation"]["mode"], "commit");
+    assert_eq!(record["invocation"]["quiet"], true);
+}
+
 #[test]
 fn test_stage_all_no_changes() {
     let dir = setup_git_repo_with_commit();
