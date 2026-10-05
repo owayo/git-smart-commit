@@ -184,7 +184,7 @@ grok = ""
 
 - Existing config files are not rewritten when a default changes. After a Codex CLI update, check that `models.codex` still names a model Codex serves: a removed model fails every call and silently drops Codex out of the chain.
 - A project `.git-sc` can name executables for git-sc to run (`providers[].command`, `prefix_scripts[].script`, `ai_usage.command`). Review it before running git-sc in a repository you do not trust.
-- Files matching the patterns in `.git-sc-ignore` (gitignore syntax, at the repository root) are left out of the diff sent to the AI.
+- Files matching `.git-sc-ignore` patterns (gitignore syntax, at the repository root) send only their paths to the AI; their contents are omitted. Messages can be generated even when every changed file matches.
 
 Every option, and the details of the fallback chain, prefixes, the `ai-usage` quota gate, and the developer generation log, are in [docs/configuration.md](docs/configuration.md). What git-sc sends to the AI, and how it protects that data, is in [docs/diff-processing.md](docs/diff-processing.md).
 

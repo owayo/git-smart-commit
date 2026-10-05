@@ -184,7 +184,7 @@ grok = ""
 
 - 既定値が変わっても、既存の設定ファイルは書き換えられません。Codex CLI を更新したら、`models.codex` が Codex で使えるモデルを指しているか確かめてください。削除されたモデルのままだと呼び出しが毎回失敗し、Codex はフォールバックチェーンから黙って外れます。
 - プロジェクトの `.git-sc` には、git-sc が起動する実行ファイルを書けます（`providers[].command`、`prefix_scripts[].script`、`ai_usage.command`）。信頼できないリポジトリで git-sc を実行する前に、その内容を確認してください。
-- `.git-sc-ignore`（gitignore 形式、リポジトリのルートに置く）のパターンに一致するファイルは、AI に送る差分から除外されます。
+- `.git-sc-ignore`（gitignore 形式、リポジトリのルートに置く）のパターンに一致するファイルは、本文を省き、パスだけを AI に送ります。変更されたファイルがすべて除外対象でもメッセージを生成できます。
 
 設定項目の一覧と、フォールバックチェーン・プレフィックス・残量ゲート・開発者向け生成ログの詳しい設定は [docs/configuration.ja.md](docs/configuration.ja.md) にあります。AI に何を送り、それをどう守っているかは [docs/diff-processing.ja.md](docs/diff-processing.ja.md) で説明しています。
 

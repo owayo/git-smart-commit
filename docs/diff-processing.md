@@ -25,12 +25,12 @@ flowchart LR
 - Binary files replaced with a one-line summary (e.g. `[Binary] modified: <path>`) instead of their contents
 - Lockfile contents replaced with a path and change kind (added, modified, deleted, renamed, or copied), e.g. `[Lockfile] modified: Cargo.lock`. Renames and copies retain both paths; control characters such as newlines in paths are escaped.
 - Quoted diff headers with spaces or non-ASCII file paths are handled correctly
-- `.git-sc-ignore` patterns applied
+- Files matching `.git-sc-ignore` patterns retain only their paths, with a notice that the contents were omitted
 - Truncated at 10,000 characters
 
 Lockfile summaries need no configuration and apply to normal commits, amend, squash, reword, and `--generate-for`. Matching filenames in any directory are `*.lock`, `*.lockb`, `*.lockfile`, `package-lock.json`, `npm-shrinkwrap.json`, `pnpm-lock.yaml`, `go.sum`, and `Package.resolved`. The literal filenames `.lock`, `.lockb`, and `.lockfile` also match. The suffix rules cover files such as `Cargo.lock`, `yarn.lock`, `Gemfile.lock`, `composer.lock`, `uv.lock`, and `bun.lock`.
 
-Summaries are produced before the character limit is applied, so large lockfile contents do not crowd out other changes. Lockfile-only changes can still generate a message. Matching `.git-sc-ignore` patterns exclude the entire summary, including its path.
+Summaries are produced before the character limit is applied, so large lockfile contents do not crowd out other changes. Lockfile-only changes can still generate a message. Files matching `.git-sc-ignore` keep only their paths and the omission notice, including lockfiles and binary files.
 
 ## Security Notes
 
@@ -42,6 +42,8 @@ Summaries are produced before the character limit is applied, so large lockfile 
 - **A project-level `.git-sc` can run code.** `providers[].command`, `prefix_scripts[].script`, and `ai_usage.command` name executables that git-sc launches, and a repository-local `.git-sc` is merged in like any other config. Cloning an untrusted repository and running git-sc in it — including automatically, via an agent stop hook — therefore executes whatever those fields point at. `env` keys are validated and dynamic-loader / interpreter pre-load names are rejected, but that does not constrain these three fields. Review a repository's `.git-sc` before running git-sc inside it, the same way you would review a `Makefile` or a git hook.
 
 ## .git-sc-ignore
+
+Matching files send only their original diff header (the path, or both paths for a rename) and `[content omitted by .git-sc-ignore]` to the AI. File contents and other diff metadata are omitted. This applies to normal commits, amend, squash, reword, and `--generate-for`, so a commit containing only matching files can still generate a message from its paths. A negated pattern (`!`) can restore the contents for selected files.
 
 Place `.git-sc-ignore` at the root of the Git repository and write gitignore-style patterns in it. Patterns are matched against the decoded Git path, so quoted diff headers such as Japanese filenames escaped by Git are excluded correctly as well. Rename diffs are checked against both the source path and destination path, so moving a file into an ignored directory is excluded consistently too. Filenames containing spaces are also supported: Git does not quote space-only filenames in `diff --git` headers, but `git-sc` still extracts the correct path so that ignore patterns apply consistently. This also covers rename headers where the source and destination paths differ and both paths contain spaces, as well as mixed headers where only one side is quoted (e.g. renaming `old name.txt` to a non-ASCII filename that Git quotes).
 

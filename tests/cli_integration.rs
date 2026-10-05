@@ -150,6 +150,104 @@ fn test_lockfile_contents_are_omitted_from_prompts_in_all_modes() {
     check_prompt(&["--generate-for", "HEAD"]);
 }
 
+#[test]
+#[cfg(unix)]
+fn test_ignored_only_changes_generate_from_paths_in_all_modes() {
+    let dir = setup_git_repo_with_commit();
+    let path = setup_fake_opencode_path(&dir);
+    std::fs::write(
+        dir.path().join("fake-bin/opencode"),
+        concat!(
+            "#!/bin/sh\n",
+            "while [ \"$#\" -gt 0 ]; do\n",
+            "  if [ \"$1\" = '-f' ]; then cp \"$2\" \"$PROMPT_CAPTURE\"; break; fi\n",
+            "  shift\n",
+            "done\n",
+            "echo 'docs: update corpus files'\n",
+        ),
+    )
+    .unwrap();
+    std::fs::write(dir.path().join(".git-sc"), "providers = [\"opencode\"]\n").unwrap();
+    std::fs::write(dir.path().join(".git-sc-ignore"), "docs\n").unwrap();
+    let base = head_hash(&dir);
+    std::fs::create_dir_all(dir.path().join("docs/corpus")).unwrap();
+    std::fs::write(
+        dir.path().join("docs/corpus/sample.md"),
+        "IGNORED_CONTENT_MUST_NOT_REACH_AI\n".repeat(1000),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("docs/corpus/data.lock"),
+        "IGNORED_LOCK_CONTENT_MUST_NOT_REACH_AI\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("docs/corpus/image.png"),
+        b"\0binary content",
+    )
+    .unwrap();
+    let staged = std::process::Command::new("git")
+        .args(["add", "docs"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(staged.status.success());
+
+    let capture = dir.path().join("prompt.txt");
+    let check_prompt = |mode: &[&str]| {
+        // 各モードで新しく渡されたプロンプトを検証する。
+        if capture.exists() {
+            std::fs::remove_file(&capture).unwrap();
+        }
+        git_sc!()
+            .args(["--dry-run", "-p", "opencode"])
+            .args(mode)
+            .env("PATH", &path)
+            .env("HOME", dir.path())
+            .env("XDG_CONFIG_HOME", dir.path())
+            .env("PROMPT_CAPTURE", &capture)
+            .current_dir(dir.path())
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("docs: update corpus files"));
+        let prompt = std::fs::read_to_string(&capture).unwrap();
+        for file in ["sample.md", "data.lock", "image.png"] {
+            let header = format!("diff --git a/docs/corpus/{file} b/docs/corpus/{file}");
+            assert!(prompt.contains(&header), "{mode:?}: {prompt}");
+        }
+        assert_eq!(
+            prompt
+                .matches("[content omitted by .git-sc-ignore]")
+                .count(),
+            3
+        );
+        for omitted in [
+            "IGNORED_CONTENT_MUST_NOT_REACH_AI",
+            "IGNORED_LOCK_CONTENT_MUST_NOT_REACH_AI",
+            "binary content",
+            "new file mode",
+            "Binary files",
+            "[Lockfile]",
+            "diff truncated",
+        ] {
+            assert!(!prompt.contains(omitted), "{mode:?}: {omitted}");
+        }
+    };
+    check_prompt(&[]);
+    let committed = std::process::Command::new("git")
+        .args(["commit", "-m", "wip"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(committed.status.success());
+    let original_head = head_hash(&dir);
+    check_prompt(&["--amend"]);
+    check_prompt(&["--reword", "HEAD"]);
+    check_prompt(&["--squash", &base]);
+    check_prompt(&["--generate-for", "HEAD"]);
+    assert_eq!(head_hash(&dir), original_head);
+}
+
 /// テスト用ヘルパー: 一時的なGitリポジトリを作成
 fn setup_git_repo() -> TempDir {
     let dir = TempDir::new().unwrap();
@@ -1013,7 +1111,10 @@ fn test_ignore_patterns_apply_regardless_of_diff_format_config() {
             .stdout(
                 predicate::str::contains("SUPER_SECRET_VALUE")
                     .not()
-                    .and(predicate::str::contains("secrets/key.txt").not()),
+                    .and(predicate::str::contains("secrets/key.txt"))
+                    .and(predicate::str::contains(
+                        "[content omitted by .git-sc-ignore]",
+                    )),
             );
     }
 }
@@ -2571,9 +2672,12 @@ fn test_ignore_patterns_apply_to_submodule_under_diff_submodule_log() {
         String::from_utf8_lossy(&assert.get_output().stderr)
     );
     assert!(
-        !combined.contains("vendor/sub"),
-        "diff.submodule = log で除外対象のサブモジュールがプロンプトへ送られている: {combined}"
+        combined
+            .contains("diff --git a/vendor/sub b/vendor/sub\n[content omitted by .git-sc-ignore]"),
+        "除外対象のサブモジュールのパスと省略通知が残っていない: {combined}"
     );
+    assert!(!combined.contains("Subproject commit"), "{combined}");
+    assert!(!combined.contains("Submodule vendor/sub"), "{combined}");
     assert!(
         combined.contains("public.txt"),
         "除外していないファイルまでプロンプトから消えている: {combined}"

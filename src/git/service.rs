@@ -11,6 +11,9 @@ use crate::error::AppError;
 /// 差分の最大文字数
 const MAX_DIFF_CHARS: usize = 10000;
 
+/// 除外対象はパスだけを残し、本文を渡していないことを AI に知らせる。
+const IGNORED_CONTENT_NOTICE: &str = "[content omitted by .git-sc-ignore]";
+
 /// diff の出力形式をユーザーの Git 設定から切り離すための引数
 ///
 /// `.git-sc-ignore` の除外は `diff --git a/... b/...` 行からパスを読んで判定する。
@@ -343,7 +346,7 @@ impl GitService {
         }
     }
 
-    /// diffからignoreパターンにマッチするファイルを除外
+    /// ignoreパターンに一致するファイルは、パスを含むヘッダーだけを残す。
     fn filter_ignored_files(diff_text: &str, ignore: &Gitignore) -> String {
         if diff_text.is_empty() {
             return String::new();
@@ -377,8 +380,12 @@ impl GitService {
                     i += 1;
                 }
 
-                // ignoreにマッチしなければブロックを追加
-                if !should_ignore {
+                // パスは残すが、本文とそれ以外のメタデータは AI に送らない。
+                // 元のヘッダーを使い、rename の両側やクォートされたパスも保持する。
+                if should_ignore {
+                    filtered_lines.push(line);
+                    filtered_lines.push(IGNORED_CONTENT_NOTICE);
+                } else {
                     for line in lines.iter().take(i).skip(block_start) {
                         filtered_lines.push(*line);
                     }
@@ -635,7 +642,7 @@ impl GitService {
     /// 呼び出し元(diff 取得 API)はそのままエラーを伝播し、除外漏れの差分を
     /// AI へ送らずに終了する。
     fn apply_all_filters(&self, diff: &str) -> Result<String, AppError> {
-        // 1. .git-sc-ignore パターンにマッチするファイルを除外
+        // 1. .git-sc-ignore パターンにマッチするファイルの本文を省略
         //    バイナリフィルタより先に実行する必要がある。
         //    summarize_diff は diff --git ヘッダーをサマリー行に変換するため、
         //    先に実行するとignoreパターンがバイナリファイルに適用されなくなる。
@@ -688,6 +695,12 @@ impl GitService {
 
     /// 本文を省略するブロックだけ要約を返す。
     fn summarize_diff_block(block: &[&str]) -> Option<String> {
+        // 除外済みの lock ファイルもパスと省略通知をそのまま通す。
+        // 変更種別のメタデータは既に省かれているため、modified と推測しない。
+        if block.len() == 2 && block[1] == IGNORED_CONTENT_NOTICE {
+            return None;
+        }
+
         let mut is_binary = false;
         let mut change = "modified";
         let mut path_from = None;
@@ -1596,7 +1609,10 @@ rename to "new\303\251.lock""#;
             format!("[Lockfile] modified: Cargo.lock\n{text_diff}")
         );
         std::fs::write(dir.path().join(".git-sc-ignore"), "Cargo.lock\n").unwrap();
-        assert_eq!(service.apply_all_filters(&diff).unwrap(), text_diff);
+        assert_eq!(
+            service.apply_all_filters(&diff).unwrap(),
+            format!("diff --git a/Cargo.lock b/Cargo.lock\n{IGNORED_CONTENT_NOTICE}\n{text_diff}")
+        );
     }
 
     #[test]
@@ -2253,6 +2269,65 @@ index 1234567..abcdefg 100644
     // filter_ignored_files のテスト (with actual ignore patterns)
     // ============================================================
 
+    #[rstest]
+    #[case(
+        "diff --git a/docs/added.md b/docs/added.md",
+        "new file mode 100644\nindex 0000000..1234567\n--- /dev/null\n+++ b/docs/added.md\n@@ -0,0 +1 @@\n+PRIVATE-ADDED"
+    )]
+    #[case(
+        "diff --git a/docs/deleted.md b/docs/deleted.md",
+        "deleted file mode 100644\nindex 1234567..0000000\n--- a/docs/deleted.md\n+++ /dev/null\n@@ -1 +0,0 @@\n-PRIVATE-DELETED"
+    )]
+    #[case(
+        "diff --git a/docs/modified.md b/docs/modified.md",
+        "index 1234567..7654321\n@@ -1 +1 @@\n-PRIVATE-OLD\n+PRIVATE-NEW"
+    )]
+    #[case(
+        "diff --git a/docs/script.sh b/docs/script.sh",
+        "old mode 100644\nnew mode 100755"
+    )]
+    #[case(
+        "diff --git a/docs/old.md b/src/new.md",
+        "similarity index 80%\nrename from docs/old.md\nrename to src/new.md\n@@ -1 +1 @@\n-PRIVATE-OLD\n+PRIVATE-NEW"
+    )]
+    #[case(
+        "diff --git a/src/old.md b/docs/copied.md",
+        "similarity index 80%\ncopy from src/old.md\ncopy to docs/copied.md\n@@ -1 +1 @@\n-PRIVATE-OLD\n+PRIVATE-NEW"
+    )]
+    #[case(
+        "diff --combined docs/merged.md",
+        "index 1234567,7654321..abcdef0\n@@@ -1 -1 +1 @@@\n++PRIVATE-MERGED"
+    )]
+    fn test_filter_ignored_files_retains_only_header(#[case] header: &str, #[case] body: &str) {
+        let mut builder = GitignoreBuilder::new(".");
+        builder.add_line(None, "docs").unwrap();
+        let ignore = builder.build().unwrap();
+        let diff = format!("{header}\n{body}");
+        assert_eq!(
+            GitService::filter_ignored_files(&diff, &ignore),
+            format!("{header}\n{IGNORED_CONTENT_NOTICE}")
+        );
+    }
+
+    #[test]
+    fn test_filter_ignored_files_negated_pattern_restores_contents() {
+        let mut builder = GitignoreBuilder::new(".");
+        builder.add_line(None, "docs/*").unwrap();
+        builder.add_line(None, "!docs/keep.md").unwrap();
+        let ignore = builder.build().unwrap();
+        let visible =
+            "diff --git a/docs/keep.md b/docs/keep.md\n@@ -1 +1 @@\n-old\n+VISIBLE-CONTENT";
+        let diff = format!(
+            "diff --git a/docs/hidden.md b/docs/hidden.md\n@@ -1 +1 @@\n-PRIVATE-OLD\n+PRIVATE-NEW\n{visible}"
+        );
+        assert_eq!(
+            GitService::filter_ignored_files(&diff, &ignore),
+            format!(
+                "diff --git a/docs/hidden.md b/docs/hidden.md\n{IGNORED_CONTENT_NOTICE}\n{visible}"
+            )
+        );
+    }
+
     #[test]
     fn test_filter_ignored_files_with_patterns() {
         use tempfile::TempDir;
@@ -2280,7 +2355,10 @@ index aaaaaaa..bbbbbbb 100644
 
         let result = GitService::filter_ignored_files(diff, &ignore);
         assert!(result.contains("src/main.rs"));
-        assert!(!result.contains("Cargo.lock"));
+        assert!(result.contains(&format!(
+            "diff --git a/Cargo.lock b/Cargo.lock\n{IGNORED_CONTENT_NOTICE}"
+        )));
+        assert!(!result.contains("lock change"));
     }
 
     #[test]
@@ -2319,7 +2397,10 @@ index aaaaaaa..bbbbbbb 100644
 +lock change"#;
 
         let result = GitService::filter_ignored_files(diff, &ignore);
-        assert!(!result.contains("Cargo.lock"));
+        assert_eq!(
+            result,
+            format!("diff --git a/Cargo.lock b/Cargo.lock\n{IGNORED_CONTENT_NOTICE}")
+        );
     }
 
     #[test]
@@ -2358,7 +2439,10 @@ index 1234567..abcdefg 100644
                     rename to generated/main.rs\n";
 
         let result = GitService::filter_ignored_files(diff, &ignore);
-        assert!(result.is_empty());
+        assert_eq!(
+            result,
+            format!("{}\n{IGNORED_CONTENT_NOTICE}", diff.lines().next().unwrap())
+        );
     }
 
     #[test]
@@ -2391,8 +2475,10 @@ index 1234567..abcdefg 100644
             "combined diff で除外が効いていない: {result}"
         );
         assert!(
-            !result.contains("diff --cc secrets/key.txt"),
-            "除外対象のブロックヘッダーが残っている: {result}"
+            result.contains(&format!(
+                "diff --cc secrets/key.txt\n{IGNORED_CONTENT_NOTICE}"
+            )),
+            "除外対象のパスと本文の省略通知が残っていない: {result}"
         );
         assert!(
             result.contains("RESOLVED-PUBLIC"),
@@ -2440,13 +2526,16 @@ index 1234567..abcdefg 100644
                     rename to generated/new file.txt\n";
 
         let result = GitService::filter_ignored_files(diff, &ignore);
-        assert!(result.is_empty());
+        assert_eq!(
+            result,
+            format!("{}\n{IGNORED_CONTENT_NOTICE}", diff.lines().next().unwrap())
+        );
     }
 
     #[test]
     fn test_filter_ignored_files_matches_unquoted_space_to_quoted_rename() {
         // 「非クォート(スペース含み) → クォート」混在ヘッダーの rename でも
-        // 移動先パスが ignore 照合されてブロックが除外されること
+        // 移動先パスが ignore 照合されて本文が省略されること
         let mut builder = GitignoreBuilder::new(".");
         builder.add_line(None, "generated/**").unwrap();
         let ignore = builder.build().unwrap();
@@ -2457,7 +2546,10 @@ index 1234567..abcdefg 100644
                     rename to generated/テ.txt\n";
 
         let result = GitService::filter_ignored_files(diff, &ignore);
-        assert!(result.is_empty());
+        assert_eq!(
+            result,
+            format!("{}\n{IGNORED_CONTENT_NOTICE}", diff.lines().next().unwrap())
+        );
     }
 
     #[test]
@@ -2476,7 +2568,10 @@ index 1234567..abcdefg 100644
                     +new line\n";
 
         let result = GitService::filter_ignored_files(diff, &ignore);
-        assert!(result.is_empty());
+        assert_eq!(
+            result,
+            format!("{}\n{IGNORED_CONTENT_NOTICE}", diff.lines().next().unwrap())
+        );
     }
 
     #[test]
@@ -2671,12 +2766,17 @@ index 555..666 100644
 
         let result = gs.apply_all_filters(diff).unwrap();
 
-        // *.png はignoreされるべき（バイナリサマリーも含めて除外）
+        // *.png はパスだけ残し、バイナリサマリーやメタデータも省略する。
         assert!(
-            !result.contains("image.png"),
-            "image.png should be ignored but found in result: {}",
+            result.contains(&format!(
+                "diff --git a/image.png b/image.png\n{IGNORED_CONTENT_NOTICE}"
+            )),
+            "image.png path should remain in result: {}",
             result
         );
+        assert!(!result.contains("[Binary]"));
+        assert!(!result.contains("Binary files"));
+        assert!(!result.contains("new file mode"));
         // テキストファイルは残る
         assert!(result.contains("src/main.rs"));
         assert!(result.contains("+new"));
@@ -3352,7 +3452,10 @@ index 555..666 100644
         );
 
         let result = GitService::filter_ignored_files(diff, &ignore);
-        assert!(result.is_empty());
+        assert_eq!(
+            result,
+            format!("{}\n{IGNORED_CONTENT_NOTICE}", diff.lines().next().unwrap())
+        );
     }
 
     // ============================================================
@@ -3861,7 +3964,10 @@ index 555..666 100644
         let diff =
             "diff --git a/debug.log b/debug.log\n--- a/debug.log\n+++ b/debug.log\n-old\n+new";
         let result = GitService::filter_ignored_files(diff, &ignore);
-        assert_eq!(result, "");
+        assert_eq!(
+            result,
+            format!("diff --git a/debug.log b/debug.log\n{IGNORED_CONTENT_NOTICE}")
+        );
     }
 
     #[test]
@@ -3879,7 +3985,12 @@ index 555..666 100644
         let diff = "diff --git a/src/main.rs b/src/main.rs\n--- a/src/main.rs\n+++ b/src/main.rs\n-old\n+new\ndiff --git a/debug.log b/debug.log\n--- a/debug.log\n+++ b/debug.log\n-x\n+y";
         let result = GitService::filter_ignored_files(diff, &ignore);
         assert!(result.contains("src/main.rs"));
-        assert!(!result.contains("debug.log"));
+        assert!(result.contains(&format!(
+            "diff --git a/debug.log b/debug.log\n{IGNORED_CONTENT_NOTICE}"
+        )));
+        assert!(!result.contains("--- a/debug.log"));
+        assert!(!result.contains("-x"));
+        assert!(!result.contains("+y"));
     }
 
     // ============================================================
@@ -4156,10 +4267,13 @@ index 555..666 100644
         let ignore = builder.build().unwrap();
 
         let result = GitService::filter_ignored_files(diff, &ignore);
-        // src/main.rs と src/lib.rs は保持、dist/bundle.js は除外
+        // src/main.rs と src/lib.rs は本文も保持、dist/bundle.js はパスだけ残す。
         assert!(result.contains("src/main.rs"));
         assert!(result.contains("src/lib.rs"));
-        assert!(!result.contains("dist/bundle.js"));
+        assert!(result.contains(&format!(
+            "diff --git a/dist/bundle.js b/dist/bundle.js\n{IGNORED_CONTENT_NOTICE}"
+        )));
+        assert!(!result.contains("--- a/dist/bundle.js"));
     }
 
     // ============================================================
@@ -4588,7 +4702,11 @@ Binary files /dev/null and b/script.bin differ"#;
                      +y";
         let result = GitService::filter_ignored_files(diff, &ignore);
         assert!(result.contains("src/main.rs"));
-        assert!(!result.contains("generated/out.rs"));
+        assert!(result.contains(&format!(
+            "diff --git a/generated/out.rs b/generated/out.rs\n{IGNORED_CONTENT_NOTICE}"
+        )));
+        assert!(!result.contains("-x"));
+        assert!(!result.contains("+y"));
     }
 
     // ============================================================
@@ -4676,7 +4794,7 @@ Binary files /dev/null and b/script.bin differ"#;
     #[test]
     fn test_apply_all_filters_ignore_before_binary() {
         // ignoreフィルタがバイナリフィルタより先に適用されることを検証
-        // ignoreパターンにマッチするバイナリファイルは完全に除外される
+        // ignoreパターンにマッチするバイナリファイルはパスだけ残す。
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
@@ -4700,8 +4818,12 @@ Binary files /dev/null and b/script.bin differ"#;
 
         // テキストファイルは含まれる
         assert!(result.contains("src/main.rs"));
-        // バイナリ+ignoreのファイルは完全に除外（[Binary]サマリーも出ない）
-        assert!(!result.contains("image.png"));
+        // バイナリ+ignoreのファイルはパスと省略通知だけ残す。
+        assert!(result.contains(&format!(
+            "diff --git a/image.png b/image.png\n{IGNORED_CONTENT_NOTICE}"
+        )));
+        assert!(!result.contains("[Binary]"));
+        assert!(!result.contains("Binary files"));
     }
 
     #[test]
