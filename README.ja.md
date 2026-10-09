@@ -57,7 +57,7 @@ git-sc は、ステージした差分とリポジトリで使われているコ�
   - Codex CLI: `npm install -g @openai/codex`
   - Claude Code: `curl -fsSL https://claude.ai/install.sh | bash`
   - opencode: `curl -fsSL https://opencode.ai/install | bash`
-  - Grok CLI（`grok`、xAI）: [cmux](https://github.com/manaflow-ai/cmux) に同梱（`/Applications/cmux.app/Contents/Resources/bin/grok`）。`grok` が `PATH` にない場合、このステップはスキップされて次のプロバイダーへ進みます。
+  - Grok CLI（`grok`、xAI）: `grok` を `PATH` から実行できるようにしてください。見つからない場合、このステップはスキップされて次のプロバイダーへ進みます。
   - Apple Intelligence: macOS 26 以降と Apple Silicon が必要で、ソースからビルドした場合だけ使えます（後述）
 
 プロバイダーごとの起動のしかたと、プラットフォームによる違いは [docs/providers.ja.md](docs/providers.ja.md) にまとめています。

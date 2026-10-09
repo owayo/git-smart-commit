@@ -299,7 +299,7 @@ impl AiService {
                 //   --disable-web-search --max-turns 1 --verbatim [-m <model>] --prompt-file <temp_file>
                 //
                 // grok は subagent / plan mode / cross-session memory / web search / tool 実行
-                // など副作用機能をデフォルトで持つ TUI エージェント CLI (cmux 同梱)。commit
+                // など副作用機能をデフォルトで持つ TUI エージェント CLI。commit
                 // メッセージ生成は 1 ターンの純粋関数として扱いたいので:
                 //   --output-format plain: headless テキスト出力 (JSON/streaming ではない)
                 //   --sandbox read-only:   ファイル書き込み・ネットワークを禁止 (Codex と同じ発想)

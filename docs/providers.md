@@ -16,8 +16,8 @@ The Grok provider drives the Grok Build TUI (`grok`, xAI). That CLI is a full co
 | `--verbatim` | Prevents the CLI from rewriting the prompt |
 | `--prompt-file <temp file>` | Avoids `ARG_MAX` limits and cmd.exe metacharacter issues for large diffs |
 
-- **Model**: resolved as `model` on the step > `[models].grok` > empty (defer to grok's own default). When non-empty, the ID from `grok models` (currently only `grok-4.5`) is passed as `-m "<id>"`. The shipped default for `[models].grok` is left empty so a cheaper model added later is picked up without a git-sc release.
-- **Availability**: the Grok CLI ships bundled with [cmux](https://github.com/manaflow-ai/cmux) at `/Applications/cmux.app/Contents/Resources/bin/grok`. If `grok` is not on `PATH`, this step is skipped and the chain moves on to the next provider.
+- **Model**: resolved as `model` on the step > `[models].grok` > empty (defer to grok's own default). When non-empty, the ID from `grok models` is passed as `-m "<id>"`. Available IDs can change, so the shipped default for `[models].grok` is empty.
+- **Availability**: put `grok` on `PATH`. If it is unavailable, this step is skipped and the chain moves on to the next provider.
 
 ## Apple Intelligence
 

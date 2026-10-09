@@ -29,7 +29,7 @@ pub struct ModelsConfig {
     pub claude: String,
     #[serde(default = "default_opencode_model")]
     pub opencode: String,
-    /// Grok CLI の `-m` に渡すモデル ID。`grok models` が表示する ID (例: "grok-4.5")
+    /// Grok CLI の `-m` に渡すモデル ID。`grok models` が表示する ID
     /// をそのまま指定する。空文字列なら `-m` を省略し grok 自身の既定モデルに委ねる。
     #[serde(default = "default_grok_model")]
     pub grok: String,
@@ -74,10 +74,8 @@ fn default_opencode_model() -> String {
 
 /// Grok CLI のデフォルトモデル。
 ///
-/// grok CLI 0.2.x は現状 `grok-4.5` のみを提供している (`grok models` で確認)。
-/// 空文字列にすれば `-m` を省略し grok 自身の既定モデルに委ねられるため、将来 grok CLI が
-/// より安価なモデル (grok-4-fast 等) を追加してもユーザ側で追随できる。既定は
-/// CLI 側の変化を追わないよう空文字列 (= 委譲) とする。
+/// 利用できるモデルは Grok CLI のバージョンとアカウントで変わる。空文字列にして
+/// `-m` を省略し、Grok CLI 自身の既定モデルに委ねる。
 fn default_grok_model() -> String {
     String::new()
 }
@@ -974,7 +972,7 @@ codex_reasoning_effort = "low"
 # Antigravity CLI (`agy`) は `--model` に対応。`agy models` の表示名をそのまま指定する
 # (空文字列なら agy 既定モデルに委ねる)。旧 `gemini = "..."` キーは後方互換で
 # antigravity に昇格して扱われる。
-# Grok CLI は `-m` に対応。`grok models` の ID (例: "grok-4.5") をそのまま指定する
+# Grok CLI は `-m` に対応。`grok models` の ID をそのまま指定する
 # (空文字列なら grok 既定モデルに委ねる)。
 [models]
 antigravity = "{antigravity_model}"

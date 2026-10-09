@@ -61,7 +61,7 @@ codex_reasoning_effort = "low"
 # 空文字列なら `--model` を省略し agy 自身の既定モデルに委ねます。
 # 旧 `gemini = "..."` キーは後方互換の入力エイリアスとして受理され、`antigravity` に
 # 昇格します(両方指定した場合は `antigravity` が優先)。
-# Grok CLI は `-m` に対応。`grok models` が返す ID (例: "grok-4.5") をそのまま指定します。
+# Grok CLI は `-m` に対応。`grok models` が返す ID をそのまま指定します。
 # 空文字列なら `-m` を省略し grok 自身の既定モデルに委ねます。
 [models]
 antigravity = "GPT-OSS 120B (Medium)"

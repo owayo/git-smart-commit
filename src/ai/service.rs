@@ -27,7 +27,7 @@ pub enum AiProvider {
     Codex,
     Claude,
     Opencode,
-    /// Grok Build TUI (`grok`). X.AI の Grok を叩く TUI エージェント CLI (cmux 同梱)。
+    /// Grok Build TUI (`grok`) を叩くエージェント CLI。
     Grok,
     AppleIntelligence,
 }
@@ -2496,16 +2496,16 @@ mod tests {
     #[test]
     fn test_format_command_for_debug_grok_with_model() {
         let mut service = AiService::new();
-        service.models.grok = "grok-4.5".to_string();
+        service.models.grok = "custom-model".to_string();
         let temp_path = std::path::Path::new("/tmp/git-sc-prompt-grok.txt");
         let cmd = service.format_command_for_debug(
             &AiProvider::Grok,
-            "grok-4.5",
+            "custom-model",
             &ProviderStep::from_provider("grok"),
             "test prompt",
             Some(temp_path),
         );
-        assert!(cmd.contains("-m 'grok-4.5'"));
+        assert!(cmd.contains("-m 'custom-model'"));
         assert!(cmd.contains("--prompt-file '/tmp/git-sc-prompt-grok.txt'"));
     }
 
@@ -2669,14 +2669,14 @@ mod tests {
     #[test]
     fn test_build_provider_command_grok_passes_model() {
         let mut service = AiService::new();
-        service.models.grok = "grok-4.5".to_string();
+        service.models.grok = "custom-model".to_string();
         let prompt_file = TempFile::create_with_content(b"test").unwrap();
 
         let (cmd, _) = service
             .build_provider_command(
                 &AiProvider::Grok,
                 &ProviderStep::from_provider("grok"),
-                "grok-4.5",
+                "custom-model",
                 "test",
                 Some(&prompt_file),
                 None,
@@ -2685,7 +2685,7 @@ mod tests {
         let debug = format!("{:?}", cmd);
 
         assert!(debug.contains("\"-m\""));
-        assert!(debug.contains("\"grok-4.5\""));
+        assert!(debug.contains("\"custom-model\""));
     }
 
     /// Grok: モデル未指定(空)なら `-m` を付けないこと

@@ -16,8 +16,8 @@ Grok プロバイダーは Grok Build TUI（`grok`、xAI）を使います。こ
 | `--verbatim` | CLI 側でプロンプトを書き換えさせない |
 | `--prompt-file <一時ファイル>` | 大きな diff で `ARG_MAX` や cmd.exe のメタ文字問題を避ける |
 
-- **モデル**: ステップの `model` > `[models].grok` > 空（grok 自身の既定に委ねる）の順で解決します。空でない場合は `grok models` が返す ID（現在は `grok-4.5` のみ）を `-m "<id>"` として渡します。同梱の既定値は空にしてあるので、今後より安価なモデルが追加されても、git-sc の新しいリリースを待たずに追随できます。
-- **入手**: Grok CLI は [cmux](https://github.com/manaflow-ai/cmux) に同梱されています（`/Applications/cmux.app/Contents/Resources/bin/grok`）。`grok` が `PATH` にない場合、このステップはスキップされて次のプロバイダーへ進みます。
+- **モデル**: ステップの `model` > `[models].grok` > 空（grok 自身の既定に委ねる）の順で解決します。空でない場合は `grok models` が返す ID を `-m "<id>"` として渡します。利用できる ID は変わるため、同梱の既定値は空にしています。
+- **入手**: `grok` を `PATH` から実行できるようにしてください。見つからない場合、このステップはスキップされて次のプロバイダーへ進みます。
 
 ## Apple Intelligence
 

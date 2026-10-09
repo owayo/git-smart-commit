@@ -57,7 +57,7 @@ It is built to run unattended from a coding agent's stop hook (`git-sc --all --y
   - Codex CLI: `npm install -g @openai/codex`
   - Claude Code: `curl -fsSL https://claude.ai/install.sh | bash`
   - opencode: `curl -fsSL https://opencode.ai/install | bash`
-  - Grok CLI (`grok`, xAI): bundled with [cmux](https://github.com/manaflow-ai/cmux) at `/Applications/cmux.app/Contents/Resources/bin/grok`. If `grok` is not on `PATH`, the step is skipped and the chain moves on.
+  - Grok CLI (`grok`, xAI): make `grok` available on `PATH`. If it is unavailable, the step is skipped and the chain moves on.
   - Apple Intelligence: macOS 26+ with Apple Silicon, and only in builds from source (see below)
 
 How git-sc launches each provider, and what differs per platform, is in [docs/providers.md](docs/providers.md).

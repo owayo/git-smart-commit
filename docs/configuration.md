@@ -61,7 +61,7 @@ codex_reasoning_effort = "low"
 # fails the step. An empty string omits `--model` and lets agy pick its own default. A legacy `gemini = "..."` key is still
 # accepted as an input alias and is promoted to `antigravity` (an explicit `antigravity`
 # value wins if both are present).
-# Grok CLI supports `-m`: pass a model ID from `grok models` (e.g. "grok-4.5").
+# Grok CLI supports `-m`: pass a model ID from `grok models`.
 # An empty string omits `-m` and lets grok pick its own default.
 [models]
 antigravity = "GPT-OSS 120B (Medium)"
