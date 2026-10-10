@@ -144,6 +144,16 @@ mod tests {
 
         assert_eq!(config.models.codex, defaults.models.codex);
         assert!(content.contains(&format!("codex = \"{}\"", defaults.models.codex)));
+        let raw: toml::Value = toml::from_str(&content).unwrap();
+        assert!(
+            raw["providers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|provider| provider.as_str() == Some("grok"))
+        );
+        assert!(raw["models"].get("grok").is_some());
+        assert_eq!(config.models.grok, defaults.models.grok);
     }
 
     #[test]
