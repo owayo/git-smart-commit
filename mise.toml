@@ -1,11 +1,8 @@
-# Toolchain for this repository. Local development (through the Makefile) and CI both treat
-# this file as the source of truth for tool versions.
-# There is no mise.lock: rust is installed through rustup, so a lockfile would have nothing to pin
-# (no download URL or checksum).
+# Makefile 経由のローカル開発と CI で使うツールのバージョンを固定する。
+# Rust は rustup 経由で導入するため、URL やチェックサムを固定する mise.lock は作らない。
 
 [tools]
-# Spell out the profile and the components. Otherwise what gets installed depends on rustup's
-# default profile, and the minimal profile on GitHub Actions runners has no rustfmt / clippy, so
-# make ci fails there. Apple Intelligence builds on macOS also need Xcode (swiftc and the macOS 26
-# SDK), which mise does not manage.
+# プロファイルとコンポーネントを明示し、GitHub Actions の minimal 環境にも
+# rustfmt / clippy を導入する。Apple Intelligence のビルドには、mise 管理外の
+# Xcode（swiftc と macOS 26 以降の SDK）も必要。
 rust = { version = "1.98.1", profile = "minimal", components = ["rustfmt", "clippy"] }

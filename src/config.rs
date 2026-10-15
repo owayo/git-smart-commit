@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
+use crate::git::GitService;
 
 /// 各プロバイダーのモデル設定
 ///
@@ -781,24 +782,11 @@ impl Config {
 
     /// プロジェクト設定ファイルのパスを取得（Git root の .git-sc）
     pub fn project_config_path() -> Result<Option<PathBuf>, AppError> {
-        use std::process::Command;
-
-        let output = Command::new("git")
-            .args(["rev-parse", "--show-toplevel"])
-            .output();
-
-        match output {
-            Ok(output) if output.status.success() => {
-                let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                let path = PathBuf::from(root).join(".git-sc");
-                if path.exists() {
-                    Ok(Some(path))
-                } else {
-                    Ok(None)
-                }
-            }
-            _ => Ok(None),
-        }
+        // 除外設定と同じルート解決を使い、パス名の空白・改行も維持する。
+        Ok(GitService::new()
+            .get_git_root()
+            .map(|root| root.join(".git-sc"))
+            .filter(|path| path.exists()))
     }
 
     /// グローバル設定を PartialConfig として読み込む
@@ -3033,7 +3021,7 @@ providers = [
     }
 
     // ============================================================
-    // ProviderStep::cooldown_key
+    // ProviderStep のクールダウンキー
     // ============================================================
 
     #[test]
@@ -3120,7 +3108,7 @@ providers = [
     }
 
     // ============================================================
-    // ProviderStep::account_hint
+    // ProviderStep のアカウント表示
     // ============================================================
 
     #[test]

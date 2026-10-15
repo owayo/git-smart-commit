@@ -156,34 +156,6 @@ impl AiService {
             .split_first()
             .ok_or_else(|| AppError::AiProviderError("empty command".to_string()))?;
 
-        // Windows: cmd /C 経由で渡すトークンに cmd.exe メタ文字が含まれると任意コマンド実行に
-        // 繋がる(後述 build 時の cmd /C 起動と Rust の引数クォート仕様による。詳細は
-        // windows_cmd_arg_has_metachar を参照)。設定由来の bin / 固定引数 / model /
-        // codex の reasoning_effort を事前検証し、危険なら明示エラーで次プロバイダーへ
-        // フォールバックさせる(Antigravity の Windows ブロックと同じ fail-safe 方針)。
-        #[cfg(windows)]
-        {
-            let mut tokens: Vec<&str> = vec![bin.as_str()];
-            tokens.extend(fixed_args.iter().map(String::as_str));
-            if !model.is_empty() {
-                tokens.push(model);
-            }
-            if matches!(provider, AiProvider::Codex) && !self.codex_reasoning_effort.is_empty() {
-                tokens.push(self.codex_reasoning_effort.as_str());
-            }
-            if let Some(bad) = tokens
-                .into_iter()
-                .find(|&t| Self::windows_cmd_arg_has_metachar(t))
-            {
-                return Err(AppError::AiProviderError(format!(
-                    "refusing to launch {} via cmd.exe: argument {:?} contains a cmd.exe \
-                     metacharacter (&, |, <, >, ^, %, !, \", newline) that cannot be passed safely",
-                    provider.name(),
-                    bad
-                )));
-            }
-        }
-
         // Windows: cmd /C 経由で実行する（npm等でインストールされた .cmd ラッパーに対応するため）
         // Rust の Command::new() は .cmd/.bat ファイルを直接実行できないため、cmd /C が必要
         #[cfg(windows)]
@@ -341,6 +313,11 @@ impl AiService {
             }
         };
 
+        // 完成したコマンドを検査し、設定値に加えて -f / --prompt-file / -o の
+        // 一時パスも保護する。TEMP やユーザー名に含まれるメタ文字も対象になる。
+        #[cfg(windows)]
+        Self::validate_windows_command_args(provider, &cmd)?;
+
         // Claude Code はネスト実行を CLAUDECODE 環境変数で検出してブロックするため、
         // git-sc から Claude を呼ぶ場合は除去する
         if matches!(provider, AiProvider::Claude) {
@@ -420,6 +397,7 @@ impl AiService {
     /// macOS は約 1 MB (ARG_MAX = 1,048,576)、Linux は約 2 MB (ARG_MAX = 2,097,152) が一般的だが、
     /// 環境変数や他の引数も同じ領域を共有するため、安全側に倒して 512 KiB を上限とする。
     /// 通常運用では `MAX_DIFF_CHARS` で diff が打ち切られるため、ここに到達するのは異常ケース。
+    #[cfg(any(not(windows), test))]
     pub(super) fn check_arg_size_limit(prompt: &str) -> Result<(), AppError> {
         const MAX_ARG_BYTES: usize = 512 * 1024;
         if prompt.len() > MAX_ARG_BYTES {
@@ -453,5 +431,49 @@ impl AiService {
                 '&' | '|' | '<' | '>' | '^' | '%' | '!' | '"' | '\r' | '\n'
             )
         })
+    }
+
+    #[cfg(any(windows, test))]
+    fn validate_windows_command_args(
+        provider: &AiProvider,
+        command: &Command,
+    ) -> Result<(), AppError> {
+        for arg in command.get_args() {
+            let arg = arg.to_string_lossy();
+            if Self::windows_cmd_arg_has_metachar(&arg) {
+                return Err(AppError::AiProviderError(format!(
+                    "refusing to launch {} via cmd.exe: argument {:?} contains a cmd.exe \
+                     metacharacter (&, |, <, >, ^, %, !, \", newline) that cannot be passed safely",
+                    provider.name(),
+                    arg
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 設定値以外に、プロンプト・応答ファイルのパスにもメタ文字検査を適用する。
+    #[test]
+    fn test_windows_command_validation_covers_temporary_file_arguments() {
+        for flag in ["-f", "--prompt-file", "-o"] {
+            for path in [r"C:\Temp\a&b\prompt.txt", r"C:\Temp\%ACCOUNT%\prompt.txt"] {
+                let mut command = Command::new("cmd");
+                command.args(["/C", "provider", flag, path]);
+                assert!(
+                    AiService::validate_windows_command_args(&AiProvider::Opencode, &command)
+                        .is_err()
+                );
+            }
+            let mut command = Command::new("cmd");
+            command.args(["/C", "provider", flag, r"C:\Temp\safe directory\prompt.txt"]);
+            assert!(
+                AiService::validate_windows_command_args(&AiProvider::Opencode, &command).is_ok()
+            );
+        }
     }
 }

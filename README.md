@@ -155,6 +155,9 @@ When you run it from a script or a hook:
 - `--quiet` suppresses progress output but keeps errors. Combined with `--generate-for`, stdout carries only the generated message, so it is safe to pipe.
 - `--debug` shows the AI prompt and provider command. Provider `env` keys are shown, but their values are hidden because they may contain credentials. The prompt can still contain the staged diff.
 - `--amend`, `--squash`, and `--reword` rewrite history, and they stop rather than guess when the repository changes under them (a rebase in progress, or `HEAD` moving while the message is generated).
+- `--reword` resolves relative refs and tags before generation, so a tag moving during generation cannot redirect the rewrite to another commit.
+
+Whitespace and indentation changes are included in the prompt, including commits containing only whitespace changes. `.git-sc-ignore` still removes matching file contents; unreadable ignore files, including broken symlinks, stop the run.
 
 For every command and option, and exactly what each history-rewriting mode checks before it runs, see [docs/cli-reference.md](docs/cli-reference.md).
 

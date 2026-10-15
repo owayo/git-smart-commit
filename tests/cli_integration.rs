@@ -15,6 +15,236 @@ macro_rules! git_sc {
     };
 }
 
+/// インデントだけの変更も全モードで生成対象にし、他の差分との混在時も隠さない。
+#[test]
+#[cfg(unix)]
+fn test_whitespace_changes_are_visible_and_committable_in_all_modes() {
+    let dir = setup_git_repo_with_commit();
+    let path = setup_fake_opencode_path(&dir);
+    std::fs::write(dir.path().join(".git-sc"), "providers = [\"opencode\"]\n").unwrap();
+    commit_change(&dir, "if ready:\n    run()\nfinish()\n", "initial layout");
+    let base = head_hash(&dir);
+    stage_change(&dir, "if ready:\n    run()\n    finish() \n");
+
+    let check_prompt = |mode: &[&str]| {
+        git_sc!()
+            .args(["--dry-run", "--debug", "-p", "opencode"])
+            .args(mode)
+            .env("PATH", &path)
+            .env("HOME", dir.path())
+            .env("XDG_CONFIG_HOME", dir.path())
+            .current_dir(dir.path())
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("+    finish() "));
+    };
+    check_prompt(&[]);
+    // 内容の変更が別ファイルにあっても、インデントの差分を省略しない。
+    std::fs::write(dir.path().join("other.txt"), "visible change\n").unwrap();
+    let staged = std::process::Command::new("git")
+        .args(["add", "other.txt"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(staged.status.success());
+    check_prompt(&[]);
+    let unstaged = std::process::Command::new("git")
+        .args(["reset", "HEAD", "--", "other.txt"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(unstaged.status.success());
+
+    git_sc!()
+        .args(["--quiet", "--yes", "-p", "opencode"])
+        .env("PATH", &path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Committed"));
+    let clean_index = std::process::Command::new("git")
+        .args(["diff", "--cached", "--quiet"])
+        .current_dir(dir.path())
+        .status()
+        .unwrap();
+    assert!(clean_index.success());
+    check_prompt(&["--amend"]);
+    check_prompt(&["--reword", "HEAD"]);
+    check_prompt(&["--squash", &base]);
+
+    // generate-for はデバッグ出力を stderr に出す。
+    git_sc!()
+        .args(["--debug", "--generate-for", "HEAD", "-p", "opencode"])
+        .env("PATH", &path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("+    finish() "));
+}
+
+/// 生成中に履歴が動いたら、相対指定の再解決で別コミットを書き換えず中止する。
+#[test]
+#[cfg(unix)]
+fn test_reword_aborts_when_head_moves_during_generation() {
+    for target in ["HEAD", "HEAD~1"] {
+        let dir = setup_git_repo_with_commit();
+        commit_change(&dir, "second\n", "second commit");
+        let path = setup_fake_opencode_path(&dir);
+        std::fs::write(dir.path().join(".git-sc"), "providers = [\"opencode\"]\n").unwrap();
+        std::fs::write(
+            dir.path().join("fake-bin/opencode"),
+            concat!(
+                "#!/bin/sh\nset -eu\n",
+                "printf 'unrelated\\n' > \"$TEST_REPO/unrelated.txt\"\n",
+                "git -C \"$TEST_REPO\" add unrelated.txt\n",
+                "git -C \"$TEST_REPO\" commit -qm 'unrelated work'\n",
+                "echo 'fix: generated reword message'\n",
+            ),
+        )
+        .unwrap();
+
+        git_sc!()
+            .args(["--quiet", "--reword", target, "--yes"])
+            .env("PATH", path)
+            .env("HOME", dir.path())
+            .env("XDG_CONFIG_HOME", dir.path())
+            .env("TEST_REPO", dir.path())
+            .current_dir(dir.path())
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("HEAD が移動しました"));
+
+        let log = std::process::Command::new("git")
+            .args(["log", "--format=%s"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert!(log.status.success());
+        assert_eq!(
+            String::from_utf8(log.stdout).unwrap(),
+            "unrelated work\nsecond commit\ninitial commit\n",
+            "{target}: 生成済みメッセージで別のコミットを書き換えてはいけない"
+        );
+    }
+}
+
+/// HEAD が同じでもタグは動くため、対象は生成前にコミット ID へ固定する。
+#[test]
+#[cfg(unix)]
+fn test_reword_keeps_original_target_when_tag_moves_during_generation() {
+    let dir = setup_git_repo_with_commit();
+    let tagged = std::process::Command::new("git")
+        .args(["tag", "reword-target"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(tagged.status.success());
+    commit_change(&dir, "second\n", "second commit");
+    let path = setup_fake_opencode_path(&dir);
+    std::fs::write(dir.path().join(".git-sc"), "providers = [\"opencode\"]\n").unwrap();
+    std::fs::write(
+        dir.path().join("fake-bin/opencode"),
+        concat!(
+            "#!/bin/sh\nset -eu\n",
+            "git -C \"$TEST_REPO\" update-ref refs/tags/reword-target HEAD\n",
+            "echo 'fix: generated reword message'\n",
+        ),
+    )
+    .unwrap();
+
+    git_sc!()
+        .args(["--quiet", "--reword", "reword-target", "--yes"])
+        .env("PATH", path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .env("TEST_REPO", dir.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let log = std::process::Command::new("git")
+        .args(["log", "--format=%s"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(log.status.success());
+    assert_eq!(
+        String::from_utf8(log.stdout).unwrap(),
+        "second commit\nfix: generated reword message\n"
+    );
+}
+
+/// 存在するが読めない除外設定を「設定なし」と誤認して差分を送信しない。
+#[test]
+#[cfg(unix)]
+fn test_broken_ignore_symlink_aborts_instead_of_sending_diff() {
+    let dir = setup_git_repo_with_commit();
+    let path = setup_fake_opencode_path(&dir);
+    std::fs::write(dir.path().join(".git-sc"), "providers = [\"opencode\"]\n").unwrap();
+    std::os::unix::fs::symlink("missing-ignore", dir.path().join(".git-sc-ignore")).unwrap();
+    stage_change(&dir, "SENSITIVE_CONTENT_MUST_NOT_REACH_AI\n");
+
+    git_sc!()
+        .args(["--dry-run", "--debug"])
+        .env("PATH", path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(".git-sc-ignore"))
+        .stdout(predicate::str::contains("SENSITIVE_CONTENT_MUST_NOT_REACH_AI").not());
+}
+
+/// Git が出力に足す改行だけを除去し、ルート名自体の空白・改行は維持する。
+#[test]
+#[cfg(unix)]
+fn test_root_with_trailing_whitespace_keeps_config_and_ignore_from_subdirectory() {
+    let original = setup_git_repo_with_commit();
+    let dir = TempDir::new().unwrap();
+    let repo = dir.path().join("repo \n");
+    std::fs::rename(original.path(), &repo).unwrap();
+    std::fs::create_dir(repo.join("nested")).unwrap();
+    let path = setup_fake_opencode_path(&dir);
+    std::fs::write(
+        repo.join(".git-sc"),
+        "providers = [\"opencode\"]\nlanguage = \"ROOT_CONFIG_SENTINEL\"\n",
+    )
+    .unwrap();
+    std::fs::write(repo.join(".git-sc-ignore"), "secret.txt\n").unwrap();
+    std::fs::write(
+        repo.join("secret.txt"),
+        "SENSITIVE_CONTENT_MUST_NOT_REACH_AI\n",
+    )
+    .unwrap();
+    std::fs::write(repo.join("public.txt"), "visible change\n").unwrap();
+    let staged = std::process::Command::new("git")
+        .args(["add", "secret.txt", "public.txt"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert!(staged.status.success());
+
+    git_sc!()
+        .args(["--dry-run", "--debug"])
+        .env("PATH", path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .current_dir(repo.join("nested"))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ROOT_CONFIG_SENTINEL"))
+        .stdout(predicate::str::contains(
+            "[content omitted by .git-sc-ignore]",
+        ))
+        .stdout(predicate::str::contains("+visible change"))
+        .stdout(predicate::str::contains("SENSITIVE_CONTENT_MUST_NOT_REACH_AI").not());
+}
+
 #[test]
 #[cfg_attr(windows, ignore)]
 fn test_debug_output_does_not_expose_provider_env_values() {

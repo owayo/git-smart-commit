@@ -1299,11 +1299,7 @@ impl App {
 
     /// rewordワークフローを実行
     fn run_reword(&self, cli: &Cli, agent_context: Option<&str>) -> Result<(), AppError> {
-        let hash = cli
-            .reword
-            .as_ref()
-            .ok_or(AppError::InvalidRewordTarget)?
-            .clone();
+        let target = cli.reword.as_ref().ok_or(AppError::InvalidRewordTarget)?;
 
         // 進行中の rebase はここで弾く。`GitService` 側でも守っているが、この後の
         // マージ判定が先に位置算出を行うため、そちらに落ちると rebase 中の detached HEAD
@@ -1312,6 +1308,11 @@ impl App {
         if self.git.rebase_in_progress() {
             return Err(AppError::RebaseInProgress);
         }
+
+        // 生成・確認の前に対象を固定する。HEAD の移動だけでなく、タグやブランチの
+        // 参照先だけが動いても、AI が見たコミットと書き換えるコミットを一致させる。
+        let head_before_generate = self.git.head_snapshot();
+        let hash = self.git.resolve_commit_hash(target)?;
 
         // 短いハッシュを取得して表示用に使用（文字境界に対応するため chars ベースで切り出す）
         let short_hash_owned: String = hash.chars().take(7).collect();
@@ -1393,6 +1394,12 @@ impl App {
 
         // 確認してreword実行
         if cli.auto_confirm || self.confirm_reword(short_hash)? {
+            if head_before_generate.is_some() && self.git.head_snapshot() != head_before_generate {
+                return Err(AppError::InvalidArgument(
+                    "メッセージ生成中に HEAD が移動しました。生成済みメッセージは現在の履歴を反映していないため中止します。再実行してください"
+                        .to_string(),
+                ));
+            }
             self.git.reword_commit_by_hash(&hash, &message)?;
             self.record_dev_log_result("committed", provider_name, &message);
             if cli.quiet {

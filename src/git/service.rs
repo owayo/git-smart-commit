@@ -178,6 +178,12 @@ impl GitService {
 
     /// git コマンドを実行し、成功時は stdout（trim済み）を返す
     fn run_git(&self, args: &[&str]) -> Result<String, AppError> {
+        self.run_git_raw(args)
+            .map(|output| output.trim().to_string())
+    }
+
+    /// 差分本文の末尾空白を保持するため、成功時の標準出力を整形せず返す。
+    fn run_git_raw(&self, args: &[&str]) -> Result<String, AppError> {
         let output = Command::new("git")
             .args(args)
             .current_dir(&self.repo_path)
@@ -197,7 +203,7 @@ impl GitService {
             };
             return Err(AppError::GitError(msg));
         }
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
     /// git コマンドを実行し、成功/失敗のみを返す（stdout不要のケース）
@@ -230,6 +236,11 @@ impl GitService {
     ///
     /// `^{commit}` サフィックスで型制約し、tree/blob 等の非コミットオブジェクトを拒否する。
     fn verify_commit_hash(&self, hash: &str) -> Result<(), AppError> {
+        self.resolve_commit_hash(hash).map(|_| ())
+    }
+
+    /// 相対参照やタグを一度だけ解決し、後から参照先が動いても同じコミットを扱う。
+    pub fn resolve_commit_hash(&self, hash: &str) -> Result<String, AppError> {
         let rev = format!("{}^{{commit}}", hash);
         let output = Command::new("git")
             .args(["rev-parse", "--verify", "--quiet", "--end-of-options", &rev])
@@ -240,7 +251,7 @@ impl GitService {
         if !output.status.success() {
             return Err(AppError::InvalidCommitHash(hash.to_string()));
         }
-        Ok(())
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
     // ============================================================
@@ -249,8 +260,32 @@ impl GitService {
 
     /// Gitリポジトリのルートディレクトリを取得
     pub fn get_git_root(&self) -> Option<PathBuf> {
-        self.try_run_git(&["rev-parse", "--show-toplevel"])
-            .map(PathBuf::from)
+        let mut output = Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .current_dir(&self.repo_path)
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        // Git が付ける LF だけを除去する。trim() はパス末尾の空白や改行まで壊す。
+        if output.stdout.last() == Some(&b'\n') {
+            output.stdout.pop();
+        }
+        if output.stdout.is_empty() {
+            return None;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            Some(PathBuf::from(std::ffi::OsString::from_vec(output.stdout)))
+        }
+        #[cfg(not(unix))]
+        {
+            Some(PathBuf::from(
+                String::from_utf8_lossy(&output.stdout).as_ref(),
+            ))
+        }
     }
 
     /// .git-sc-ignoreファイルを読み込んでGitignoreを構築
@@ -266,8 +301,18 @@ impl GitService {
         };
         let ignore_path = git_root.join(".git-sc-ignore");
 
-        if !ignore_path.exists() {
-            return Ok(None);
+        // リンク切れも「設定が存在するが読めない」に含める。exists() はリンク先を
+        // たどるため false になり、除外するはずの内容をそのまま送ってしまう。
+        match std::fs::symlink_metadata(&ignore_path) {
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(e) => {
+                return Err(AppError::ConfigError(format!(
+                    "{} を確認できませんでした: {}。除外設定が適用できないため中止します。",
+                    ignore_path.display(),
+                    e
+                )));
+            }
+            Ok(_) => {}
         }
 
         let mut builder = GitignoreBuilder::new(&git_root);
@@ -812,11 +857,12 @@ impl GitService {
         }
     }
 
-    /// ステージ済みのdiffを取得（バイナリファイル、.git-sc-ignore対象、空白のみの変更を除外）
+    /// ステージ済み差分を取得し、バイナリ・lock ファイル・除外対象の本文を省略する。
     pub fn get_staged_diff(&self) -> Result<String, AppError> {
-        let mut args = vec!["diff", "--cached", "-w", "-U0"];
+        // Python や YAML はインデントにも意味があるため、空白の変更も AI に渡す。
+        let mut args = vec!["diff", "--cached", "-U0"];
         args.extend_from_slice(DIFF_FORMAT_ARGS);
-        let raw = self.run_git(&args)?;
+        let raw = self.run_git_raw(&args)?;
         self.apply_all_filters(&raw)
     }
 
@@ -829,7 +875,13 @@ impl GitService {
         }
 
         let output = Command::new("git")
-            .args(["log", "--format=%s", "-n", &count.to_string()])
+            .args([
+                "log",
+                "--no-show-signature",
+                "--format=%s",
+                "-n",
+                &count.to_string(),
+            ])
             .current_dir(&self.repo_path)
             .output()
             .map_err(|e| AppError::GitError(e.to_string()))?;
@@ -1040,12 +1092,12 @@ impl GitService {
             .map_err(|_| AppError::GitError("Failed to parse commit count".to_string()))
     }
 
-    /// ベースからHEADまでの差分を取得（バイナリファイル、.git-sc-ignore対象、空白のみの変更を除外）
+    /// ベースから HEAD までの差分を取得し、バイナリ・lock ファイル・除外対象の本文を省略する。
     pub fn get_diff_from_base(&self, base: &str) -> Result<String, AppError> {
-        let mut args = vec!["diff", "-w", "-U0"];
+        let mut args = vec!["diff", "-U0"];
         args.extend_from_slice(DIFF_FORMAT_ARGS);
         args.extend_from_slice(&[base, "HEAD"]);
-        let raw = self.run_git(&args)?;
+        let raw = self.run_git_raw(&args)?;
         self.apply_all_filters(&raw)
     }
 
@@ -1183,10 +1235,10 @@ impl GitService {
         // verify_commit_hash を通過しうる。hash をオプション位置に置くと git が
         // それをオプションとして解釈し、`git show --output=<path>` で任意ファイルを
         // 上書きできてしまうため、必ず `--end-of-options` の後ろに revision として渡す。
-        let mut args = vec!["show", "--format=", "-w", "-U0"];
+        let mut args = vec!["show", "--no-show-signature", "--format=", "-U0"];
         args.extend_from_slice(DIFF_FORMAT_ARGS);
         args.extend_from_slice(&["--end-of-options", hash]);
-        let raw = self.run_git(&args)?;
+        let raw = self.run_git_raw(&args)?;
         self.apply_all_filters(&raw)
     }
 
@@ -1197,7 +1249,14 @@ impl GitService {
 
         // hash をオプション位置に置くと `git log --output=<path>` で任意ファイルを
         // 上書きできてしまうため、`--end-of-options` の後ろに revision として渡す。
-        self.run_git(&["log", "-1", "--format=%s", "--end-of-options", hash])
+        self.run_git(&[
+            "log",
+            "--no-show-signature",
+            "-1",
+            "--format=%s",
+            "--end-of-options",
+            hash,
+        ])
     }
 
     /// reword対象として有効なコミットか確認（現在のHEAD履歴上に存在するか）
@@ -1441,6 +1500,66 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
     use std::process::Command;
+
+    /// 署名の表示設定にかかわらず、件名と差分だけを取得する。
+    #[test]
+    #[cfg(unix)]
+    fn test_signature_verification_output_is_not_included_in_prompts() {
+        let dir = setup_temp_git_repo();
+        let repo = dir.path();
+        let key = repo.join("signing-key");
+        let generated = Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+            .arg(&key)
+            .output();
+        let generated = match generated {
+            Ok(output) => output,
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                eprintln!("ssh-keygen がないため、実署名を使う回帰テストをスキップします");
+                return;
+            }
+            Err(e) => panic!("署名鍵を作成できませんでした: {e}"),
+        };
+        assert!(generated.status.success());
+        let allowed_signers = repo.join("allowed-signers");
+        std::fs::write(
+            &allowed_signers,
+            format!(
+                "test@example.com {}",
+                std::fs::read_to_string(key.with_extension("pub")).unwrap()
+            ),
+        )
+        .unwrap();
+        run_git_in(repo, &["config", "gpg.format", "ssh"]);
+        run_git_in(repo, &["config", "user.signingkey", key.to_str().unwrap()]);
+        run_git_in(repo, &["config", "commit.gpgsign", "true"]);
+        run_git_in(repo, &["config", "log.showSignature", "true"]);
+        run_git_in(
+            repo,
+            &[
+                "config",
+                "gpg.ssh.allowedSignersFile",
+                allowed_signers.to_str().unwrap(),
+            ],
+        );
+        std::fs::write(repo.join("file.txt"), "signed change\n").unwrap();
+        run_git_in(repo, &["add", "file.txt"]);
+        run_git_in(repo, &["commit", "-m", "feat: signed subject"]);
+        let service = GitService::with_repo_path(repo.to_path_buf());
+
+        assert_eq!(
+            service.get_recent_commits(1).unwrap(),
+            ["feat: signed subject"]
+        );
+        assert_eq!(
+            service.get_commit_message_by_hash("HEAD").unwrap(),
+            "feat: signed subject"
+        );
+        let diff = service.get_last_commit_diff().unwrap();
+        assert!(diff.starts_with("diff --git "), "{diff}");
+        assert!(!diff.contains("signature"), "{diff}");
+        assert!(!diff.contains("test@example.com"), "{diff}");
+    }
 
     // ============================================================
     // summarize_diff のテスト

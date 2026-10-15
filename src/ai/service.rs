@@ -702,7 +702,7 @@ impl AiService {
 
     /// フォールバック付きでAI CLIを使用してコミットメッセージを生成
     ///
-    /// prefix_type:
+    /// プレフィックス形式:
     /// - None: 自動判定（過去コミットから推論）
     /// - Some("conventional"): Conventional Commits形式
     /// - Some("none"): プレフィックスなし

@@ -1,36 +1,34 @@
-# Development tasks for git-sc. Run `make` with no arguments to list the targets.
+# git-sc の開発タスク。引数なしの make でターゲット一覧を表示する。
 #
-# Tool versions are pinned in mise.toml. When mise is available, every tool runs through
-# `mise exec --`, so the pinned versions are used even when mise is not activated in the shell
-# (for example when make is started from an IDE or a GUI). SYSTEM_TOOLS=1 uses the tools on PATH
-# instead (the versions are then not guaranteed).
+# mise.toml の固定バージョンを mise exec -- 経由で使う。
+# IDE や GUI など、シェルで mise を有効にしていない環境にも適用する。
+# SYSTEM_TOOLS=1 では PATH 上のツールを使うため、バージョンは保証しない。
 #
-# On macOS, build, release, install and lint enable the Apple Intelligence provider (the apple-ai
-# feature, which compiles Swift through fm-rs and needs Xcode with the macOS 26 SDK or later).
-# The release workflow builds the distributed binaries without it.
+# macOS の build / release / install / lint では Apple Intelligence を有効にする。
+# apple-ai は fm-rs 経由で Swift をコンパイルするため、macOS 26 以降の SDK を備えた
+# Xcode が必要。リリースワークフローの配布バイナリでは有効にしない。
 #
-# Only GNU Make 3.81 features are used (the make that ships with macOS):
-# no .ONESHELL, .SHELLFLAGS, $(file ...) or !=.
+# macOS 付属の GNU Make 3.81 に合わせ、.ONESHELL / .SHELLFLAGS / $(file ...) / != は使わない。
 
 .DEFAULT_GOAL := help
 
 BINARY_NAME := git-sc
 INSTALL_PATH ?= /usr/local/bin
-# Cargo.lock is committed, so resolve dependencies exactly as CI does
+# CI と同じ Cargo.lock で依存を解決する。
 CARGO_FLAGS ?= --locked
 UNAME_S := $(shell uname -s)
 
-# Apple Intelligence (fm-rs) is available only on macOS
+# Apple Intelligence（fm-rs）は macOS のみ対応。
 ifeq ($(UNAME_S),Darwin)
 CARGO_FEATURES := --features apple-ai
 else
 CARGO_FEATURES :=
 endif
 
-# ---- Toolchain ------------------------------------------------------------------
-# Look for mise on PATH, then in the usual install locations (make started from a GUI may not
-# inherit the shell's PATH). Override with make MISE=/path/to/mise.
-# To try the behavior without mise, empty the candidates with MISE_CANDIDATES=.
+# ---- ツールチェーン ---------------------------------------------------------------
+# PATH、一般的なインストール先の順で mise を探す。GUI 起動ではシェルの PATH を
+# 継承しない場合がある。make MISE=/path/to/mise で上書きできる。
+# mise がない場合を検証するときは MISE_CANDIDATES= で候補を空にする。
 MISE_CANDIDATES ?= $(HOME)/.local/bin/mise /opt/homebrew/bin/mise /usr/local/bin/mise
 ifeq ($(SYSTEM_TOOLS),1)
 RUN :=
@@ -48,13 +46,13 @@ endif
 
 .PHONY: help setup build release test lint fmt fmt-check check ci install uninstall clean
 
-## Setup
+## 準備
 
 setup: ## Install the toolchain (mise) and dependencies
 	@if [ -n "$(MISE)" ]; then "$(MISE)" install; fi
 	$(RUN) cargo fetch $(CARGO_FLAGS)
 
-## Build
+## ビルド
 
 build: ## Build a debug binary (with Apple Intelligence on macOS)
 	$(RUN) cargo build $(CARGO_FLAGS) $(CARGO_FEATURES)
@@ -62,14 +60,13 @@ build: ## Build a debug binary (with Apple Intelligence on macOS)
 release: ## Build a release binary (with Apple Intelligence on macOS)
 	$(RUN) cargo build --release $(CARGO_FLAGS) $(CARGO_FEATURES)
 
-## Checks
+## 検証
 
 test: ## Run the tests
 	$(RUN) cargo test $(CARGO_FLAGS)
 
-# Linux CI lints the build without apple-ai, and the distributed macOS binaries are built without
-# it too, so on macOS lint checks both builds. Code that only the Apple path uses (such as an error
-# variant that only ai/apple.rs constructs) is dead code in the other build.
+# Linux CI と macOS 配布版は apple-ai を使わないため、macOS でも両構成を検査する。
+# ai/apple.rs だけが構築するエラー型などは、機能を外すと未使用になる。
 lint: ## Run clippy with warnings as errors (on macOS, with and without Apple Intelligence)
 	$(RUN) cargo clippy $(CARGO_FLAGS) --all-targets -- -D warnings
 ifneq ($(CARGO_FEATURES),)
@@ -86,14 +83,13 @@ check: fmt-check lint ## Run fmt-check and lint (no changes)
 
 ci: check test ## Run the same checks as CI (no changes)
 
-## Install
+## インストール
 
-# Replace the binary through a temporary file and a rename instead of copying over it. macOS
-# caches the code signature check per inode, so a binary copied over one that is running (or ran
-# a moment ago) is killed with SIGKILL right after it starts (exit 137). The temporary file sits
-# in the same directory so that the rename swaps the inode. The binary is not re-signed: the linker
-# already signs it ad hoc, and a fixed identifier would not keep permissions across versions.
-# The trap removes the temporary file when copying fails.
+# 同じディレクトリの一時ファイルから rename し、実行ファイルの inode を置き換える。
+# macOS は署名検証を inode ごとにキャッシュするため、直接上書きすると起動直後に
+# SIGKILL（exit 137）になる場合がある。リンカーの ad hoc 署名を保持し、再署名しない。
+# 固定の識別子による再署名では、バージョン間で権限を維持できない。
+# コピー失敗時は trap で一時ファイルを削除する。
 install: release ## Install the release binary to INSTALL_PATH (default /usr/local/bin)
 	@mkdir -p "$(INSTALL_PATH)"
 	@set -eu; \
@@ -109,7 +105,7 @@ uninstall: ## Remove the binary from INSTALL_PATH
 clean: ## Remove build artifacts
 	$(RUN) cargo clean
 
-## Help
+## ヘルプ
 
 help: ## Show this help
 	@echo "Development tasks for $(BINARY_NAME)"

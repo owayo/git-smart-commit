@@ -501,7 +501,9 @@ impl DevLog {
         // 3) 空になった日付ディレクトリを片付ける
         if let Ok(entries) = fs::read_dir(&self.dir) {
             for entry in entries.flatten() {
-                if entry.path().is_dir() {
+                if entry.file_type().is_ok_and(|kind| kind.is_dir())
+                    && is_log_day_name(&entry.file_name())
+                {
                     let _ = fs::remove_dir(entry.path());
                 }
             }
@@ -538,24 +540,42 @@ struct LogFile {
 ///
 /// 書きかけの `.tmp` も、1 時間以上放置されていれば回収対象にする。
 fn collect_log_files(root: &Path, out: &mut Vec<LogFile>) {
-    let Ok(entries) = fs::read_dir(root) else {
+    let Ok(days) = fs::read_dir(root) else {
         return;
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_log_files(&path, out);
+    // 生成時と同じ 2 階層だけを見る。共有の出力先でも他の JSON や空フォルダーを消さない。
+    for day in days.flatten() {
+        if !day.file_type().is_ok_and(|kind| kind.is_dir()) || !is_log_day_name(&day.file_name()) {
             continue;
         }
+        let Ok(entries) = fs::read_dir(day.path()) else {
+            continue;
+        };
+        collect_day_log_files(entries, out);
+    }
+}
+
+/// 日付ディレクトリ内で、git-sc が生成する名前の通常ファイルだけを集める。
+fn collect_day_log_files(entries: fs::ReadDir, out: &mut Vec<LogFile>) {
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        // リンク先はログ領域外にあることもあるため、たどらない。
+        if !file_type.is_file() {
+            continue;
+        }
+        let name = entry.file_name();
+        let Some(name) = name.to_str().filter(|name| is_log_record_name(name)) else {
+            continue;
+        };
         let Ok(metadata) = entry.metadata() else {
             continue;
         };
         let Ok(modified) = metadata.modified() else {
             continue;
         };
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-
         if name.ends_with(".tmp") {
             // 書きかけの可能性があるので、十分古いものだけ消す
             if modified
@@ -576,6 +596,28 @@ fn collect_log_files(root: &Path, out: &mut Vec<LogFile>) {
             modified,
         });
     }
+}
+
+fn is_log_day_name(name: &std::ffi::OsStr) -> bool {
+    name.to_str().is_some_and(|name| {
+        name.len() == 10 && chrono::NaiveDate::parse_from_str(name, "%Y-%m-%d").is_ok()
+    })
+}
+
+/// new_run_id が作る `<時刻>-<PID>-<連番>.json` と `.<同じ ID>.tmp` だけを認める。
+fn is_log_record_name(name: &str) -> bool {
+    let Some(id) = name
+        .strip_suffix(".json")
+        .or_else(|| name.strip_prefix('.')?.strip_suffix(".tmp"))
+    else {
+        return false;
+    };
+    let mut parts = id.split('-');
+    (0..3).all(|_| {
+        parts
+            .next()
+            .is_some_and(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+    }) && parts.next().is_none()
 }
 
 /// ディレクトリを作る。Unix では所有者だけがたどれるようにする
@@ -623,6 +665,63 @@ pub fn capture(content: &str) -> (String, bool) {
 mod tests {
     use super::*;
     use crate::config::DevLogConfig;
+
+    /// 保持期限・容量の掃除がリンク先へ出て、無関係の JSON を削除しない。
+    #[test]
+    #[cfg(unix)]
+    fn test_cleanup_does_not_follow_symlinked_directories_or_files() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::TempDir::new().unwrap();
+        let external = outside.path().join("valuable.json");
+        fs::write(&external, "keep this data").unwrap();
+        let day = dir.path().join("2020-01-01");
+        fs::create_dir(&day).unwrap();
+        let ordinary = day.join("1000-1-0.json");
+        fs::write(&ordinary, "remove this log").unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("2020-01-02")).unwrap();
+        let linked = day.join("1000-1-1.json");
+        std::os::unix::fs::symlink(&external, &linked).unwrap();
+        let log = DevLog::from_config(&cleanup_config(dir.path(), 14, 0), true).unwrap();
+
+        log.cleanup().unwrap();
+
+        assert_eq!(fs::read_to_string(&external).unwrap(), "keep this data");
+        assert!(!ordinary.exists());
+        assert!(fs::symlink_metadata(&linked).is_ok());
+    }
+
+    /// 共有ディレクトリを指定されても、生成ログ以外のファイルや空フォルダーを消さない。
+    #[test]
+    fn test_cleanup_preserves_unrelated_files_and_directories() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let day = dir.path().join("2020-01-01");
+        let notes = dir.path().join("notes");
+        let empty = dir.path().join("empty");
+        for folder in [&day, &notes, &empty] {
+            fs::create_dir(folder).unwrap();
+        }
+        let unrelated = [
+            dir.path().join("other.json"),
+            notes.join("1000-1-0.json"),
+            day.join("other.json"),
+            day.join(".other.tmp"),
+        ];
+        for path in &unrelated {
+            fs::write(path, "keep this data").unwrap();
+            set_modified_days_ago(path, 30);
+        }
+        let generated = day.join("1000-1-0.json");
+        fs::write(&generated, "remove this log").unwrap();
+        let log = DevLog::from_config(&cleanup_config(dir.path(), 14, 0), true).unwrap();
+
+        log.cleanup().unwrap();
+
+        assert!(!generated.exists());
+        for path in &unrelated {
+            assert_eq!(fs::read_to_string(path).unwrap(), "keep this data");
+        }
+        assert!(empty.is_dir());
+    }
 
     fn enabled_config(dir: &Path, content: &str) -> Config {
         Config {
@@ -835,7 +934,7 @@ mod tests {
         let config = cleanup_config(dir.path(), 1, 500);
         let old_dir = dir.path().join("2020-01-01");
         fs::create_dir_all(&old_dir).unwrap();
-        let old_file = old_dir.join("old.json");
+        let old_file = old_dir.join("1000-1-0.json");
         fs::write(&old_file, "{}").unwrap();
         set_modified_days_ago(&old_file, 3);
 
@@ -854,7 +953,7 @@ mod tests {
 
         let old_dir = dir.path().join("2020-01-01");
         fs::create_dir_all(&old_dir).unwrap();
-        let old_file = old_dir.join("old.json");
+        let old_file = old_dir.join("1000-1-0.json");
         fs::write(&old_file, "{}").unwrap();
         set_modified_days_ago(&old_file, 3);
 
@@ -877,9 +976,9 @@ mod tests {
         fs::create_dir_all(&day_dir).unwrap();
 
         let filler = "x".repeat(600 * 1024);
-        let oldest = day_dir.join("oldest.json");
-        let middle = day_dir.join("middle.json");
-        let newest = day_dir.join("newest.json");
+        let oldest = day_dir.join("1000-1-0.json");
+        let middle = day_dir.join("1000-1-1.json");
+        let newest = day_dir.join("1000-1-2.json");
         for path in [&oldest, &middle, &newest] {
             fs::write(path, &filler).unwrap();
         }
@@ -908,8 +1007,8 @@ mod tests {
         let day_dir = dir.path().join("2020-01-01");
         fs::create_dir_all(&day_dir).unwrap();
 
-        let stale = day_dir.join(".stale.tmp");
-        let fresh = day_dir.join(".fresh.tmp");
+        let stale = day_dir.join(".1000-1-0.tmp");
+        let fresh = day_dir.join(".1000-1-1.tmp");
         fs::write(&stale, "{}").unwrap();
         fs::write(&fresh, "{}").unwrap();
         set_modified_secs_ago(&stale, 2 * 60 * 60);
@@ -928,7 +1027,7 @@ mod tests {
         let config = cleanup_config(dir.path(), 1, 500);
         let old_dir = dir.path().join("2020-01-01");
         fs::create_dir_all(&old_dir).unwrap();
-        let old_file = old_dir.join("old.json");
+        let old_file = old_dir.join("1000-1-0.json");
         fs::write(&old_file, "{}").unwrap();
         set_modified_days_ago(&old_file, 30);
 

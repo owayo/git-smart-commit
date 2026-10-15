@@ -47,6 +47,8 @@ Operation modes (`--amend`, `--squash`, `--reword`, `--generate-for`) are mutual
 - Preserves unrelated staged changes instead of folding them into the amended commit.
 
 `--reword` note:
+- Relative refs such as `HEAD~1` and tag names are resolved to a commit ID before generation. Moving a tag during generation does not change the target.
+- If `HEAD` moves during generation or confirmation, reword aborts before rewriting history. Re-run it against the updated history.
 - Only accepts commits reachable from the current `HEAD` history.
 - Passing a hash from another branch (not in current history) fails with an error.
 - Passing a merge commit hash also fails, even when the merge commit itself is the reword target.
@@ -54,6 +56,7 @@ Operation modes (`--amend`, `--squash`, `--reword`, `--generate-for`) are mutual
 - Rewording the oldest commit in current history is also supported (internally uses `git rebase -i --root` when required).
 - Rewording `HEAD` preserves unrelated staged changes instead of folding them into the rewritten commit.
 - The internal rebase runs with `--no-autosquash`, so a user-level `rebase.autoSquash = true` config cannot silently fold `fixup!`/`squash!` commits into the reworded commit.
+- The internal rebase also overrides `rebase.rebaseMerges` and `rebase.abbreviateCommands`, so these settings cannot redirect the todo editor or make reword silently do nothing.
 
 `--squash` note:
 - Fails before rewriting history when unrelated staged changes already exist. Commit, unstage, or stash them first.

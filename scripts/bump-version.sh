@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 CARGO_TOML="$PROJECT_ROOT/Cargo.toml"
 
-# Extract current version from Cargo.toml
+# Cargo.toml から現在のバージョンを取得する。
 CURRENT_VERSION=$(grep '^version = ' "$CARGO_TOML" | head -1 | sed 's/version = "\(.*\)"/\1/')
 
 if [ -z "$CURRENT_VERSION" ]; then
@@ -13,10 +13,10 @@ if [ -z "$CURRENT_VERSION" ]; then
     exit 1
 fi
 
-# Parse version parts
+# バージョンを major / minor / patch に分ける。
 IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
 
-# Determine bump type (default: patch)
+# 更新する桁を選ぶ（既定は patch）。
 BUMP_TYPE="${1:-patch}"
 
 case "$BUMP_TYPE" in
@@ -45,7 +45,7 @@ NEW_VERSION="$MAJOR.$MINOR.$PATCH"
 
 echo "📦 Updating version: $CURRENT_VERSION → $NEW_VERSION"
 
-# Update Cargo.toml
+# Cargo.toml のバージョンを更新する。
 if [[ "$OSTYPE" == "darwin"* ]]; then
     # macOS
     sed -i '' "s/^version = \"$CURRENT_VERSION\"/version = \"$NEW_VERSION\"/" "$CARGO_TOML"
