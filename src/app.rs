@@ -1293,27 +1293,12 @@ impl App {
             return Err(AppError::InvalidCommitHash("(empty)".to_string()));
         }
 
-        // 各コミットのdiffを取得して結合
-        let mut combined_diff = String::new();
-        for hash in hashes {
-            let diff = self.git.get_commit_diff_by_hash(hash)?;
-            if !diff.trim().is_empty() {
-                if !combined_diff.is_empty() {
-                    combined_diff.push('\n');
-                }
-                combined_diff.push_str(&diff);
-            }
-        }
+        // raw diff を結合してから一度だけフィルタ・圧縮し、後続コミットの一覧も残す。
+        let combined_diff = self.git.get_commit_diffs_by_hashes(hashes)?;
 
         if combined_diff.trim().is_empty() {
             return Err(AppError::NoChanges);
         }
-
-        // 各コミット単位では切り詰め済みだが、複数コミットを結合した総量は
-        // MAX_DIFF_CHARS を超えうる。他の diff 生成経路（staged/amend/squash）は
-        // すべて一度の apply_all_filters で上限が効くため、generate-for でも
-        // 結合後に再度切り詰めて同じ上限契約を守る。
-        let combined_diff = GitService::truncate_diff(&combined_diff);
 
         // AI CLIがインストールされているか確認
         self.ai.verify_installation()?;

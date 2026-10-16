@@ -15,6 +15,153 @@ macro_rules! git_sc {
     };
 }
 
+/// 大きな先頭ファイルが後続ファイルを隠さず、実際に送るプロンプトに全体像を残す。
+#[test]
+#[cfg(unix)]
+fn test_large_diff_prompt_keeps_every_file_and_raw_line_counts() {
+    let dir = setup_git_repo_with_commit();
+    let path = setup_fake_opencode_path(&dir);
+    let config_dir = dir.path().join(".config/git-sc");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "[dev_log]\nenabled = true\ncontent = \"metadata\"\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join(".git-sc"), "providers = [\"opencode\"]\n").unwrap();
+    std::fs::write(dir.path().join(".git-sc-ignore"), "private.txt\n").unwrap();
+    for (name, content) in [
+        ("A-large.md", format!("{}\n", "説明".repeat(6000))),
+        (
+            "Cargo.lock",
+            "hidden-lock-value\nsecond lock line\n".to_string(),
+        ),
+        (
+            "Z-last.txt",
+            "last file first line\nlast file second line\n".to_string(),
+        ),
+        ("private.txt", "hidden-private-value\n".to_string()),
+        ("image.bin", "\0hidden-binary-value\n".to_string()),
+    ] {
+        std::fs::write(dir.path().join(name), content).unwrap();
+    }
+    let staged = std::process::Command::new("git")
+        .args([
+            "add",
+            "A-large.md",
+            "Cargo.lock",
+            "Z-last.txt",
+            "private.txt",
+            "image.bin",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(staged.status.success());
+    let output = git_sc!()
+        .args(["--dry-run", "--debug", "-p", "opencode"])
+        .env("PATH", &path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let prompt = String::from_utf8(output).unwrap();
+    for summary in [
+        "A-large.md | +1 -0",
+        "Cargo.lock | +2 -0",
+        "Z-last.txt | +2 -0",
+        "private.txt | +1 -0",
+        "image.bin | binary",
+    ] {
+        assert!(prompt.contains(summary), "missing {summary}: {prompt}");
+    }
+    assert!(prompt.contains("last file second line"));
+    assert!(prompt.contains("file bodies omitted or truncated"));
+    for hidden in [
+        "hidden-lock-value",
+        "hidden-private-value",
+        "hidden-binary-value",
+    ] {
+        assert!(!prompt.contains(hidden));
+    }
+    let records = std::fs::read_dir(config_dir.join("logs"))
+        .unwrap()
+        .filter(|date| date.as_ref().unwrap().path().is_dir())
+        .flat_map(|date| std::fs::read_dir(date.unwrap().path()).unwrap())
+        .filter(|entry| {
+            entry
+                .as_ref()
+                .unwrap()
+                .path()
+                .extension()
+                .is_some_and(|ext| ext == "json")
+        })
+        .map(|entry| {
+            serde_json::from_slice::<serde_json::Value>(
+                &std::fs::read(entry.unwrap().path()).unwrap(),
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["input"]["files_changed"], 5);
+}
+
+/// 複数コミットの結合時にも各コミットの後方にあるファイル一覧を失わない。
+#[test]
+#[cfg(unix)]
+fn test_generate_for_large_commits_keeps_all_file_overviews() {
+    let dir = setup_git_repo_with_commit();
+    let path = setup_fake_opencode_path(&dir);
+    std::fs::write(dir.path().join(".git-sc"), "providers = [\"opencode\"]\n").unwrap();
+    let mut hashes = Vec::new();
+    for index in 0..2 {
+        let large = format!("A-large-{index}.txt");
+        let last = format!("Z-last-{index}.txt");
+        std::fs::write(dir.path().join(&large), "large line\n".repeat(1500)).unwrap();
+        std::fs::write(dir.path().join(&last), "tail change\n").unwrap();
+        for args in [
+            vec!["add", &large, &last],
+            vec!["commit", "-m", "add sample files"],
+        ] {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+        }
+        hashes.push(head_hash(&dir));
+    }
+    let output = git_sc!()
+        .args([
+            "--debug",
+            "-p",
+            "opencode",
+            "--generate-for",
+            &hashes[0],
+            &hashes[1],
+        ])
+        .env("PATH", &path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stderr
+        .clone();
+    let prompt = String::from_utf8(output).unwrap();
+    for index in 0..2 {
+        assert!(prompt.contains(&format!("A-large-{index}.txt | +1500 -0")));
+        assert!(prompt.contains(&format!("Z-last-{index}.txt | +1 -0")));
+    }
+}
+
 /// インデントだけの変更も全モードで生成対象にし、他の差分との混在時も隠さない。
 #[test]
 #[cfg(unix)]
