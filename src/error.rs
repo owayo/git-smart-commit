@@ -14,8 +14,10 @@ pub enum AppError {
     )]
     NoStagedChanges,
 
+    // 既定チェーン(opencode → grok → antigravity → codex → claude)の順に挙げる。
+    // Apple Intelligence は配布バイナリでは無効なので案内しない
     #[error(
-        "AI CLIがインストールされていません。agy (Antigravity CLI)、codex、claude、opencode のいずれかをインストールしてください。"
+        "AI CLIがインストールされていません。opencode、grok、agy (Antigravity CLI)、codex、claude のいずれかをインストールしてください。"
     )]
     NoAiProviderInstalled,
 
@@ -41,6 +43,15 @@ pub enum AppError {
     #[error("{0}")]
     AiProviderInputError(String),
 
+    /// プロバイダーが正常終了しながら、整形後に空になる応答を返した失敗。
+    ///
+    /// 空応答は打ち切り応答と同じく確率的に起き、同じステップを次に呼べば普通に
+    /// 答える。`AiProviderError` と分けているのはクールダウンの対象外にするため
+    /// (`AiService::should_record_failure`)。異常終了やエラー出力を伴う失敗は
+    /// これまでどおり `AiProviderError` になる。
+    #[error("{0}")]
+    AiProviderEmptyResponse(String),
+
     #[error("Gitコマンドが失敗しました: {0}")]
     GitError(String),
 
@@ -50,7 +61,7 @@ pub enum AppError {
     #[error("設定エラー: {0}")]
     ConfigError(String),
 
-    #[error("ベースブランチが見つかりません。--base オプションで指定してください。")]
+    #[error("ベースブランチが見つかりません。--squash <ブランチ名> で指定してください。")]
     NoBaseBranch,
 
     #[error(
@@ -131,7 +142,7 @@ mod tests {
         let err = AppError::NoAiProviderInstalled;
         assert_eq!(
             err.to_string(),
-            "AI CLIがインストールされていません。agy (Antigravity CLI)、codex、claude、opencode のいずれかをインストールしてください。"
+            "AI CLIがインストールされていません。opencode、grok、agy (Antigravity CLI)、codex、claude のいずれかをインストールしてください。"
         );
     }
 
@@ -167,7 +178,7 @@ mod tests {
         let err = AppError::NoBaseBranch;
         assert_eq!(
             err.to_string(),
-            "ベースブランチが見つかりません。--base オプションで指定してください。"
+            "ベースブランチが見つかりません。--squash <ブランチ名> で指定してください。"
         );
     }
 

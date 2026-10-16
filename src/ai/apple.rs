@@ -455,7 +455,7 @@ impl AiService {
         let cleaned = Self::clean_message_detailed(response.content().trim());
 
         if cleaned.message.is_empty() {
-            return Err(AppError::AiProviderError(
+            return Err(AppError::AiProviderEmptyResponse(
                 "Apple Intelligence returned an empty response".to_string(),
             ));
         }

@@ -391,13 +391,30 @@ impl GitService {
         }
     }
 
+    /// diff を行に分ける。`\r\n` の `\r` は行の内容として残す。
+    ///
+    /// `str::lines()` は `\r\n` の `\r` まで取り除くので、`join("\n")` で戻すと消えたままになる。
+    /// LF → CRLF のように改行コードだけが変わった行は `-line` / `+line` の同じ組に見え、
+    /// AI から変更が見えなくなる(空白の変更も AI に見せる方針と食い違う)。
+    /// 区切りは `\n` だけにする。末尾の改行 1 つは `lines()` と同じく区切りとして扱い、
+    /// 末尾に空の要素を作らない(出力の末尾の形を `lines()` のときから変えないため)。
+    fn split_diff_lines(text: &str) -> Vec<&str> {
+        if text.is_empty() {
+            return Vec::new();
+        }
+        text.strip_suffix('\n')
+            .unwrap_or(text)
+            .split('\n')
+            .collect()
+    }
+
     /// ignoreパターンに一致するファイルは、パスを含むヘッダーだけを残す。
     fn filter_ignored_files(diff_text: &str, ignore: &Gitignore) -> String {
         if diff_text.is_empty() {
             return String::new();
         }
 
-        let lines: Vec<&str> = diff_text.lines().collect();
+        let lines = Self::split_diff_lines(diff_text);
         let mut filtered_lines = Vec::new();
         let mut i = 0;
 
@@ -405,25 +422,17 @@ impl GitService {
             let line = lines[i];
 
             if Self::is_diff_block_start(line) {
-                // ファイルパスを抽出 (例: "diff --git a/path/to/file b/path/to/file")
-                let block_start = i;
-                let file_paths = Self::extract_file_paths_from_diff_header(line);
-
-                // ignoreパターンにマッチするかチェック
-                let should_ignore = file_paths
-                    .as_ref()
-                    .map(|(before_path, after_path)| {
-                        [before_path.as_str(), after_path.as_str()]
-                            .into_iter()
-                            .any(|path| ignore.matched_path_or_any_parents(path, false).is_ignore())
-                    })
-                    .unwrap_or(false);
-
                 // このブロックの終端を見つける
+                let block_start = i;
                 i += 1;
                 while i < lines.len() && !Self::is_diff_block_start(lines[i]) {
                     i += 1;
                 }
+
+                // ignoreパターンにマッチするかチェック
+                let should_ignore = Self::ignore_candidate_paths(&lines[block_start..i])
+                    .iter()
+                    .any(|path| ignore.matched_path_or_any_parents(path, false).is_ignore());
 
                 // パスは残すが、本文とそれ以外のメタデータは AI に送らない。
                 // 元のヘッダーを使い、rename の両側やクォートされたパスも保持する。
@@ -443,6 +452,40 @@ impl GitService {
         }
 
         filtered_lines.join("\n")
+    }
+
+    /// `.git-sc-ignore` と照合するパスを diff ブロックから集める
+    ///
+    /// ヘッダー(`diff --git a/... b/...`)から読んだ変更前/変更後のパスに加えて、
+    /// 最初の `@@` より前にある rename / copy のメタデータ行のパスも候補にする。
+    /// 非クォートのヘッダーはパスに ` b/` を含むと境界が一意に決まらず、
+    /// `a/notes.txt b/config/plan b/notes.txt` を最後の ` b/` で切ると
+    /// `notes.txt b/config/plan` と `notes.txt` という実在しない 2 つのパスになって、
+    /// `/config/` の除外が外れる(移動先の内容がそのまま AI へ送られる)。
+    /// メタデータ行は 1 行に 1 パスなので曖昧さが無い。候補を足す方向にしか働かないため、
+    /// ヘッダーで一致していたものが外れることはない(fail-closed)。
+    fn ignore_candidate_paths(block: &[&str]) -> Vec<String> {
+        let mut paths = Vec::new();
+        if let Some((before_path, after_path)) = block
+            .first()
+            .and_then(|header| Self::extract_file_paths_from_diff_header(header))
+        {
+            paths.push(before_path);
+            paths.push(after_path);
+        }
+        for line in block
+            .iter()
+            .skip(1)
+            .take_while(|line| !line.starts_with("@@"))
+        {
+            let metadata_path = ["rename from ", "rename to ", "copy from ", "copy to "]
+                .into_iter()
+                .find_map(|prefix| line.strip_prefix(prefix));
+            if let Some(path) = metadata_path.and_then(Self::decode_diff_metadata_path) {
+                paths.push(path);
+            }
+        }
+        paths
     }
 
     /// diffヘッダーから変更前/変更後のファイルパスを抽出
@@ -815,7 +858,8 @@ impl GitService {
 
     /// バイナリ・lock ファイルの本文を省き、パスと変更種別のみを出力する。
     fn summarize_diff(diff_text: &str) -> String {
-        let lines: Vec<&str> = diff_text.lines().collect();
+        // CRLF の `\r` を残すため `lines()` は使わない(split_diff_lines を参照)
+        let lines = Self::split_diff_lines(diff_text);
         let mut filtered_lines = Vec::new();
         let mut i = 0;
         while i < lines.len() {
@@ -1004,6 +1048,8 @@ impl GitService {
 
     /// 直前のコミットを新しいメッセージで修正
     pub fn amend_commit(&self, message: &str) -> Result<(), AppError> {
+        // depth 1 の shallow clone では HEAD 自身が境界で、amend すると親が外れる
+        self.refuse_shallow_boundary(1)?;
         self.run_git_ok(&["commit", "--amend", "--only", "-m", message])
     }
 
@@ -1096,7 +1142,10 @@ impl GitService {
     pub fn get_diff_from_base(&self, base: &str) -> Result<String, AppError> {
         let mut args = vec!["diff", "-U0"];
         args.extend_from_slice(DIFF_FORMAT_ARGS);
-        args.extend_from_slice(&[base, "HEAD"]);
+        // 末尾の `--` はリビジョンとパスの区切り。無いと git がリビジョンを作業ツリーの
+        // ファイル名とも照合し、`HEAD` という名前のファイルがあるだけで
+        // `ambiguous argument 'HEAD': both revision and filename` で失敗する。
+        args.extend_from_slice(&[base, "HEAD", "--"]);
         let raw = self.run_git_raw(&args)?;
         self.apply_all_filters(&raw)
     }
@@ -1139,7 +1188,9 @@ impl GitService {
 
     /// 指定したコミットにsoft resetする
     pub fn soft_reset_to(&self, commit: &str) -> Result<(), AppError> {
-        self.run_git_ok(&["reset", "--soft", commit])
+        // `--` が無いと、コミットと同名のファイルが作業ツリーにあるだけで
+        // 「リビジョンかファイル名か曖昧」として失敗する(get_diff_from_base と同じ)。
+        self.run_git_ok(&["reset", "--soft", commit, "--"])
     }
 
     /// 指定範囲にマージコミットが含まれているかチェック
@@ -1154,12 +1205,14 @@ impl GitService {
             return Err(AppError::InvalidRewordTarget);
         }
 
-        // マージコミットは親が2つ以上ある
+        // マージコミットは親が2つ以上ある。
+        // 末尾の `--` が無いと、`HEAD` という名前のファイルが作業ツリーにあるだけで
+        // 「リビジョンかファイル名か曖昧」として失敗する(範囲指定の側もそろえて付ける)。
         let merges = if n == first_parent_total {
             // 最古コミットを含む範囲では HEAD~n が無効になるため履歴全体を対象にする
-            self.run_git(&["rev-list", "--merges", "HEAD"])?
+            self.run_git(&["rev-list", "--merges", "HEAD", "--"])?
         } else {
-            self.run_git(&["rev-list", "--merges", &format!("HEAD~{}..HEAD", n)])?
+            self.run_git(&["rev-list", "--merges", &format!("HEAD~{}..HEAD", n), "--"])?
         };
         Ok(!merges.is_empty())
     }
@@ -1171,10 +1224,50 @@ impl GitService {
     /// 深さで揃える必要がある。`rev-list --count HEAD`（全祖先のトポロジカル数）で数えると、
     /// マージで取り込まれた側ブランチのコミットが余分に加算され、`HEAD~n` の世界と乖離する。
     fn get_head_first_parent_count(&self) -> Result<usize, AppError> {
-        let count_str = self.run_git(&["rev-list", "--count", "--first-parent", "HEAD"])?;
+        // `--` が無いと `HEAD` という名前のファイルがあるだけで曖昧として失敗する
+        let count_str = self.run_git(&["rev-list", "--count", "--first-parent", "HEAD", "--"])?;
         count_str
             .parse()
             .map_err(|_| AppError::GitError("Failed to parse commit count".to_string()))
+    }
+
+    /// shallow clone の境界(親を取得していないコミット)を書き換えようとしていたら止める
+    ///
+    /// `n` は HEAD から first-parent をたどった位置(HEAD が 1)で、対象は `HEAD~(n-1)`。
+    /// 境界のコミットは親が取得されていないため、git からは親の無いコミットに見える。
+    /// そのまま書き換えると、reword は最古コミット用の `--root` で作り直して本来の親を
+    /// 失った新しい root コミットにし(exit 0 で成功と表示される)、`git commit --amend` も
+    /// 境界のコミットの親を引き継げず parent 行の無いコミットを作る(depth 1 の clone で
+    /// HEAD を amend して確認)。どちらも force push するとリモートの履歴が切れるため、
+    /// 書き換える前に止めて全履歴の取得を案内する。
+    fn refuse_shallow_boundary(&self, n: usize) -> Result<(), AppError> {
+        // shallow でなければ境界は無い。コミットごとの判定より先に、安い全体判定で抜ける
+        if self.run_git(&["rev-parse", "--is-shallow-repository"])? != "true" {
+            return Ok(());
+        }
+        // shallow かどうかはリポジトリ全体の状態で、対象が境界とは限らない。shallow clone の
+        // 中で `git switch --orphan` して作った本当の root コミットは、親を失う心配が無い。
+        // オブジェクトに記録された親の数と、git が履歴をたどるときに見える親の数を比べ、
+        // 見える方が少ないコミットだけを境界とみなす。
+        let target = format!("HEAD~{}", n.saturating_sub(1));
+        let object = self.run_git(&["cat-file", "commit", &target])?;
+        let recorded_parents = object
+            .lines()
+            .take_while(|line| !line.is_empty())
+            .filter(|line| line.starts_with("parent "))
+            .count();
+        let visible_parents = self
+            .run_git(&["rev-list", "--parents", "-n", "1", &target, "--"])?
+            .split_whitespace()
+            .count()
+            .saturating_sub(1);
+        if visible_parents >= recorded_parents {
+            return Ok(());
+        }
+        Err(AppError::InvalidArgument(
+            "shallow clone の境界にあるコミット(親コミットを取得していないコミット)は書き換えられません。書き換えると本来の親が外れて履歴が切れます。`git fetch --unshallow` で全履歴を取得してから再実行してください"
+                .to_string(),
+        ))
     }
 
     /// rebase が進行中か確認する
@@ -1227,35 +1320,41 @@ impl GitService {
 
     /// 指定されたコミットハッシュの差分を取得
     pub fn get_commit_diff_by_hash(&self, hash: &str) -> Result<String, AppError> {
-        // まずコミットハッシュが有効か確認
-        self.verify_commit_hash(hash)?;
+        // 検証と同時にコミット ID へ解決し、以降は解決済みの ID だけを git に渡す。
+        // 注釈付きタグ(`--generate-for v1` など)を生のまま `git show` に渡すと、diff の前に
+        // タグオブジェクト自身(`tag v1` / `Tagger: 名前 <メール>` / タグ本文)が出力され、
+        // そのまま AI へ送られる。署名者を `--no-show-signature` で外しているのと同じ理由で、
+        // コミット以外の情報はプロンプトに入れない。
+        let commit = self.resolve_commit_hash(hash)?;
 
         // git show でそのコミットの差分を取得。
-        // hash は検証済みだが、`--output=<path>` のような名前の ref が存在すると
-        // verify_commit_hash を通過しうる。hash をオプション位置に置くと git が
-        // それをオプションとして解釈し、`git show --output=<path>` で任意ファイルを
-        // 上書きできてしまうため、必ず `--end-of-options` の後ろに revision として渡す。
+        // 解決済みの ID でも `--end-of-options` の後ろに置き、オプションとして解釈される
+        // 余地を残さない(`--output=<path>` のような名前の ref を生のまま渡すと
+        // `git show --output=<path>` で任意ファイルを上書きできてしまう)。
+        // 末尾の `--` はリビジョンとパスの区切り。無いと `HEAD` などと同名のファイルが
+        // 作業ツリーにあるだけで「リビジョンかファイル名か曖昧」として失敗する。
         let mut args = vec!["show", "--no-show-signature", "--format=", "-U0"];
         args.extend_from_slice(DIFF_FORMAT_ARGS);
-        args.extend_from_slice(&["--end-of-options", hash]);
+        args.extend_from_slice(&["--end-of-options", &commit, "--"]);
         let raw = self.run_git_raw(&args)?;
         self.apply_all_filters(&raw)
     }
 
     /// 指定されたコミットハッシュのメッセージを取得
     pub fn get_commit_message_by_hash(&self, hash: &str) -> Result<String, AppError> {
-        // まずコミットハッシュが有効か確認
-        self.verify_commit_hash(hash)?;
+        // 差分の取得(get_commit_diff_by_hash)と同じく、解決済みのコミット ID だけを渡す
+        let commit = self.resolve_commit_hash(hash)?;
 
-        // hash をオプション位置に置くと `git log --output=<path>` で任意ファイルを
-        // 上書きできてしまうため、`--end-of-options` の後ろに revision として渡す。
+        // `--end-of-options` でオプションとして解釈される余地を残さず、
+        // 末尾の `--` で同名のファイルとの曖昧さを断つ。
         self.run_git(&[
             "log",
             "--no-show-signature",
             "-1",
             "--format=%s",
             "--end-of-options",
-            hash,
+            &commit,
+            "--",
         ])
     }
 
@@ -1372,6 +1471,8 @@ impl GitService {
             if self.has_merge_commits_in_range(1)? {
                 return Err(AppError::HasMergeCommits);
             }
+            // depth 1 の shallow clone では HEAD 自身が境界になり、amend でも親が外れる
+            self.refuse_shallow_boundary(1)?;
             return self.amend_commit_message(new_message);
         }
 
@@ -1386,51 +1487,79 @@ impl GitService {
             return Err(AppError::HasMergeCommits);
         }
 
+        // shallow clone の境界は first-parent の終端に見え、下の `--root` 経路に入ってしまう
+        self.refuse_shallow_boundary(n)?;
+
         // 一意な一時ファイルにメッセージを保存
         let msg_file = TempRewordMessageFile::create(new_message)?;
 
-        // GIT_SEQUENCE_EDITOR: 先頭の pick を reword に置換する。
+        // GIT_SEQUENCE_EDITOR: 先頭行(対象のコミット)は `pick` のまま残し、その直後に
+        // メッセージを差し替える `exec` 行を差し込む。範囲内の他のコミットには触れない。
+        //
+        // 以前は先頭行を `reword` に置換し、GIT_EDITOR でメッセージファイルを流し込んでいた。
+        // `reword` だと git は「エディタで編集したメッセージ」として扱い、既定の
+        // `commit.cleanup=strip` が `#` で始まる行をコメントとして削る。件名が
+        // `#123 fix login` なら件名が消えて本文の 1 行目が件名に繰り上がり、件名だけなら
+        // `Aborting commit due to empty commit message.` で失敗していた。HEAD の reword
+        // (n == 1) と通常のコミットは `-m` なので whitespace の整形だけで `#` 行が残り、
+        // 経路によって結果が食い違っていた。
+        //
+        // exec で実行する `git commit --amend --only --allow-empty -F "$GIT_SC_MSG_FILE"` は
+        // エディタを開かないので、整形は n == 1 の `-m` と同じ whitespace になる。
+        // - `--only`: n == 1 の amend と同じく index の内容を混ぜない
+        // - `--allow-empty`: 空のコミットも reword できた旧方式を保つ(付けないと
+        //   「amend すると空になる」として拒否される)
+        // - メッセージファイルのパスは todo に書かず `$GIT_SC_MSG_FILE` のまま残し、exec を
+        //   実行するシェルに展開させる(パスをシェル文字列に埋め込まない)。スクリプト中の
+        //   `\"\$GIT_SC_MSG_FILE\"` は内側の sh で `"$GIT_SC_MSG_FILE"` という文字列になる
+        // `-c commit.cleanup=whitespace` を rebase 全体に付ける案は、範囲内で pick されるだけの
+        // 他のコミットのメッセージ(末尾空白・連続空行)まで書き換えるので採らない。exec は
+        // 対象の 1 コミットにしか効かない。exec が失敗する(commit-msg フックの拒否など)と
+        // rebase はそこで止まって非ゼロで終わるため、下の失敗経路で abort される。
+        //
         // `rebase.abbreviateCommands=false` を後段の rebase 起動側で強制するため、
         // todo は必ず `pick <hash>` 形式で出力される（短縮形 `p` は出ない）。
-        // また、対象は先頭の 1 行のみで、範囲内の他コミットには触れない。
         //
         // Windows でも同じ sh 版を使う。git はエディタ文字列にシェルメタ文字が含まれると
         // OS を問わず `sh -c '<editor> "$@"' <editor> <path>` の形で起動する
         // (Git for Windows では同梱の sh)。以前の PowerShell 版はその外側の sh に
         // `$lines` / `$args` を先に展開されて中身が消え、さらに PowerShell の `-Command` は
         // 後続引数を `$args` へ渡さないため、二重に機能していなかった。
-        // Git for Windows は sh / sed / cp を同梱しているので Unix 版へ一本化する。
+        // Git for Windows は sh / sed / mv を同梱しているので Unix 版へ一本化する。
         //
-        // 先頭行が `pick ` でなければ非ゼロ終了して rebase ごと失敗させる。置換が空振り
-        // しても todo は全行 `pick` のまま有効なため、rebase は exit 0 で完了し
-        // 「成功と表示されるのにメッセージが変わらない」無言の no-op になる。既知の原因
-        // (`rebase.rebaseMerges`) は `--no-rebase-merges` で塞いだが、todo の先頭へ別の
-        // 前置きを足す設定が将来増えても、黙って no-op になる代わりに失敗として現れる。
+        // 先頭行が `pick ` でなければ非ゼロ終了して rebase ごと失敗させる。先頭に別の行が
+        // 入っていると、exec が対象とは別のコミットの直後に入って別のコミットのメッセージを
+        // 書き換えるか、何も書き換わらないまま rebase が exit 0 で完了する(「成功と表示
+        // されるのにメッセージが変わらない」無言の no-op)。既知の原因(`rebase.rebaseMerges`)は
+        // `--no-rebase-merges` で塞いだが、todo の先頭へ別の前置きを足す設定が将来増えても、
+        // 黙って誤動作する代わりに失敗として現れる。
         let sequence_editor = concat!(
             r#"sh -c 'IFS= read -r first < "$1" || exit 1; "#,
             r#"case "$first" in "pick "*) ;; "#,
             r#"*) echo "git-sc: unexpected rebase todo (first line is not a pick)" >&2; exit 1;; esac; "#,
-            r#"sed -i.bak "1s/^pick /reword /" "$1" && rm -f "$1.bak"' --"#
+            r#"{ printf "%s\n" "$first" "exec git commit --amend --only --allow-empty -F \"\$GIT_SC_MSG_FILE\""; "#,
+            r#"sed 1d "$1"; } > "$1.git-sc" && mv "$1.git-sc" "$1"' --"#
         )
         .to_string();
 
-        // GIT_EDITOR: 一時ファイルの内容をコミットメッセージに反映
-        // パスを環境変数経由で渡し、シェル文字列にパスを埋め込まない（インジェクション防止）
-        let editor = r#"sh -c 'cp "$GIT_SC_MSG_FILE" "$1"' --"#.to_string();
+        // GIT_EDITOR: メッセージは exec の `-F` で渡すので、エディタを使う場面は無い。
+        // 万一呼ばれても対話にならないよう、git が「何もしないエディタ」として扱う `:` にする
+        // (ユーザーの core.editor が GUI エディタでも開かない)。
+        let editor = ":";
 
         // git rebase -i を実行（最古コミット対象時は --root を使う）。
         // `rebase.abbreviateCommands=false` で todo を必ず `pick` で出力させ、
-        // 短縮形 `p` を前提にした置換漏れを防ぐ。
+        // 短縮形 `p` を前提にした先頭行の検査が誤って失敗するのを防ぐ。
         // `--no-autosquash` は `rebase.autoSquash=true` のユーザー設定を隔離するために必須。
         // autosquash が効くと範囲内の `fixup!`/`squash!` コミットが todo 上で並べ替えられて
-        // 対象コミットへ黙って溶け込み、reword 以外の履歴改変が起きる。さらに `squash` 行は
-        // GIT_EDITOR (メッセージファイルをコピーするだけ) を通るため、結合先メッセージまで
-        // reword 用メッセージで上書きされてしまう。
+        // 対象コミットへ黙って溶け込み、reword 以外の履歴改変が起きる(対象の直後に並ぶため、
+        // 差し込んだ exec の後で amend 済みのコミットへ結合される)。
         // `--no-rebase-merges` は `rebase.rebaseMerges=true` のユーザー設定を隔離するために
         // 必須。これが効くと todo の先頭に `label onto` / `reset onto` の前置きが入り、
-        // 1 行目を対象にした置換が空振りする。それでも todo は全行 `pick` のまま有効なので
-        // rebase は exit 0 で完了し、git-sc は「成功」と表示しながらメッセージが一切
-        // 変わらない(= 無言の no-op)。ユーザーは reword 済みと信じて force push まで案内される。
+        // 1 行目を対象にした差し込みがずれる。以前の `reword` 置換では空振りしても todo は
+        // 全行 `pick` のまま有効なので rebase は exit 0 で完了し、git-sc は「成功」と表示
+        // しながらメッセージが一切変わらなかった(= 無言の no-op)。ユーザーは reword 済みと
+        // 信じて force push まで案内される。
         let mut rebase_cmd = Command::new("git");
         rebase_cmd.arg("-c").arg("rebase.abbreviateCommands=false");
         rebase_cmd
@@ -1455,8 +1584,8 @@ impl GitService {
 
         let output = rebase_cmd
             .env("GIT_SEQUENCE_EDITOR", &sequence_editor)
-            .env("GIT_EDITOR", &editor)
-            .env("EDITOR", &editor)
+            .env("GIT_EDITOR", editor)
+            .env("EDITOR", editor)
             .env("GIT_SC_MSG_FILE", msg_file.path().as_os_str())
             .current_dir(&self.repo_path)
             .output()
@@ -5649,5 +5778,434 @@ Binary files /dev/null and b/script.bin differ"#;
         let result = GitService::truncate_diff(&diff);
         assert_eq!(result, diff);
         assert!(!result.contains("truncated"));
+    }
+
+    // ============================================================
+    // rename / copy の移動先パスに ` b/` を含んでも除外が外れない
+    // ============================================================
+
+    #[rstest]
+    #[case("similarity index 80%\nrename from notes.txt\nrename to config/plan b/notes.txt")]
+    #[case("similarity index 80%\ncopy from notes.txt\ncopy to config/plan b/notes.txt")]
+    fn test_filter_ignored_files_checks_rename_metadata_when_path_contains_b_separator(
+        #[case] metadata: &str,
+    ) {
+        // 非クォートのヘッダーを最後の ` b/` で切ると `notes.txt b/config/plan` と
+        // `notes.txt` になり、どちらも実在しないパスなので `/config/` に一致しない。
+        let mut builder = GitignoreBuilder::new(".");
+        builder.add_line(None, "/config/").unwrap();
+        let ignore = builder.build().unwrap();
+        let header = "diff --git a/notes.txt b/config/plan b/notes.txt";
+        let diff = format!(
+            "{header}\n{metadata}\nindex 1111111..2222222 100644\n--- a/notes.txt\n+++ b/config/plan b/notes.txt\t\n@@ -4,0 +5 @@\n+SECRET-LINE"
+        );
+
+        assert_eq!(
+            GitService::filter_ignored_files(&diff, &ignore),
+            format!("{header}\n{IGNORED_CONTENT_NOTICE}")
+        );
+    }
+
+    #[test]
+    fn test_rename_into_ignored_dir_with_b_separator_omits_contents() {
+        let temp_dir = setup_temp_git_repo();
+        let repo = temp_dir.path();
+        run_git_in(repo, &["config", "diff.renames", "true"]);
+        std::fs::write(repo.join("notes.txt"), "line 1\nline 2\nline 3\nline 4\n").unwrap();
+        run_git_in(repo, &["add", "notes.txt"]);
+        run_git_in(repo, &["commit", "-m", "add notes"]);
+
+        std::fs::create_dir_all(repo.join("config/plan b")).unwrap();
+        run_git_in(repo, &["mv", "notes.txt", "config/plan b/notes.txt"]);
+        std::fs::write(
+            repo.join("config/plan b/notes.txt"),
+            "line 1\nline 2\nline 3\nline 4\nSECRET-LINE\n",
+        )
+        .unwrap();
+        run_git_in(repo, &["add", "config/plan b/notes.txt"]);
+        std::fs::write(repo.join(".git-sc-ignore"), "/config/\n").unwrap();
+        let service = GitService::with_repo_path(repo.to_path_buf());
+
+        let staged = service.get_staged_diff().unwrap();
+        assert!(
+            staged.contains("diff --git a/notes.txt b/config/plan b/notes.txt\n"),
+            "rename として出力される前提が崩れている: {staged}"
+        );
+        assert!(!staged.contains("SECRET-LINE"), "{staged}");
+        assert!(staged.contains(IGNORED_CONTENT_NOTICE), "{staged}");
+
+        run_git_in(repo, &["commit", "-m", "move notes"]);
+        let committed = service.get_last_commit_diff().unwrap();
+        assert!(!committed.contains("SECRET-LINE"), "{committed}");
+        assert!(committed.contains(IGNORED_CONTENT_NOTICE), "{committed}");
+    }
+
+    // ============================================================
+    // shallow clone の境界のコミットを書き換えない
+    // ============================================================
+
+    /// 3 コミットの履歴を `--depth` 付きで clone する。
+    /// ローカルパスの clone では `--depth` が無視されるため `file://` で指定する。
+    /// 返り値: (clone 元, clone 先の親ディレクトリ, clone 先のリポジトリ)
+    #[cfg(unix)]
+    fn setup_shallow_clone(depth: usize) -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
+        let source = setup_temp_git_repo();
+        for i in 1..=3 {
+            std::fs::write(source.path().join("f.txt"), format!("{i}\n")).unwrap();
+            run_git_in(source.path(), &["add", "f.txt"]);
+            run_git_in(source.path(), &["commit", "-m", &format!("c{i}")]);
+        }
+        let clones = tempfile::TempDir::new().unwrap();
+        let url = format!("file://{}", source.path().display());
+        let depth = depth.to_string();
+        run_git_in(
+            clones.path(),
+            &["clone", "-q", "--depth", &depth, &url, "shallow"],
+        );
+        let repo = clones.path().join("shallow");
+        run_git_in(&repo, &["config", "user.name", "Test User"]);
+        run_git_in(&repo, &["config", "user.email", "test@example.com"]);
+        assert_eq!(
+            git_output_in(&repo, &["rev-parse", "--is-shallow-repository"]),
+            "true"
+        );
+        (source, clones, repo)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_reword_refuses_shallow_boundary_but_keeps_head_reword() {
+        // 境界のコミットは first-parent の終端に見えるため、以前は最古コミット用の
+        // `--root` で作り直され、本来の親を失った新しい root コミットになっていた。
+        let (_source, _clones, repo) = setup_shallow_clone(2);
+        let service = GitService::with_repo_path(repo.clone());
+        let head = git_output_in(&repo, &["rev-parse", "HEAD"]);
+        let boundary = git_output_in(&repo, &["rev-parse", "HEAD~1"]);
+
+        let result = service.reword_commit_by_hash(&boundary, "reworded boundary");
+        assert!(
+            matches!(&result, Err(AppError::InvalidArgument(message)) if message.contains("git fetch --unshallow")),
+            "shallow の境界は書き換えずに止めるべき。実際: {result:?}"
+        );
+        assert_eq!(
+            git_output_in(&repo, &["rev-parse", "HEAD"]),
+            head,
+            "止めたときは履歴を動かしてはいけない"
+        );
+
+        // HEAD は境界ではないので、n == 1 の amend 経路はこれまでどおり動き、親も保たれる
+        service.reword_commit(1, "reworded head").unwrap();
+        assert_eq!(
+            git_output_in(&repo, &["log", "-1", "--format=%s"]),
+            "reworded head"
+        );
+        assert_eq!(
+            git_output_in(&repo, &["log", "-1", "--format=%P"]),
+            boundary
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_reword_and_amend_refuse_head_on_shallow_boundary() {
+        // depth 1 では HEAD 自身が境界になる。`git commit --amend` は境界のコミットの
+        // 親を引き継げず、parent 行の無いコミットを作る(実測)。
+        let (_source, _clones, repo) = setup_shallow_clone(1);
+        let service = GitService::with_repo_path(repo.clone());
+        let head = git_output_in(&repo, &["rev-parse", "HEAD"]);
+
+        let reword = service.reword_commit(1, "reworded head");
+        assert!(
+            matches!(&reword, Err(AppError::InvalidArgument(message)) if message.contains("git fetch --unshallow")),
+            "HEAD が境界なら reword も止めるべき。実際: {reword:?}"
+        );
+        let amend = service.amend_commit("amended head");
+        assert!(
+            matches!(&amend, Err(AppError::InvalidArgument(message)) if message.contains("git fetch --unshallow")),
+            "HEAD が境界なら amend も止めるべき。実際: {amend:?}"
+        );
+        assert_eq!(git_output_in(&repo, &["rev-parse", "HEAD"]), head);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_shallow_repository_still_rewrites_true_root_of_orphan_branch() {
+        // shallow かどうかはリポジトリ全体の状態なので、それだけで止めると、shallow clone の
+        // 中で `git switch --orphan` して作った本当の root コミット(親を失う心配が無い)まで
+        // 書き換えられなくなる。境界かどうかは書き換える対象のコミットごとに判定する。
+        let (_source, _clones, repo) = setup_shallow_clone(2);
+        let service = GitService::with_repo_path(repo.clone());
+        run_git_in(&repo, &["switch", "-q", "--orphan", "independent"]);
+        std::fs::write(repo.join("independent.txt"), "root\n").unwrap();
+        run_git_in(&repo, &["add", "independent.txt"]);
+        run_git_in(&repo, &["commit", "-q", "-m", "independent root"]);
+
+        service.amend_commit("amended root").unwrap();
+        assert_eq!(
+            git_output_in(&repo, &["log", "-1", "--format=%s"]),
+            "amended root"
+        );
+
+        // 2 コミットにして root を reword する(`--root` の経路)
+        std::fs::write(repo.join("independent.txt"), "second\n").unwrap();
+        run_git_in(&repo, &["add", "independent.txt"]);
+        run_git_in(&repo, &["commit", "-q", "-m", "second"]);
+        service.reword_commit(2, "reworded root").unwrap();
+        assert_eq!(
+            git_output_in(&repo, &["log", "-1", "--format=%s", "HEAD~1"]),
+            "reworded root"
+        );
+        assert_eq!(
+            git_output_in(&repo, &["log", "-1", "--format=%s"]),
+            "second"
+        );
+    }
+
+    // ============================================================
+    // 2 個以上前の reword でも `#` で始まる行を残す
+    // ============================================================
+
+    /// コミットメッセージを整形せずにそのまま取り出す
+    fn raw_commit_message(repo: &std::path::Path, rev: &str) -> String {
+        let output = Command::new("git")
+            .args(["cat-file", "commit", rev])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let object = String::from_utf8(output.stdout).unwrap();
+        object
+            .split_once("\n\n")
+            .map(|(_, message)| message.to_string())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn test_reword_older_commit_keeps_hash_lines_like_head_reword() {
+        let temp_dir = setup_temp_git_repo();
+        let repo = temp_dir.path();
+        for name in ["base", "target", "later"] {
+            std::fs::write(repo.join(format!("{name}.txt")), format!("{name}\n")).unwrap();
+            run_git_in(repo, &["add", "."]);
+            run_git_in(repo, &["commit", "-m", name]);
+        }
+        let service = GitService::with_repo_path(repo.to_path_buf());
+
+        // 件名だけの場合: 旧方式は件名をコメントとして削り、空メッセージで失敗していた
+        service.reword_commit(2, "#123 fix login").unwrap();
+        assert_eq!(raw_commit_message(repo, "HEAD~1"), "#123 fix login\n");
+
+        // 本文にも `#` 行がある場合: n == 1(`-m`)と同じ結果になること
+        let message = "#123 fix login\n\n# 本文の 1 行目\n本文の 2 行目";
+        service.reword_commit(2, message).unwrap();
+        service.reword_commit(1, message).unwrap();
+        let older = raw_commit_message(repo, "HEAD~1");
+        assert_eq!(
+            older,
+            raw_commit_message(repo, "HEAD"),
+            "n == 1 と n >= 2 で結果が食い違ってはいけない"
+        );
+        assert_eq!(older, format!("{message}\n"));
+    }
+
+    #[test]
+    fn test_reword_older_commit_leaves_other_commit_messages_byte_identical() {
+        // 対象以外のコミットは pick し直すだけなので、メッセージの整形
+        // (末尾空白・連続空行・`#` 行の除去)を一切受けてはいけない。
+        let temp_dir = setup_temp_git_repo();
+        let repo = temp_dir.path();
+        for name in ["base", "target"] {
+            std::fs::write(repo.join(format!("{name}.txt")), format!("{name}\n")).unwrap();
+            run_git_in(repo, &["add", "."]);
+            run_git_in(repo, &["commit", "-m", name]);
+        }
+        let verbatim = "later subject  \n\n\n# not a comment\ntrailing space \n\n";
+        let message_file = repo.join(".git").join("git-sc-test-message");
+        std::fs::write(&message_file, verbatim).unwrap();
+        std::fs::write(repo.join("later.txt"), "later\n").unwrap();
+        run_git_in(repo, &["add", "."]);
+        run_git_in(
+            repo,
+            &[
+                "commit",
+                "--cleanup=verbatim",
+                "-F",
+                message_file.to_str().unwrap(),
+            ],
+        );
+        assert_eq!(raw_commit_message(repo, "HEAD"), verbatim);
+
+        let service = GitService::with_repo_path(repo.to_path_buf());
+        service.reword_commit(2, "reworded target").unwrap();
+
+        assert_eq!(raw_commit_message(repo, "HEAD"), verbatim);
+        assert_eq!(raw_commit_message(repo, "HEAD~1"), "reworded target\n");
+        assert_eq!(raw_commit_message(repo, "HEAD~2"), "base\n");
+    }
+
+    // ============================================================
+    // 改行コード(CRLF)だけの変更も AI から見える
+    // ============================================================
+
+    #[rstest]
+    #[case("")]
+    #[case("\n")]
+    #[case("a")]
+    #[case("a\n")]
+    #[case("a\nb")]
+    #[case("a\n\nb\n\n")]
+    #[case("lone \r inside\n")]
+    fn test_split_diff_lines_matches_str_lines_without_crlf(#[case] text: &str) {
+        // `\r\n` を含まない入力では `lines()` と同じ区切り方になる(末尾の改行の扱いも同じ)
+        assert_eq!(
+            GitService::split_diff_lines(text),
+            text.lines().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_split_diff_lines_keeps_carriage_return_before_newline() {
+        assert_eq!(
+            GitService::split_diff_lines("-a\n+a\r\n+b\r"),
+            vec!["-a", "+a\r", "+b\r"]
+        );
+    }
+
+    #[test]
+    fn test_summarize_diff_keeps_carriage_returns_of_crlf_lines() {
+        let diff = "diff --git a/x.txt b/x.txt\n@@ -1 +1 @@\n-line\n+line\r\n";
+        assert_eq!(
+            GitService::summarize_diff(diff),
+            "diff --git a/x.txt b/x.txt\n@@ -1 +1 @@\n-line\n+line\r"
+        );
+    }
+
+    #[test]
+    fn test_filter_ignored_files_keeps_carriage_returns_of_crlf_lines() {
+        let mut builder = GitignoreBuilder::new(".");
+        builder.add_line(None, "secret/").unwrap();
+        let ignore = builder.build().unwrap();
+        let diff = "diff --git a/x.txt b/x.txt\n@@ -1 +1 @@\n-line\n+line\r\n";
+        assert_eq!(
+            GitService::filter_ignored_files(diff, &ignore),
+            "diff --git a/x.txt b/x.txt\n@@ -1 +1 @@\n-line\n+line\r"
+        );
+    }
+
+    #[test]
+    fn test_line_ending_only_change_is_visible_in_staged_diff() {
+        let temp_dir = setup_temp_git_repo();
+        let repo = temp_dir.path();
+        run_git_in(repo, &["config", "core.autocrlf", "false"]);
+        std::fs::write(repo.join("crlf.txt"), "alpha\nbeta\n").unwrap();
+        run_git_in(repo, &["add", "crlf.txt"]);
+        run_git_in(repo, &["commit", "-m", "lf"]);
+        std::fs::write(repo.join("crlf.txt"), "alpha\r\nbeta\r\n").unwrap();
+        run_git_in(repo, &["add", "crlf.txt"]);
+        let service = GitService::with_repo_path(repo.to_path_buf());
+
+        // `.git-sc-ignore` がある場合は filter_ignored_files も通るため、両方で確かめる
+        for with_ignore_file in [false, true] {
+            if with_ignore_file {
+                std::fs::write(repo.join(".git-sc-ignore"), "unrelated/\n").unwrap();
+            }
+            let diff = service.get_staged_diff().unwrap();
+            assert!(
+                diff.contains("-alpha\n-beta\n+alpha\r\n+beta\r"),
+                "ignore ファイルあり = {with_ignore_file}: {diff:?}"
+            );
+        }
+    }
+
+    // ============================================================
+    // 作業ツリーにリビジョンと同名のファイルがあっても履歴を読める
+    // ============================================================
+
+    #[test]
+    fn test_history_apis_work_with_file_named_head_in_cwd() {
+        let temp_dir = setup_temp_git_repo();
+        let repo = temp_dir.path();
+        for i in 1..=3 {
+            std::fs::write(repo.join("f.txt"), format!("{i}\n")).unwrap();
+            run_git_in(repo, &["add", "f.txt"]);
+            run_git_in(repo, &["commit", "-m", &format!("c{i}")]);
+        }
+        let base = git_output_in(repo, &["rev-parse", "HEAD~2"]);
+        // `--` の無いリビジョン指定は作業ツリーのファイル名と照合され、
+        // 「リビジョンかファイル名か曖昧」として git が拒否する
+        std::fs::write(repo.join("HEAD"), "untracked file named HEAD\n").unwrap();
+        let service = GitService::with_repo_path(repo.to_path_buf());
+
+        assert!(service.get_diff_from_base(&base).unwrap().contains("+3"));
+        assert!(service.get_last_commit_diff().unwrap().contains("+3"));
+        assert_eq!(service.get_commit_message_by_hash("HEAD").unwrap(), "c3");
+        assert_eq!(service.get_head_first_parent_count().unwrap(), 3);
+        assert!(!service.has_merge_commits_in_range(1).unwrap());
+        assert!(!service.has_merge_commits_in_range(3).unwrap());
+        service.reword_commit(2, "reworded c2").unwrap();
+        service.reword_commit(1, "reworded c3").unwrap();
+        assert_eq!(
+            git_output_in(repo, &["log", "--format=%s"]),
+            "reworded c3\nreworded c2\nc1"
+        );
+    }
+
+    #[test]
+    fn test_commit_apis_work_with_file_named_like_target_commit() {
+        // `HEAD` などの名前はコミット ID へ解決してから渡すが、解決後の ID と同じ名前の
+        // ファイルがあっても曖昧にならないよう、どの呼び出しも `--` で区切る。
+        let temp_dir = setup_temp_git_repo();
+        let repo = temp_dir.path();
+        std::fs::write(repo.join("f.txt"), "1\n").unwrap();
+        run_git_in(repo, &["add", "f.txt"]);
+        run_git_in(repo, &["commit", "-m", "c1"]);
+        let first = git_output_in(repo, &["rev-parse", "HEAD"]);
+        std::fs::write(repo.join("f.txt"), "2\n").unwrap();
+        run_git_in(repo, &["commit", "-am", "c2"]);
+        let second = git_output_in(repo, &["rev-parse", "HEAD"]);
+        std::fs::write(repo.join(&first), "file named like the first commit\n").unwrap();
+        std::fs::write(repo.join(&second), "file named like the second commit\n").unwrap();
+        let service = GitService::with_repo_path(repo.to_path_buf());
+
+        assert!(service.get_last_commit_diff().unwrap().contains("+2"));
+        assert_eq!(service.get_commit_message_by_hash("HEAD").unwrap(), "c2");
+        service.soft_reset_to(&first).unwrap();
+        assert_eq!(git_output_in(repo, &["rev-parse", "HEAD"]), first);
+    }
+
+    // ============================================================
+    // 注釈付きタグを指定しても tagger とタグ本文を AI に渡さない
+    // ============================================================
+
+    #[test]
+    fn test_commit_lookup_by_annotated_tag_excludes_tag_object() {
+        let temp_dir = setup_temp_git_repo();
+        let repo = temp_dir.path();
+        std::fs::write(repo.join("f.txt"), "tagged change\n").unwrap();
+        run_git_in(repo, &["add", "f.txt"]);
+        run_git_in(repo, &["commit", "-m", "feat: tagged subject"]);
+        run_git_in(repo, &["config", "user.name", "Tagger Person"]);
+        run_git_in(repo, &["config", "user.email", "tagger@example.com"]);
+        run_git_in(
+            repo,
+            &["tag", "-a", "v1", "-m", "TAG-BODY-MUST-NOT-REACH-AI"],
+        );
+        let service = GitService::with_repo_path(repo.to_path_buf());
+
+        let diff = service.get_commit_diff_by_hash("v1").unwrap();
+        assert!(diff.starts_with("diff --git "), "{diff}");
+        assert!(diff.contains("+tagged change"), "{diff}");
+        for leaked in [
+            "TAG-BODY-MUST-NOT-REACH-AI",
+            "Tagger",
+            "tagger@example.com",
+            "tag v1",
+        ] {
+            assert!(!diff.contains(leaked), "{leaked}: {diff}");
+        }
+        assert_eq!(
+            service.get_commit_message_by_hash("v1").unwrap(),
+            "feat: tagged subject"
+        );
     }
 }

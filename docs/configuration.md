@@ -100,6 +100,8 @@ The default Antigravity (`agy`) model is `GPT-OSS 120B (Medium)`, chosen by meas
 
 Provider cooldown state normalizes legacy aliases before reordering providers, so `gemini`/`agy` cooldown entries still apply to `antigravity`, and legacy `apple-ai` / `apple_intelligence` entries still apply to `apple-intelligence`. Running with `--debug` also prints a one-time notice when a legacy `gemini` provider alias is found in your config, reminding you that it is normalized to `antigravity`.
 
+Cooldown state is shared by every repository (`~/.config/git-sc/.providers-state`), while `provider_cooldown_minutes` can differ per project. Each run decides whether a step is demoted with its own value, and a failure in one repository never erases records the others rely on, so a project with a short cooldown (or `0` to turn it off) does not reset the cooldowns of other repositories. A response that is empty although the CLI exited successfully, and one cut off mid-sentence, count as a one-off bad generation and do not put the step into cooldown: an empty response moves on to the next step, and a cut-off subject is retried once on the same step before moving on.
+
 ## Advanced: Provider Fallback Chain (model / account / command)
 
 Each entry in `providers` can be either a plain string (provider name only) **or** a table that also specifies `model`, `command`, and `env`. This lets you build a fallback chain where the *same* provider appears multiple times with different models or accounts — useful when one provider splits its quota per model family or per account/contract.
@@ -241,6 +243,8 @@ max_total_mb = 500
 Each run writes one JSON file to `~/.config/git-sc/logs/YYYY-MM-DD/`, containing the prompt digest and diff statistics, every provider attempt (raw response before cleanup, model, duration, quality findings, and whether it was accepted, retried, or fell through), and the outcome — including the commit hash when one was made. Files are written to a temporary name and renamed into place, so concurrent `git-sc` runs never interleave, and partially written records never appear as finished ones.
 
 Failures before prompt construction, such as staging failures, are also recorded with `result.status = "failed"`, the error in `result.error`, and `prompt = null`. Successful runs that skip generation (for example, `--all` with no changes or invocation outside a repository) do not create a log. Logging begins after configuration has loaded, so configuration-loading errors are not recorded.
+
+The outcome is recorded in `result.status`: `committed`, `dry-run`, `declined` (the confirmation was answered no), `skipped`, `generated` (`--generate-for`), or `failed`. `skipped` means a message was generated, but the staged changes were gone by the time of the commit — for example when another git-sc run started by a hook committed them first. `result.commit_hash` is the commit that was written; after `--reword` of an older commit it is that commit, not `HEAD`.
 
 Analyze them by streaming the files into JSONL:
 

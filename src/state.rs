@@ -14,6 +14,13 @@ use crate::error::AppError;
 /// 並列スレッドが同じナノ秒タイムスタンプを取得した場合でも tmp パスが衝突しないことを保証する。
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// 状態ファイルに残す失敗記録の上限件数(`State::prune_after_failure`)。
+///
+/// 記録はクールダウンキーごとに 1 件で、同じキーの失敗は時刻を更新するだけなので、
+/// 通常は設定したことのあるステップの数を超えない。上限は、設定を何度も変えて
+/// キーが入れ替わり続けた場合にファイルが際限なく育たないための歯止め。
+const MAX_FAILURE_ENTRIES: usize = 256;
+
 /// プロバイダーステップの失敗情報
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderFailure {
@@ -212,13 +219,20 @@ impl State {
             .any(|f| f.key == key && now.saturating_sub(f.failed_at) < cooldown_secs)
     }
 
-    /// 期限切れの失敗記録をクリーンアップ
-    pub fn cleanup_expired(&mut self, cooldown_minutes: u64) {
-        let now = Self::now();
-        let cooldown_secs = Self::cooldown_secs(cooldown_minutes);
-
-        self.failures
-            .retain(|failure| now.saturating_sub(failure.failed_at) < cooldown_secs);
+    /// 失敗を記録したあとの掃除。件数が上限を超えたときだけ、古い記録から落とす
+    ///
+    /// 経過時間では消さない。状態ファイルは全リポジトリで共有する一方、クールダウンの
+    /// 長さは `provider_cooldown_minutes` でリポジトリごとに変えられ、上限も無い。
+    /// 以前は書き手のクールダウンで期限切れを消していたため、短い(0 = 無効を含む)
+    /// リポジトリで 1 回失敗しただけで、長いクールダウンを使う他のリポジトリの記録まで
+    /// 消えていた。降格するかどうかは読み手が自分のクールダウンで判定する(`is_demoted`)
+    /// ので、期限の過ぎた記録が残っていても誤って降格することはない。
+    pub fn prune_after_failure(&mut self) {
+        if self.failures.len() > MAX_FAILURE_ENTRIES {
+            self.failures
+                .sort_by_key(|failure| std::cmp::Reverse(failure.failed_at));
+            self.failures.truncate(MAX_FAILURE_ENTRIES);
+        }
     }
 
     /// ステップ列を降格状態に基づいて並び替える。降格中のステップは末尾へ移動する。
@@ -446,8 +460,9 @@ mod tests {
         assert!(reordered.iter().any(|s| s.provider == "codex"));
     }
 
+    /// 期限の過ぎた記録は残っていても、その読み手のクールダウンでは降格しない
     #[test]
-    fn test_cleanup_expired() {
+    fn test_expired_entry_is_kept_but_not_demoted() {
         let mut state = State::default();
 
         // 現在の失敗
@@ -457,11 +472,13 @@ mod tests {
         let two_hours_ago = State::now() - (2 * 60 * 60);
         push_failure(&mut state, "codex", two_hours_ago);
 
-        // 1時間のクールダウンでクリーンアップ
-        state.cleanup_expired(60);
+        state.prune_after_failure();
 
-        assert!(has_failure(&state, "gemini"));
-        assert!(!has_failure(&state, "codex"));
+        // 1 時間のクールダウンでは codex は期限切れ、3 時間なら降格中
+        assert!(state.is_demoted(&step("gemini"), 60));
+        assert!(!state.is_demoted(&step("codex"), 60));
+        assert!(state.is_demoted(&step("codex"), 3 * 60));
+        assert!(has_failure(&state, "codex"));
     }
 
     #[test]
@@ -492,24 +509,89 @@ mod tests {
     }
 
     #[test]
-    fn test_cleanup_expired_keeps_recent() {
+    fn test_zero_cooldown_demotes_nothing() {
         let mut state = State::default();
         state.record_failure(&step("gemini"));
-        state.record_failure(&step("codex"));
 
-        // 両方とも直近の失敗なので、クリーンアップしても残る
-        state.cleanup_expired(60);
-        assert_eq!(state.failures.len(), 2);
+        // クールダウン0分の場合、直後でも降格しない
+        assert!(!state.is_demoted(&step("gemini"), 0));
     }
 
+    /// 失敗後の掃除は経過時間で記録を消さない。状態ファイルは全リポジトリ共有で、
+    /// 書き手のクールダウンが短くても(0 でも)、長いクールダウンを使う他のリポジトリは
+    /// その記録でまだ降格を判定する。
     #[test]
-    fn test_cleanup_expired_zero_cooldown() {
+    fn test_prune_after_failure_keeps_entries_other_repositories_still_use() {
         let mut state = State::default();
-        state.record_failure(&step("gemini"));
+        // 2 分前に別のリポジトリ(クールダウン 60 分)で失敗したステップ
+        push_failure(&mut state, "codex", State::now() - 120);
+        // 8 日前に別のリポジトリ(クールダウン 30 日)で失敗したステップ
+        push_failure(&mut state, "grok", State::now() - 8 * 24 * 60 * 60);
+        // クールダウン 0 のリポジトリで別のステップが失敗し、掃除が走る
+        state.record_failure(&step("claude"));
+        state.prune_after_failure();
 
-        // クールダウン0分の場合、全エントリが期限切れ
-        state.cleanup_expired(0);
-        assert!(state.failures.is_empty());
+        assert!(state.is_demoted(&step("codex"), 60));
+        assert!(state.is_demoted(&step("grok"), 30 * 24 * 60));
+        assert!(has_failure(&state, "claude"));
+    }
+
+    /// 件数が上限を超えたときだけ、古い記録から落とす
+    #[test]
+    fn test_prune_after_failure_caps_entry_count_keeping_newest() {
+        let mut state = State::default();
+        let now = State::now();
+        for i in 0..MAX_FAILURE_ENTRIES + 10 {
+            state.failures.push(ProviderFailure {
+                key: format!("step-{i}"),
+                provider: None,
+                failed_at: now - 1_000 + i as u64,
+            });
+        }
+        state.prune_after_failure();
+
+        assert_eq!(state.failures.len(), MAX_FAILURE_ENTRIES);
+        // 最も古い 10 件(step-0 〜 step-9)が落ち、それ以降は残る
+        assert!(!state.failures.iter().any(|f| f.key == "step-9"));
+        assert!(state.failures.iter().any(|f| f.key == "step-10"));
+        assert!(
+            state
+                .failures
+                .iter()
+                .any(|f| f.key == format!("step-{}", MAX_FAILURE_ENTRIES + 9))
+        );
+    }
+
+    /// 空の状態と、ちょうど上限の件数では何も消さない
+    #[test]
+    fn test_prune_after_failure_boundaries() {
+        let mut empty = State::default();
+        empty.prune_after_failure();
+        assert!(empty.failures.is_empty());
+
+        let mut full = State::default();
+        for i in 0..MAX_FAILURE_ENTRIES {
+            full.failures.push(ProviderFailure {
+                key: format!("step-{i}"),
+                provider: None,
+                failed_at: i as u64,
+            });
+        }
+        full.prune_after_failure();
+        assert_eq!(full.failures.len(), MAX_FAILURE_ENTRIES);
+        assert_eq!(full.failures[0].key, "step-0");
+    }
+
+    /// 上限以下なら何も消さず、並びも変えない
+    #[test]
+    fn test_prune_after_failure_keeps_everything_under_cap() {
+        let mut state = State::default();
+        push_failure(&mut state, "codex", 1);
+        push_failure(&mut state, "claude", 2);
+        state.prune_after_failure();
+
+        assert_eq!(state.failures.len(), 2);
+        assert_eq!(state.failures[0].key, key_of("codex"));
     }
 
     #[test]
@@ -637,15 +719,14 @@ mod tests {
     }
 
     #[test]
-    fn test_cleanup_expired_at_boundary() {
-        // クールダウンちょうどの境界でクリーンアップされる
+    fn test_demotion_expires_at_boundary() {
+        // クールダウンちょうどの境界で降格が終わる
         let mut state = State::default();
         let exactly_at_boundary = State::now() - (30 * 60);
         push_failure(&mut state, "gemini", exactly_at_boundary);
 
         // 30分のクールダウンでちょうど30分前 → elapsed == cooldown_secs → 期限切れ
-        state.cleanup_expired(30);
-        assert!(state.failures.is_empty());
+        assert!(!state.is_demoted(&step("gemini"), 30));
     }
 
     #[test]
@@ -707,15 +788,14 @@ mod tests {
     }
 
     #[test]
-    fn test_cleanup_expired_large_cooldown() {
-        // 非常に大きなクールダウン値: 全エントリが保持される
+    fn test_large_cooldown_keeps_old_failure_demoted() {
+        // 非常に大きなクールダウン値: 古い失敗でも降格中のまま
         let mut state = State::default();
         let old_failure = State::now() - (24 * 60 * 60); // 24時間前
         push_failure(&mut state, "gemini", old_failure);
 
         // 1週間のクールダウン
-        state.cleanup_expired(7 * 24 * 60);
-        assert!(has_failure(&state, "gemini"));
+        assert!(state.is_demoted(&step("gemini"), 7 * 24 * 60));
     }
 
     #[test]
@@ -725,9 +805,6 @@ mod tests {
         push_failure(&mut state, "gemini", 0);
 
         assert!(state.is_demoted(&step("gemini"), u64::MAX));
-
-        state.cleanup_expired(u64::MAX);
-        assert!(has_failure(&state, "gemini"));
     }
 
     #[test]

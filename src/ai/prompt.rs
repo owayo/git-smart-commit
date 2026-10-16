@@ -157,30 +157,24 @@ Instructions:
         let message = message.trim();
 
         // マークダウンのコードブロックがある場合は削除
-        let message = if message.starts_with("```") && message.ends_with("```") {
-            let lines: Vec<&str> = message.lines().collect();
-            if lines.len() > 2 {
-                lines[1..lines.len() - 1].join("\n")
-            } else {
-                message.to_string()
-            }
-        } else {
-            message.to_string()
-        };
+        let message = Self::strip_code_fence(message);
 
-        // 応答全体が 1 組の対称タグで包まれていれば、タグ名を問わずまず 1 段剥がす。
-        // 全体ラップに該当しない場合だけ、`<commit>` 専用の寛容な取り出しを行う。
-        // この順序は入れ替えられない: 先に「どこかにある `<commit>`」を拾うと、
-        // `<wrapper>説明 <commit>本文</commit></wrapper>` のような応答から
-        // 内側だけを抜き出して外側の説明を見落とす。
+        // 応答全体が `<commit>` 以外の 1 組の対称タグで包まれていれば、まず 1 段剥がす。
+        // それ以外は `<commit>` 専用の寛容な取り出しを行う。この順序は入れ替えられない:
+        // 先に「どこかにある `<commit>`」を拾うと、`<wrapper>説明 <commit>本文</commit></wrapper>`
+        // のような応答から内側だけを抜き出して外側の説明を見落とす。
         let (message, envelope_tag) = match Self::split_full_tag_envelope(&message) {
-            Some((name, body)) => {
-                // `<commit>` は指示どおりの形なのでヒントにはしない
-                let tag = (name != "commit").then(|| name.to_string());
-                (body.to_string(), tag)
-            }
+            // `<commit>` は指示どおりの形なのでヒントにはせず、`<commit>` 専用の取り出しに
+            // 任せる。全体が `<commit>` で始まり `</commit>` で終わっていても、
+            // `<commit>feat: x</commit>\nI wrapped it in <commit></commit>` のように
+            // 指示文を復唱した空のタグ対を挟んでいることがあり、その救済はそちらにある
+            Some(("commit", _)) => (Self::strip_commit_tags(&message), None),
+            Some((name, body)) => (body.to_string(), Some(name.to_string())),
             None => (Self::strip_commit_tags(&message), None),
         };
+
+        // タグの内側がコードブロックのこともある(`<commit>\n```\nfeat: x\n```\n</commit>`)
+        let message = Self::strip_code_fence(&message);
 
         // 先頭と末尾が対になっている引用符だけを削除する
         let message = Self::strip_wrapping_quotes(&message);
@@ -206,6 +200,40 @@ Instructions:
             message: Self::ensure_body_separator(&message),
             envelope_tag,
         }
+    }
+
+    /// マークダウンのコードブロックから中身を取り出す
+    ///
+    /// 全体が 1 つのコードブロックで包まれた従来の形は、先頭行と末尾行だけを落とす
+    /// (中にある入れ子のフェンスは本文の一部として残す)。それ以外でも、先頭行が
+    /// フェンスの開始(```` ``` ```` / ```` ```text ````)なら、次の閉じフェンスまでを
+    /// 本文とし、閉じフェンスが無ければ末尾までを本文にする。閉じフェンスの後ろの
+    /// 説明文は落とす。以前は従来の形しか剥がさなかったため、閉じフェンスの後ろに
+    /// 説明文がある・閉じフェンスが無い応答では件名が ```` ``` ```` のままコミットされた。
+    fn strip_code_fence(message: &str) -> String {
+        let message = message.trim();
+        let lines: Vec<&str> = message.lines().collect();
+        if message.starts_with("```") && message.ends_with("```") && lines.len() > 2 {
+            return lines[1..lines.len() - 1].join("\n");
+        }
+
+        // 開始フェンスの後ろに書けるのは言語名などの 1 語だけ。```` ```rust x``` ```` のような
+        // 行内のコードはフェンスとして扱わない
+        let is_opener = lines
+            .first()
+            .and_then(|first| first.trim().strip_prefix("```"))
+            .is_some_and(|info| !info.contains('`') && !info.contains(char::is_whitespace));
+        if !is_opener {
+            return message.to_string();
+        }
+        lines[1..]
+            .iter()
+            .take_while(|line| line.trim() != "```")
+            .copied()
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim()
+            .to_string()
     }
 
     /// 先頭と末尾が同じ引用符で「対になっている」ときだけ剥がす
@@ -287,6 +315,51 @@ Instructions:
     /// 終端が明示されると生成が安定する)。ただし指示に従わないモデルもあるため、
     /// 片側しか無い場合・まったく無い場合もそのまま通す寛容な実装にする。
     pub(super) fn strip_commit_tags(message: &str) -> String {
+        let extracted = Self::extract_commit_body(message);
+
+        // プロンプトの指示文には `<commit></commit>` という字面があり、モデルが前置きや
+        // 後書きでそれを復唱することがある。最初の開始タグから最後の閉じタグまでを取ると
+        // 復唱した空のタグ対が本文に混ざり、件名が `</commit> tags:` や `feat: x</commit>` に
+        // なってタグの残骸として捨てられる(全ステップが同じ癖ならコミットできない)。
+        // その場合に限り、中身のある最初のタグ対を採る。件名が壊れていない取り出し結果は
+        // 変えない(本文に `</commit>` という字面を含む正常な応答を守るため)。
+        let subject = extracted.lines().next().unwrap_or("");
+        if (extracted.is_empty() || Self::has_leftover_markup(subject))
+            && let Some(body) = Self::first_nonempty_commit_body(message)
+        {
+            return body.trim().to_string();
+        }
+        extracted
+    }
+
+    /// 中身のある最初の `<commit>` の本文を返す
+    ///
+    /// 開始タグごとに直後の閉じタグまでを本文とし、空なら次の開始タグへ進む。閉じタグが
+    /// 無ければ末尾までを本文にする(閉じタグの書きかけは落とす)。
+    fn first_nonempty_commit_body(message: &str) -> Option<&str> {
+        const OPEN: &str = "<commit>";
+        const CLOSE: &str = "</commit>";
+
+        let mut from = 0;
+        while let Some(found) = message[from..].find(OPEN) {
+            let start = from + found + OPEN.len();
+            let (body, next) = match message[start..].find(CLOSE) {
+                Some(end) => (&message[start..start + end], start + end + CLOSE.len()),
+                None => (
+                    Self::trim_partial_close_tag(&message[start..]),
+                    message.len(),
+                ),
+            };
+            if !body.trim().is_empty() {
+                return Some(body);
+            }
+            from = next;
+        }
+        None
+    }
+
+    /// 最初の開始タグから最後の閉じタグまでを本文として取り出す
+    fn extract_commit_body(message: &str) -> String {
         const OPEN: &str = "<commit>";
         const CLOSE: &str = "</commit>";
 
@@ -367,6 +440,32 @@ Instructions:
             .next()
             .and_then(|subject| subject.split_whitespace().next())
             .is_some_and(Self::is_conventional_type_token)
+    }
+
+    /// 生成結果に Conventional Commits 形式を期待しているかを判定する
+    ///
+    /// 応答を包んでいたタグ名を prefix として復元してよいのは、この判定が真のときだけ。
+    /// `prefix_type` に plain/none/bracket/emoji が指定されている設定を、モデルの
+    /// 書き癖で上書きしてはいけない。Auto(`prefix_type = None`)では、プロンプトが
+    /// 直近のコミットに合わせるよう指示しているので、その履歴の過半数が Conventional
+    /// 形式かどうかで決める。履歴が無い Auto はプロンプト側も Conventional Commits を
+    /// 指示するため真とする。
+    pub(super) fn expects_conventional_format(
+        prefix_type: Option<&str>,
+        recent_commits: &[String],
+    ) -> bool {
+        match prefix_type {
+            Some(prefix_type) => prefix_type.eq_ignore_ascii_case("conventional"),
+            None => {
+                recent_commits.is_empty()
+                    || recent_commits
+                        .iter()
+                        .filter(|commit| Self::has_conventional_prefix(commit))
+                        .count()
+                        * 2
+                        > recent_commits.len()
+            }
+        }
     }
 
     /// 応答を包んでいたタグ名が標準 type だったときに、その prefix を件名へ復元する
@@ -497,6 +596,25 @@ Instructions:
         }
 
         false
+    }
+
+    /// コミットに使えない件名の欠陥を判定し、その種別を返す
+    ///
+    /// AI CLI 自体は成功(exit 0)を返すため、ここで弾かないと「... mise 設定を」の
+    /// ような未完成の件名や、複数のメッセージを 1 行に詰め込んだもの、剥がせなかった
+    /// タグ(開始と終了で名前が違う・属性付き・片側だけ)が残った件名が確定してしまう。
+    /// 返す種別は生成ログの `findings` と警告文にそのまま使う。複数の欠陥を同時に
+    /// 持つ件名では、打ち切り → 複数メッセージ → タグの残骸の順で最初の 1 つを返す。
+    pub(super) fn subject_defect(subject: &str) -> Option<&'static str> {
+        if Self::is_truncated_subject(subject) {
+            Some("truncated")
+        } else if Self::is_concatenated_subject(subject) {
+            Some("multi-message")
+        } else if Self::has_leftover_markup(subject) {
+            Some("markup")
+        } else {
+            None
+        }
     }
 
     /// 件名と本文の間に空行があることを保証する

@@ -193,7 +193,8 @@ pub struct PromptInfo {
 /// 実行の結末
 ///
 /// どのモードでの結末かは `invocation.mode` が持つので、status は
-/// `committed` / `dry-run` / `declined` / `generated` / `failed` に統一する。
+/// `committed` / `dry-run` / `declined` / `skipped` / `generated` / `failed` に統一する。
+/// `skipped` は生成後、コミット直前に staged 変更が無くなっていて見送った正常終了。
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct RunResult {
     pub status: String,
@@ -451,7 +452,7 @@ impl DevLog {
     ///
     /// 毎回の全走査を避けるため、`.cleanup-stamp` の mtime が 24 時間以内なら何もしない。
     /// 複数プロセスが同時に走っても、消すのは完成済みファイルだけで、
-    /// 「既に無い」は成功扱いなので競合しても壊れない。
+    /// 「既に無い」は保持期間・容量のどちらの掃除でも成功扱いなので競合しても壊れない。
     fn cleanup(&self) -> Result<(), String> {
         if !self.dir.exists() {
             return Ok(());
@@ -485,18 +486,7 @@ impl DevLog {
         });
 
         // 2) まだ容量上限を超えていれば古い順に消す
-        let mut total: u64 = files.iter().map(|entry| entry.size).sum();
-        if total > self.max_total_bytes {
-            files.sort_by_key(|entry| entry.modified);
-            for entry in &files {
-                if total <= self.max_total_bytes {
-                    break;
-                }
-                if fs::remove_file(&entry.path).is_ok() {
-                    total = total.saturating_sub(entry.size);
-                }
-            }
-        }
+        trim_to_capacity(files, self.max_total_bytes);
 
         // 3) 空になった日付ディレクトリを片付ける
         if let Ok(entries) = fs::read_dir(&self.dir) {
@@ -534,6 +524,33 @@ struct LogFile {
     path: PathBuf,
     size: u64,
     modified: SystemTime,
+}
+
+/// 容量上限に収まるまで、古い順にログを消す
+///
+/// 一覧にあるファイルが既に無いことがある。`.cleanup-stamp` は掃除の最後に書くので、
+/// 24 時間ぶりの掃除には複数プロセスが同時に入れ、先に走ったプロセスが古いファイルを
+/// 消すため。そのファイルは合計から外れた点で削除できたのと同じなので差し引く。
+/// 差し引かないと合計が減らないまま進み、新しいログ(今書いたものを含む)まで消してしまう。
+fn trim_to_capacity(mut files: Vec<LogFile>, max_total_bytes: u64) {
+    let mut total: u64 = files.iter().map(|entry| entry.size).sum();
+    if total <= max_total_bytes {
+        return;
+    }
+    files.sort_by_key(|entry| entry.modified);
+    for entry in &files {
+        if total <= max_total_bytes {
+            break;
+        }
+        match fs::remove_file(&entry.path) {
+            Ok(()) => total = total.saturating_sub(entry.size),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                total = total.saturating_sub(entry.size);
+            }
+            // 消せずに残ったファイルは合計に含めたまま、次に古いものへ進む
+            Err(_) => {}
+        }
+    }
 }
 
 /// 日付ディレクトリ配下のログファイルを集める
@@ -997,6 +1014,42 @@ mod tests {
             single_log_path(dir.path()).exists(),
             "今回の実行のログまで消えている"
         );
+    }
+
+    /// 別プロセスの掃除が先に古いログを消していても、残すべき新しいログまで消さない
+    ///
+    /// `.cleanup-stamp` は掃除の最後に書くので、24 時間ぶりの掃除には複数プロセスが同時に
+    /// 入れる。後から走るプロセスは消える前の一覧を持っているため、既に無いファイルを
+    /// 合計から差し引かないと、合計が減らないまま新しいログ(今書いたものを含む)まで消す。
+    #[test]
+    fn test_trim_to_capacity_counts_files_already_removed_by_another_process() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let oldest_mtime = SystemTime::now() - std::time::Duration::from_secs(60 * 60);
+        // 上限 1 MiB に対し 600 KiB × 3 + 1 KiB × 2。古い 2 つを消せば収まる
+        let sizes = [600 * 1024, 600 * 1024, 600 * 1024, 1024, 1024];
+        let files: Vec<LogFile> = sizes
+            .iter()
+            .enumerate()
+            .map(|(i, &size)| {
+                let path = dir.path().join(format!("{i}.json"));
+                fs::write(&path, vec![b'x'; size]).unwrap();
+                LogFile {
+                    path,
+                    size: size as u64,
+                    modified: oldest_mtime + std::time::Duration::from_secs(i as u64 * 60),
+                }
+            })
+            .collect();
+        let paths: Vec<PathBuf> = files.iter().map(|entry| entry.path.clone()).collect();
+        // 先行プロセスが古い 2 つを消し終えた状態(一覧は消える前のまま)
+        fs::remove_file(&paths[0]).unwrap();
+        fs::remove_file(&paths[1]).unwrap();
+
+        trim_to_capacity(files, 1024 * 1024);
+
+        for path in &paths[2..] {
+            assert!(path.exists(), "上限に収まっているログを消した: {path:?}");
+        }
     }
 
     /// 書きかけかもしれない `.tmp` は、十分古いものだけ回収する

@@ -45,6 +45,7 @@ Operation modes (`--amend`, `--squash`, `--reword`, `--generate-for`) are mutual
 `--amend` note:
 - Also works when the current `HEAD` is the root commit.
 - Preserves unrelated staged changes instead of folding them into the amended commit.
+- Refuses when `HEAD` is the boundary commit of a shallow clone (for example right after `git clone --depth 1`). Git has not fetched that commit's parent, so the amended commit would lose it, and a force push would cut the branch history. Run `git fetch --unshallow` first.
 
 `--reword` note:
 - Relative refs such as `HEAD~1` and tag names are resolved to a commit ID before generation. Moving a tag during generation does not change the target.
@@ -55,6 +56,8 @@ Operation modes (`--amend`, `--squash`, `--reword`, `--generate-for`) are mutual
 - Rewording a commit that has a merge commit between it and `HEAD` is rejected with a clear "cannot reword across merge commits" error (merge-spanning reword is unsupported), rather than a confusing low-level git error such as `fatal: ambiguous argument`.
 - Rewording the oldest commit in current history is also supported (internally uses `git rebase -i --root` when required).
 - Rewording `HEAD` preserves unrelated staged changes instead of folding them into the rewritten commit.
+- Lines starting with `#` in the generated message (such as a `#123 ` prefix from a prefix script) are kept for every target commit, the same as when rewording `HEAD`.
+- Refuses to rewrite the boundary commit of a shallow clone — the oldest commit you have after cloning with `--depth` — including `HEAD` itself when it is that commit. Rewriting it would drop its parent and cut the history. Run `git fetch --unshallow` first. Commits newer than the boundary, and true root commits, can be reworded as usual.
 - The internal rebase runs with `--no-autosquash`, so a user-level `rebase.autoSquash = true` config cannot silently fold `fixup!`/`squash!` commits into the reworded commit.
 - The internal rebase also overrides `rebase.rebaseMerges` and `rebase.abbreviateCommands`, so these settings cannot redirect the todo editor or make reword silently do nothing.
 
@@ -82,7 +85,8 @@ Operation modes (`--amend`, `--squash`, `--reword`, `--generate-for`) are mutual
 - Required for unattended runs. If the confirmation prompt reaches end-of-file on stdin (for example when git-sc is invoked from a script or hook with stdin closed), the run aborts with an error instead of taking the `[Y/n]` default. An empty line typed by a user still means yes; "no input at all" does not, because the same prompt guards `--amend`, `--squash`, and `--reword`
 
 `--quiet` behavior:
-- Suppresses progress, preview, and success/cancel messages in normal/amend/squash/reword flows
+- Suppresses progress output, the formatted preview, and dry-run/cancel messages in normal/amend/squash/reword flows
+- Still prints the generated message as one `[provider] message` line and the outcome as one word — `Committed`, `Amended`, `Reworded` or `Squashed`, followed by `Pushed` when auto-push ran — so hooks and scripts can read it
 - Keeps error output visible
 - In `--generate-for` mode, still prints only the generated commit message (for piping/scripting)
 

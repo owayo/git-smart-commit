@@ -106,7 +106,6 @@ pub struct AiService {
     language: String,
     pub(super) models: ModelsConfig,
     pub(super) codex_reasoning_effort: String,
-    cooldown_minutes: u64,
     pub(super) timeout_seconds: u64,
     pub(super) debug: bool,
     /// デバッグ出力を stdout ではなく stderr へ流すか。
@@ -197,7 +196,6 @@ impl AiService {
             language: config.language.clone(),
             models: config.models.clone(),
             codex_reasoning_effort: config.codex_reasoning_effort.clone(),
-            cooldown_minutes: config.provider_cooldown_minutes,
             timeout_seconds: config.provider_timeout_seconds,
             debug: false,
             debug_to_stderr: false,
@@ -312,8 +310,7 @@ impl AiService {
             language: "Japanese".to_string(),
             models: ModelsConfig::default(),
             codex_reasoning_effort: "low".to_string(),
-            cooldown_minutes: 60, // デフォルト1時間
-            timeout_seconds: 60,  // デフォルト60秒（Config::defaultと同値）
+            timeout_seconds: 60, // デフォルト60秒（Config::defaultと同値）
             debug: false,
             debug_to_stderr: false,
             provider_override: false,
@@ -456,6 +453,48 @@ impl AiService {
         });
     }
 
+    /// Apple Intelligence のステップを 1 回実行する(fm-rs のネイティブ呼び出し)
+    ///
+    /// 試行の記録と、diff を縮約したときの警告までを行い、整形後の応答を返す。
+    /// 再試行・フォールバックの判断は呼び出し側のループが CLI プロバイダーと共通で行う。
+    #[cfg(all(target_os = "macos", feature = "apple-ai"))]
+    fn call_apple_step(
+        &self,
+        provider: &AiProvider,
+        step: &ProviderStep,
+        model: &str,
+        request: &AppleRequest<'_>,
+        retry: u32,
+        silent: bool,
+    ) -> Result<CleanedResponse, AppError> {
+        let started = Instant::now();
+        let outcome = Self::call_apple_intelligence_native(request);
+        // ネイティブ呼び出しはサブプロセスを介さないため生の応答を捕捉できない。
+        // 整形後のメッセージとトークン実測値だけでも試行として残す
+        self.record_native_attempt(
+            provider,
+            step,
+            model,
+            retry,
+            started.elapsed().as_millis() as u64,
+            &outcome,
+        );
+        // 縮約が起きたら黙って進めない。生成されたメッセージが diff の
+        // 一部しか見ていないことになるので、ユーザーが確認時に判断できる
+        // ようにする
+        if !silent
+            && let Ok(outcome) = &outcome
+            && outcome.usage.compacted
+        {
+            eprintln!(
+                "  {} diff が Apple Intelligence のコンテキスト上限 ({} トークン) を超えたため、ファイル一覧を残して縮約しました",
+                "⚠".yellow(),
+                outcome.usage.context_tokens
+            );
+        }
+        outcome.map(|outcome| outcome.cleaned)
+    }
+
     /// プロバイダーを手動指定で上書き（フォールバックなし、失敗記録スキップ）
     ///
     /// 単一ステップ・モデル/env 未指定で上書きする。provider 名は from_str が解決できる
@@ -478,18 +517,22 @@ impl AiService {
     /// クールダウンは「このプロバイダーは今使えない」を意味するので、プロンプトの
     /// 内容で決まる失敗(コンテキスト上限超過・ガードレール拒否・非対応言語)を
     /// 含めてはいけない。たまたま大きい 1 コミットのせいでプロバイダーが 1 時間
-    /// 止まると、そのあとの小さな diff まで巻き添えになる。打ち切り応答や空応答を
-    /// クールダウンの対象外にしている既存の判断と同じ理由。
+    /// 止まると、そのあとの小さな diff まで巻き添えになる。正常終了した空応答も、
+    /// 打ち切り応答と同じく確率的に起きる 1 回の外れなので対象外にする。
     pub(super) fn should_record_failure(error: &AppError) -> bool {
-        !matches!(error, AppError::AiProviderInputError(_))
+        !matches!(
+            error,
+            AppError::AiProviderInputError(_) | AppError::AiProviderEmptyResponse(_)
+        )
     }
 
     /// ステップの失敗を記録
     fn record_provider_failure(&self, step: &ProviderStep) {
         if let Ok(mut state) = State::load() {
             state.record_failure(step);
-            // 期限切れのエントリをクリーンアップ
-            state.cleanup_expired(self.cooldown_minutes);
+            // 件数の上限だけで掃除する。状態ファイルは全リポジトリ共有なので、
+            // このリポジトリのクールダウンを基準に他のリポジトリの記録を消してはいけない
+            state.prune_after_failure();
             // 保存（エラーは無視）
             let _ = state.save();
         }
@@ -795,24 +838,8 @@ impl AiService {
             );
         }
 
-        // 応答を包んでいたタグ名を prefix として復元してよいのは、Conventional Commits
-        // 形式を期待しているときだけ。`prefix_type` に plain/none/bracket/emoji が
-        // 指定されている設定を、モデルの書き癖で上書きしてはいけない。
-        // Auto(prefix_type = None)では、プロンプトが直近のコミットに合わせるよう
-        // 指示しているので、その履歴の過半数が Conventional 形式かどうかで決める。
-        // 履歴が無い Auto はプロンプト側も Conventional Commits を指示するため true。
-        let expects_conventional = match prefix_type {
-            Some(prefix_type) => prefix_type.eq_ignore_ascii_case("conventional"),
-            None => {
-                recent_commits.is_empty()
-                    || recent_commits
-                        .iter()
-                        .filter(|commit| Self::has_conventional_prefix(commit))
-                        .count()
-                        * 2
-                        > recent_commits.len()
-            }
-        };
+        // 応答を包んでいたタグ名を prefix として復元してよいかは、ステップに依らず決まる
+        let expects_conventional = Self::expects_conventional_format(prefix_type, recent_commits);
 
         for step in &self.steps {
             // provider が解決できないステップはスキップ(from_config で除外済みだが念のため)。
@@ -845,11 +872,10 @@ impl AiService {
                 // Apple Intelligence: fm-rs feature 有効時はネイティブ呼び出し
                 #[cfg(all(target_os = "macos", feature = "apple-ai"))]
                 let result = if matches!(provider, AiProvider::AppleIntelligence) {
-                    let started = Instant::now();
                     // プロンプトだけでなくその素材も渡す。on-device のコンテキストは
                     // 4096 トークンしかなく、収まらないときは Apple のステップに限って
                     // diff を縮めて組み直すため
-                    let outcome = Self::call_apple_intelligence_native(&AppleRequest {
+                    let request = AppleRequest {
                         prompt: &prompt,
                         diff,
                         recent_commits,
@@ -858,31 +884,8 @@ impl AiService {
                         with_body,
                         agent_context,
                         timeout: Duration::from_secs(self.timeout_seconds),
-                    });
-                    // ネイティブ呼び出しはサブプロセスを介さないため生の応答を捕捉できない。
-                    // 整形後のメッセージとトークン実測値だけでも試行として残す
-                    self.record_native_attempt(
-                        &provider,
-                        step,
-                        &model,
-                        retry,
-                        started.elapsed().as_millis() as u64,
-                        &outcome,
-                    );
-                    // 縮約が起きたら黙って進めない。生成されたメッセージが diff の
-                    // 一部しか見ていないことになるので、ユーザーが確認時に判断できる
-                    // ようにする
-                    if !silent
-                        && let Ok(outcome) = &outcome
-                        && outcome.usage.compacted
-                    {
-                        eprintln!(
-                            "  {} diff が Apple Intelligence のコンテキスト上限 ({} トークン) を超えたため、ファイル一覧を残して縮約しました",
-                            "⚠".yellow(),
-                            outcome.usage.context_tokens
-                        );
-                    }
-                    outcome.map(|outcome| outcome.cleaned)
+                    };
+                    self.call_apple_step(&provider, step, &model, &request, retry, silent)
                 } else {
                     self.call_provider(&provider, step, &model, &prompt, retry)
                 };
@@ -927,18 +930,7 @@ impl AiService {
                         };
 
                         let subject = message.lines().next().unwrap_or("").to_string();
-                        let defect = if Self::is_truncated_subject(&subject) {
-                            Some("truncated")
-                        } else if Self::is_concatenated_subject(&subject) {
-                            Some("multi-message")
-                        } else if Self::has_leftover_markup(&subject) {
-                            // 剥がせなかったタグ(開始と終了で名前が違う・属性付き・片側だけ)
-                            // が件名に残っている。そのままコミットすると山括弧が混入する
-                            Some("markup")
-                        } else {
-                            None
-                        };
-                        if let Some(defect) = defect {
+                        if let Some(defect) = Self::subject_defect(&subject) {
                             if retries_left > 0 {
                                 retries_left -= 1;
                                 self.update_dev_log_attempt(
@@ -1652,6 +1644,102 @@ mod tests {
         );
     }
 
+    /// プロンプトの指示文 `<commit></commit>` を前置き・後書きで復唱した応答でも、
+    /// 正しく包まれた本文を取り出す(空のタグ対を本文の区切りと取り違えない)。
+    /// 本文に `</commit>` という字面を含む正常な応答は、従来どおり最初の開始タグから
+    /// 最後の閉じタグまでを採る。
+    #[rstest]
+    #[case(
+        "Here is the commit message wrapped in <commit></commit> tags:\n<commit>feat: add greeting file</commit>",
+        "feat: add greeting file"
+    )]
+    #[case(
+        "<commit>feat: add greeting file</commit>\nI wrapped it in <commit></commit>.",
+        "feat: add greeting file"
+    )]
+    // 復唱の後ろで閉じタグが打ち切られた
+    #[case(
+        "Wrapped in <commit></commit>:\n<commit>feat: add greeting file</",
+        "feat: add greeting file"
+    )]
+    // 本文に `</commit>` という字面を含む正常な応答
+    #[case(
+        "<commit>fix: 末尾に残る </commit> の断片を除去</commit>",
+        "fix: 末尾に残る </commit> の断片を除去"
+    )]
+    // 空のタグ対しか無い応答は空のまま(空応答として次のプロバイダーへ)
+    #[case("<commit></commit>", "")]
+    fn test_strip_commit_tags_ignores_echoed_empty_pair(
+        #[case] input: &str,
+        #[case] expected: &str,
+    ) {
+        assert_eq!(
+            AiService::strip_commit_tags(input),
+            expected,
+            "input: {input:?}"
+        );
+    }
+
+    /// 実際の整形経路(clean_message)でも、復唱された空のタグ対を本文と取り違えない。
+    /// 全体が `<commit>` で始まり `</commit>` で終わる応答は「全体を包む 1 組」の判定に
+    /// 先に入るので、その経路も通す。
+    #[rstest]
+    #[case(
+        "<commit>feat: add greeting file</commit>\nI wrapped it in <commit></commit>",
+        "feat: add greeting file"
+    )]
+    #[case(
+        "Here is the commit message wrapped in <commit></commit> tags:\n<commit>feat: add greeting file</commit>",
+        "feat: add greeting file"
+    )]
+    #[case(
+        "<commit>fix: 末尾に残る </commit> の断片を除去</commit>",
+        "fix: 末尾に残る </commit> の断片を除去"
+    )]
+    fn test_clean_message_ignores_echoed_empty_commit_pair(
+        #[case] input: &str,
+        #[case] expected: &str,
+    ) {
+        let cleaned = AiService::clean_message_detailed(input);
+        assert_eq!(cleaned.message, expected, "input: {input:?}");
+        assert_eq!(cleaned.envelope_tag, None, "input: {input:?}");
+    }
+
+    /// コードフェンスの行を件名として残さない
+    ///
+    /// 全体が 1 つのコードブロックで包まれた形しか剥がしていなかったため、閉じフェンスの
+    /// 後ろに説明文がある・閉じフェンスが無い・タグの内側にある応答では、件名が
+    /// ```` ``` ```` のままコミットされた。
+    #[rstest]
+    #[case(
+        "<commit>\n```\nfeat: add greeting file\n```\n</commit>",
+        "feat: add greeting file"
+    )]
+    #[case(
+        "```\nfeat: add greeting file\n```\nThis commit adds a greeting file.",
+        "feat: add greeting file"
+    )]
+    #[case("```text\nfeat: add greeting file", "feat: add greeting file")]
+    #[case(
+        "```\nfeat: add greeting file\n\n- detail\n```\n説明",
+        "feat: add greeting file\n\n- detail"
+    )]
+    // 全体が包まれた従来の形は、中の入れ子のフェンスごと残す
+    #[case(
+        "```\nfeat: add example\n\n```bash\ncmd\n```\n```",
+        "feat: add example\n\n```bash\ncmd\n```"
+    )]
+    fn test_clean_message_never_leaves_code_fence_as_subject(
+        #[case] input: &str,
+        #[case] expected: &str,
+    ) {
+        assert_eq!(
+            AiService::clean_message(input),
+            expected,
+            "input: {input:?}"
+        );
+    }
+
     /// `<commit>` 以外のタグで応答全体が包まれていた場合の扱い。
     ///
     /// 実測(2026-09-02): モデルがタグ名をコミット種別と取り違えて
@@ -1779,6 +1867,58 @@ mod tests {
     fn test_has_leftover_markup(#[case] subject: &str, #[case] expected: bool) {
         assert_eq!(
             AiService::has_leftover_markup(subject),
+            expected,
+            "subject: {subject:?}"
+        );
+    }
+
+    /// タグ名から prefix を戻してよいか(Conventional Commits を期待しているか)の判定。
+    /// 明示の prefix_type はそれだけで決まり、Auto は直近のコミットの過半数で決まる。
+    #[rstest]
+    #[case(Some("conventional"), &[], true)]
+    // 設定値の大文字小文字は問わない
+    #[case(Some("Conventional"), &[], true)]
+    // 他の形式の指定を、モデルの書き癖で上書きしない
+    #[case(Some("plain"), &["feat: a", "fix: b"], false)]
+    #[case(Some("none"), &[], false)]
+    #[case(Some("bracket"), &["feat: a"], false)]
+    #[case(Some("emoji"), &[], false)]
+    // Auto で履歴が無いときはプロンプト側も Conventional Commits を指示する
+    #[case(None, &[], true)]
+    // Auto は過半数で決まる
+    #[case(None, &["feat: a", "fix: b", "[Add] c"], true)]
+    #[case(None, &["feat: a", "[Fix] b", "[Add] c"], false)]
+    // ちょうど半数は過半数ではない
+    #[case(None, &["feat: a", "[Fix] b"], false)]
+    #[case(None, &["件名だけ"], false)]
+    fn test_expects_conventional_format(
+        #[case] prefix_type: Option<&str>,
+        #[case] recent_commits: &[&str],
+        #[case] expected: bool,
+    ) {
+        let recent_commits: Vec<String> = recent_commits.iter().map(|c| c.to_string()).collect();
+        assert_eq!(
+            AiService::expects_conventional_format(prefix_type, &recent_commits),
+            expected,
+            "prefix_type: {prefix_type:?}, recent_commits: {recent_commits:?}"
+        );
+    }
+
+    /// 件名の欠陥の種別。複数の欠陥を同時に持つ件名では、打ち切り → 複数メッセージ →
+    /// タグの残骸の順で最初の 1 つを返す(警告文と生成ログの findings がこの値になる)。
+    #[rstest]
+    #[case("feat: 機能を追加", None)]
+    #[case("", None)]
+    #[case("ci: GitHub Actions CIワークフローとmise設定を", Some("truncated"))]
+    #[case("ci: CI設定追加 docs: README更新", Some("multi-message"))]
+    #[case("<foo>メッセージ</bar>", Some("markup"))]
+    // 打ち切りと複数メッセージの両方を持つ
+    #[case("ci: CI設定追加 docs: READMEを", Some("truncated"))]
+    // 複数メッセージとタグの残骸の両方を持つ
+    #[case("ci: CI設定追加 docs: README更新</test>", Some("multi-message"))]
+    fn test_subject_defect(#[case] subject: &str, #[case] expected: Option<&str>) {
+        assert_eq!(
+            AiService::subject_defect(subject),
             expected,
             "subject: {subject:?}"
         );
@@ -1931,19 +2071,16 @@ mod tests {
 
     #[test]
     fn test_clean_message_partial_fence() {
-        // 開始フェンスのみで閉じフェンスがない場合、ensure_body_separatorで空行挿入
+        // 開始フェンスのみで閉じフェンスがない場合も、フェンスの行を件名に残さない
         let message = "```\nfeat: add feature";
-        assert_eq!(
-            AiService::clean_message(message),
-            "```\n\nfeat: add feature"
-        );
+        assert_eq!(AiService::clean_message(message), "feat: add feature");
     }
 
     #[test]
     fn test_clean_message_code_block_two_lines() {
-        // 開始と終了のみの2行コードブロック、ensure_body_separatorで空行挿入
+        // 開始と終了のみの2行コードブロックは中身が無いので空(空応答として扱われる)
         let message = "```\n```";
-        assert_eq!(AiService::clean_message(message), "```\n\n```");
+        assert_eq!(AiService::clean_message(message), "");
     }
 
     #[test]
@@ -2954,26 +3091,6 @@ mod tests {
     // AiService from_config with cooldown のテスト
     // ============================================================
 
-    #[test]
-    fn test_ai_service_from_config_custom_cooldown() {
-        let config = Config {
-            provider_cooldown_minutes: 30,
-            ..Default::default()
-        };
-        let service = AiService::from_config(&config);
-        assert_eq!(service.cooldown_minutes, 30);
-    }
-
-    #[test]
-    fn test_ai_service_from_config_zero_cooldown() {
-        let config = Config {
-            provider_cooldown_minutes: 0,
-            ..Default::default()
-        };
-        let service = AiService::from_config(&config);
-        assert_eq!(service.cooldown_minutes, 0);
-    }
-
     // ============================================================
     // Apple Intelligence 統合テスト (cargo test --features apple-ai -- --ignored)
     // ============================================================
@@ -3498,9 +3615,9 @@ mod tests {
 
     #[test]
     fn test_clean_message_code_block_opening_only_no_content() {
-        // 開始フェンスのみ、内容なし
+        // 開始フェンスのみ、内容なし。フェンスの行を件名に残さず空にする
         let message = "```";
-        assert_eq!(AiService::clean_message(message), "```");
+        assert_eq!(AiService::clean_message(message), "");
     }
 
     // ============================================================
@@ -4332,11 +4449,10 @@ mod tests {
 
     #[test]
     fn test_clean_message_code_block_two_lines_only() {
-        // コードブロックが2行のみ（開始 + 終了）の場合、コンテンツとして扱われる
-        // ensure_body_separator が2行目を非空と判定し空行を挿入する
+        // コードブロックが2行のみ（開始 + 終了）の場合は中身が無いので空になる
         let msg = "```\n```";
         let result = AiService::clean_message(msg);
-        assert_eq!(result, "```\n\n```");
+        assert_eq!(result, "");
     }
 
     #[test]
@@ -4591,11 +4707,10 @@ mod tests {
 
     #[test]
     fn test_clean_message_code_block_only_backticks() {
-        // バッククォートだけの場合（2行）→ コードブロック抽出不可
-        // ensure_body_separator により2行目の前に空行が挿入される
+        // バッククォートだけの場合（2行）→ 中身が無いので空(``` を件名にしない)
         let msg = "```\n```";
         let result = AiService::clean_message(msg);
-        assert_eq!(result, "```\n\n```");
+        assert_eq!(result, "");
     }
 
     #[test]
@@ -4871,7 +4986,6 @@ mod tests {
                 ..Default::default()
             },
             codex_reasoning_effort: "low".to_string(),
-            cooldown_minutes: 60,
             timeout_seconds: 60,
             debug: false,
             debug_to_stderr: false,
@@ -4911,7 +5025,6 @@ mod tests {
                 ..Default::default()
             },
             codex_reasoning_effort: "low".to_string(),
-            cooldown_minutes: 60,
             timeout_seconds: 60,
             debug: true,
             debug_to_stderr: false,
@@ -4942,7 +5055,6 @@ mod tests {
             language: "Japanese".to_string(),
             models: ModelsConfig::default(),
             codex_reasoning_effort: "low".to_string(),
-            cooldown_minutes: 60,
             timeout_seconds: 60,
             debug: false,
             debug_to_stderr: false,
@@ -4972,7 +5084,6 @@ mod tests {
                 ..Default::default()
             },
             codex_reasoning_effort: "low".to_string(),
-            cooldown_minutes: 60,
             timeout_seconds: 60,
             debug: false,
             debug_to_stderr: false,
@@ -5063,16 +5174,6 @@ mod tests {
         };
         let service = AiService::from_config(&config);
         assert_eq!(service.timeout_seconds, 120);
-    }
-
-    #[test]
-    fn test_from_config_custom_cooldown() {
-        let config = Config {
-            provider_cooldown_minutes: 30,
-            ..Default::default()
-        };
-        let service = AiService::from_config(&config);
-        assert_eq!(service.cooldown_minutes, 30);
     }
 
     // ============================================================
@@ -5659,5 +5760,46 @@ mod tests {
             AiService::should_record_failure(&AppError::NoAiProviderInstalled),
             "その他のエラーも従来どおりクールダウンに入れる"
         );
+    }
+
+    /// 正常終了した空応答はクールダウンに入れないこと
+    ///
+    /// 空応答は打ち切り応答と同じく確率的に起き、同じステップを次に呼べば普通に答える。
+    /// タグや引用符だけの応答も整形後に空になるので同じ扱いにする。ここでステップを
+    /// 1 時間降格させると、健全なプロバイダーが 1 回の外れでチェーンから外れる。
+    #[rstest]
+    #[case(AiProvider::Claude, "", "")]
+    #[case(AiProvider::Claude, "<commit></commit>", "")]
+    #[case(AiProvider::Opencode, "\"", "")]
+    // stderr にヒントがある空応答(Codex はプロンプトを stderr にエコーする)
+    #[case(AiProvider::Codex, "", "Reading prompt from stdin...")]
+    fn test_empty_response_does_not_trigger_cooldown(
+        #[case] provider: AiProvider,
+        #[case] stdout: &str,
+        #[case] stderr: &str,
+    ) {
+        let err = AiService::process_provider_output(&provider, exit_status(true), stdout, stderr)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("empty response"),
+            "stdout: {stdout:?}, err: {err}"
+        );
+        assert!(
+            !AiService::should_record_failure(&err),
+            "空応答はクールダウンに入れない: stdout: {stdout:?}, err: {err}"
+        );
+    }
+
+    /// 異常終了はこれまでどおりクールダウンに入れること(空応答の除外を広げすぎない)
+    #[test]
+    fn test_failed_exit_still_triggers_cooldown() {
+        let err = AiService::process_provider_output(
+            &AiProvider::Claude,
+            exit_status(false),
+            "",
+            "Error: authentication required",
+        )
+        .unwrap_err();
+        assert!(AiService::should_record_failure(&err), "err: {err}");
     }
 }

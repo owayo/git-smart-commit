@@ -86,6 +86,215 @@ fn test_whitespace_changes_are_visible_and_committable_in_all_modes() {
         .stderr(predicate::str::contains("+    finish() "));
 }
 
+/// 各モードの結末(dry-run・確認の拒否・成功)は、モードごとの文言で知らせる。
+///
+/// `--quiet` での成功時の 1 語(`Committed` / `Amended` / `Reworded` / `Squashed` / `Pushed`)は
+/// フックやスクリプトが読むので文言ごと固定する。確認を拒否したら失敗で終わり、履歴は動かさない。
+#[test]
+#[cfg(unix)]
+fn test_each_mode_reports_outcome_in_its_own_wording() {
+    let dir = setup_git_repo_with_commit();
+    let remote = TempDir::new().unwrap();
+    let path = setup_fake_opencode_path(&dir);
+    // 利用者のグローバル設定(フックや署名)に左右されないよう HOME を差し替えて実行する
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .env("HOME", dir.path())
+            .env("XDG_CONFIG_HOME", dir.path())
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    };
+    let run = |args: &[&str], stdin: &str| {
+        git_sc!()
+            .args(args)
+            .env("PATH", &path)
+            .env("HOME", dir.path())
+            .env("XDG_CONFIG_HOME", dir.path())
+            .current_dir(dir.path())
+            .write_stdin(stdin.to_string())
+            .assert()
+    };
+    let set_auto_push = |enabled: bool| {
+        std::fs::write(
+            dir.path().join(".git-sc"),
+            format!("providers = [\"opencode\"]\nauto_push = {enabled}\n"),
+        )
+        .unwrap();
+    };
+
+    let base_branch = git(&["branch", "--show-current"]);
+    git(&["checkout", "-q", "-b", "feature"]);
+    commit_change(&dir, "second\n", "second commit");
+    // auto-push の確認用に、ローカルの bare リポジトリを upstream にしておく
+    let remote_path = remote.path().to_str().unwrap();
+    git(&["init", "-q", "--bare", remote_path]);
+    git(&["remote", "add", "origin", remote_path]);
+    git(&["push", "-q", "-u", "origin", "feature"]);
+    set_auto_push(false);
+
+    // 通常のコミット
+    stage_change(&dir, "third\n");
+    run(&["--dry-run"], "")
+        .success()
+        .stdout(predicate::str::contains(
+            "Dry run mode - no commit was made.",
+        ));
+    let head = head_hash(&dir);
+    run(&[], "n\n")
+        .failure()
+        .stdout(predicate::str::contains("Commit cancelled."));
+    assert_eq!(head_hash(&dir), head);
+    run(&["--yes"], "")
+        .success()
+        .stdout(predicate::str::contains("✓ Commit created successfully!"));
+    stage_change(&dir, "fourth\n");
+    set_auto_push(true);
+    run(&["--quiet", "--yes"], "")
+        .success()
+        .stdout(predicate::str::ends_with("\nCommitted\nPushed\n"));
+    assert_eq!(git(&["rev-parse", "origin/feature"]), head_hash(&dir));
+    set_auto_push(false);
+
+    // amend
+    run(&["--amend", "--dry-run"], "")
+        .success()
+        .stdout(predicate::str::contains(
+            "Dry run mode - commit was not amended.",
+        ));
+    let head = head_hash(&dir);
+    run(&["--amend"], "n\n")
+        .failure()
+        .stdout(predicate::str::contains("Amend cancelled."));
+    assert_eq!(head_hash(&dir), head);
+    run(&["--amend", "--yes"], "")
+        .success()
+        .stdout(predicate::str::contains("✓ Commit amended successfully!"));
+    run(&["--amend", "--quiet", "--yes"], "")
+        .success()
+        .stdout(predicate::str::ends_with("\nAmended\n"));
+
+    // reword(成功時は force push が要りうることも知らせる。--quiet では出さない)
+    run(&["--reword", "HEAD~1", "--dry-run"], "")
+        .success()
+        .stdout(predicate::str::contains(
+            "Dry run mode - commit was not reworded.",
+        ));
+    let head = head_hash(&dir);
+    run(&["--reword", "HEAD~1"], "n\n")
+        .failure()
+        .stdout(predicate::str::contains("Reword cancelled."));
+    assert_eq!(head_hash(&dir), head);
+    run(&["--reword", "HEAD~1", "--yes"], "")
+        .success()
+        .stdout(predicate::str::contains("reworded successfully!"))
+        .stdout(predicate::str::contains("Note: You may need to force push"));
+    run(&["--reword", "HEAD~1", "--quiet", "--yes"], "")
+        .success()
+        .stdout(predicate::str::ends_with("\nReworded\n"));
+
+    // squash(ベースからのコミットは second・third・fourth の 3 つ)
+    run(&["--squash", &base_branch, "--dry-run"], "")
+        .success()
+        .stdout(predicate::str::contains(
+            "Dry run mode - no squash was performed.",
+        ));
+    let head = head_hash(&dir);
+    run(&["--squash", &base_branch], "n\n")
+        .failure()
+        .stdout(predicate::str::contains("Squash cancelled."));
+    assert_eq!(head_hash(&dir), head);
+    run(&["--squash", &base_branch, "--yes"], "")
+        .success()
+        .stdout(predicate::str::contains(
+            "✓ 3 commits squashed successfully!",
+        ));
+    run(&["--squash", &base_branch, "--quiet", "--yes"], "")
+        .success()
+        .stdout(predicate::str::ends_with("\nSquashed\n"));
+}
+
+/// 状態ファイル(`~/.config/git-sc/.providers-state`)を読む。無ければ空文字列。
+fn read_provider_state(home: &std::path::Path) -> String {
+    std::fs::read_to_string(home.join(".config/git-sc/.providers-state")).unwrap_or_default()
+}
+
+/// 正常終了した空応答は 1 回の外れなので、そのステップをクールダウンに入れない。
+#[test]
+#[cfg(unix)]
+fn test_empty_response_does_not_put_step_into_cooldown() {
+    let dir = setup_git_repo_with_commit();
+    let path = setup_fake_opencode_path(&dir);
+    // 何も出力せずに正常終了する偽 opencode
+    std::fs::write(dir.path().join("fake-bin/opencode"), "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::write(dir.path().join(".git-sc"), "providers = [\"opencode\"]\n").unwrap();
+    stage_change(&dir, "# Test\nupdated\n");
+
+    git_sc!()
+        .args(["--dry-run"])
+        .env("PATH", &path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("empty response"));
+
+    let state = read_provider_state(dir.path());
+    assert!(
+        !state.contains("opencode"),
+        "空応答でクールダウンに入ってはいけない: {state}"
+    );
+}
+
+/// 状態ファイルは全リポジトリで共有する。クールダウンの短いリポジトリ(0 = 無効)で
+/// 失敗したときの掃除が、他のリポジトリがまだ使う記録まで消してはいけない。
+#[test]
+#[cfg(unix)]
+fn test_short_cooldown_in_one_repo_keeps_other_repos_cooldowns() {
+    let home = TempDir::new().unwrap();
+    let repo_a = setup_git_repo_with_commit();
+    let repo_b = setup_git_repo_with_commit();
+    let fail = home.path().join("fail.sh");
+    std::fs::write(&fail, "#!/bin/sh\necho 'provider failed' >&2\nexit 1\n").unwrap();
+    let mut perms = std::fs::metadata(&fail).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&fail, perms).unwrap();
+    let project_config = |cooldown: u64, name: &str| {
+        format!(
+            "provider_cooldown_minutes = {cooldown}\n\
+             providers = [{{ provider = \"opencode\", command = [\"{}\"], name = \"{name}\" }}]\n",
+            fail.display()
+        )
+    };
+    std::fs::write(repo_a.path().join(".git-sc"), project_config(60, "fail-a")).unwrap();
+    std::fs::write(repo_b.path().join(".git-sc"), project_config(0, "fail-b")).unwrap();
+
+    for repo in [&repo_a, &repo_b] {
+        stage_change(repo, "# Test\nupdated\n");
+        git_sc!()
+            .args(["--dry-run"])
+            .env("HOME", home.path())
+            .env("XDG_CONFIG_HOME", home.path())
+            .current_dir(repo.path())
+            .assert()
+            .failure();
+    }
+
+    let state = read_provider_state(home.path());
+    assert!(
+        state.contains("fail-a"),
+        "別リポジトリのクールダウン 0 の掃除で fail-a の記録が消えた: {state}"
+    );
+}
+
 /// 生成中に履歴が動いたら、相対指定の再解決で別コミットを書き換えず中止する。
 #[test]
 #[cfg(unix)]
@@ -957,6 +1166,125 @@ fn read_single_dev_log(config_dir: &std::path::Path) -> serde_json::Value {
         .collect();
     assert_eq!(logs.len(), 1, "失敗した実行のログは 1 件だけ残る");
     serde_json::from_slice(&std::fs::read(&logs[0]).unwrap()).unwrap()
+}
+
+/// 開発ログを有効にしたグローバル設定を一時 HOME に置き、その設定ディレクトリを返す
+fn enable_dev_log_with_opencode(home: &std::path::Path) -> std::path::PathBuf {
+    let config_dir = home.join(".config/git-sc");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "nano_buddy = false\nproviders = [\"opencode\"]\n[dev_log]\nenabled = true\n",
+    )
+    .unwrap();
+    config_dir
+}
+
+/// 確認を拒否した実行は `declined` として残る(拒否で返るエラーで `failed` に上書きしない)
+#[test]
+#[cfg(unix)]
+fn test_dev_log_records_declined_commit_as_declined() {
+    let dir = setup_git_repo_with_commit();
+    let path = setup_fake_opencode_path(&dir);
+    let home = TempDir::new().unwrap();
+    let config_dir = enable_dev_log_with_opencode(home.path());
+    stage_change(&dir, "# Test\nupdated\n");
+
+    git_sc!()
+        .env("PATH", &path)
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path())
+        .current_dir(dir.path())
+        .write_stdin("n\n")
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("Commit cancelled."));
+
+    let record = read_single_dev_log(&config_dir);
+    assert_eq!(record["result"]["status"], "declined");
+    assert_eq!(record["result"]["message"], "feat: quiet integration test");
+    assert!(record["result"].get("error").is_none(), "{record}");
+    assert!(record["result"].get("commit_hash").is_none(), "{record}");
+}
+
+/// 生成中に staged 変更が消えてコミットを見送った実行は `skipped` として残る
+///
+/// hook で git-sc が 2 本並走し、片方が先にコミットしたときに通る経路。exit 0 で終わる
+/// 正常な見送りなので、エラーの無い `failed` として記録してはいけない。
+#[test]
+#[cfg(unix)]
+fn test_dev_log_records_commit_skipped_after_generation_as_skipped() {
+    let dir = setup_git_repo_with_commit();
+    let path = setup_fake_opencode_path(&dir);
+    std::fs::write(
+        dir.path().join("fake-bin/opencode"),
+        "#!/bin/sh\ngit -C \"$TEST_REPO\" reset -q\necho 'feat: generated message'\n",
+    )
+    .unwrap();
+    let home = TempDir::new().unwrap();
+    let config_dir = enable_dev_log_with_opencode(home.path());
+    stage_change(&dir, "# Test\nupdated\n");
+
+    git_sc!()
+        .args(["--yes"])
+        .env("PATH", &path)
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path())
+        .env("TEST_REPO", dir.path())
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("コミットをスキップしました"));
+
+    let record = read_single_dev_log(&config_dir);
+    assert_eq!(record["result"]["status"], "skipped");
+    assert_eq!(record["result"]["message"], "feat: generated message");
+    assert!(record["result"].get("error").is_none(), "{record}");
+    assert!(record["result"].get("commit_hash").is_none(), "{record}");
+}
+
+/// HEAD 以外を reword したとき、`commit_hash` は書き換えたコミットを指す(HEAD ではない)
+#[test]
+#[cfg(unix)]
+fn test_dev_log_records_reworded_commit_hash_not_head() {
+    let dir = setup_git_repo_with_commit();
+    commit_change(&dir, "second\n", "second commit");
+    commit_change(&dir, "third\n", "third commit");
+    let path = setup_fake_opencode_path(&dir);
+    let home = TempDir::new().unwrap();
+    let config_dir = enable_dev_log_with_opencode(home.path());
+
+    git_sc!()
+        .args(["--reword", "HEAD~1", "--yes"])
+        .env("PATH", &path)
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let rev_parse = |rev: &str| {
+        let output = std::process::Command::new("git")
+            .args(["rev-parse", rev])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    };
+    let subject = std::process::Command::new("git")
+        .args(["log", "-1", "--format=%s", "HEAD~1"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(subject.stdout).unwrap().trim(),
+        "feat: quiet integration test"
+    );
+
+    let record = read_single_dev_log(&config_dir);
+    assert_eq!(record["result"]["status"], "committed");
+    assert_eq!(record["result"]["commit_hash"], rev_parse("HEAD~1"));
+    assert_ne!(record["result"]["commit_hash"], rev_parse("HEAD"));
 }
 
 /// index.lock による生成前のステージング失敗も、quiet モードでログに残る
@@ -2911,5 +3239,109 @@ fn test_ignore_patterns_apply_to_submodule_under_diff_submodule_log() {
     assert!(
         combined.contains("public.txt"),
         "除外していないファイルまでプロンプトから消えている: {combined}"
+    );
+}
+
+/// 作業ツリーに `HEAD` という名前のファイルがあっても、履歴を扱う各モードが動く。
+///
+/// `--` の無いリビジョン指定は git が作業ツリーのファイル名と照合し、
+/// `fatal: ambiguous argument 'HEAD': both revision and filename` で拒否する。
+#[test]
+#[cfg(unix)]
+fn test_history_modes_work_with_file_named_head_in_repository() {
+    let dir = setup_git_repo_with_commit();
+    let base = head_hash(&dir);
+    commit_change(&dir, "second\n", "second commit");
+    commit_change(&dir, "third\n", "third commit");
+    let path = setup_fake_opencode_path(&dir);
+    std::fs::write(dir.path().join(".git-sc"), "providers = [\"opencode\"]\n").unwrap();
+    std::fs::write(dir.path().join("HEAD"), "untracked file named HEAD\n").unwrap();
+
+    let run = |args: &[&str], expected: &str| {
+        git_sc!()
+            .args(args)
+            .env("PATH", &path)
+            .env("HOME", dir.path())
+            .env("XDG_CONFIG_HOME", dir.path())
+            .current_dir(dir.path())
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(expected));
+    };
+    run(
+        &["--generate-for", "HEAD", "-p", "opencode"],
+        "feat: quiet integration test",
+    );
+    run(&["--quiet", "--yes", "--amend"], "Amended");
+    run(&["--quiet", "--yes", "--reword", "HEAD~1"], "Reworded");
+    run(&["--quiet", "--yes", "--squash", &base], "Squashed");
+
+    let log = std::process::Command::new("git")
+        .args(["log", "--format=%s"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(log.status.success());
+    assert_eq!(
+        String::from_utf8(log.stdout).unwrap(),
+        "feat: quiet integration test\ninitial commit\n"
+    );
+}
+
+/// prefix スクリプトが `#123 ` のようなチケット番号を返しても、reword する位置
+/// (HEAD かそれより前か)によって `#` で始まる件名が消えたり失敗したりしない。
+#[test]
+#[cfg(unix)]
+fn test_reword_keeps_hash_prefixed_subject_on_every_path() {
+    let dir = setup_git_repo_with_commit();
+    commit_change(&dir, "second\n", "second commit");
+    let path = setup_fake_opencode_path(&dir);
+    let remote = std::process::Command::new("git")
+        .args([
+            "remote",
+            "add",
+            "origin",
+            "https://example.com/test/repo.git",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(remote.status.success());
+    let script_path = dir.path().join("prefix.sh");
+    std::fs::write(&script_path, "#!/bin/sh\nprintf '#123 \\n'\n").unwrap();
+    let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&script_path, perms).unwrap();
+    std::fs::write(
+        dir.path().join(".git-sc"),
+        format!(
+            "providers = [\"opencode\"]\n\n[[prefix_scripts]]\nurl_pattern = \"example\\\\.com\"\nscript = \"{}\"\n",
+            script_path.display()
+        ),
+    )
+    .unwrap();
+
+    // HEAD~1 は最古のコミットなので `--root` の経路、HEAD は amend の経路を通る
+    for target in ["HEAD~1", "HEAD"] {
+        git_sc!()
+            .args(["--quiet", "--yes", "--reword", target])
+            .env("PATH", &path)
+            .env("HOME", dir.path())
+            .env("XDG_CONFIG_HOME", dir.path())
+            .current_dir(dir.path())
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Reworded"));
+    }
+
+    let log = std::process::Command::new("git")
+        .args(["log", "--format=%s"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(log.status.success());
+    assert_eq!(
+        String::from_utf8(log.stdout).unwrap(),
+        "#123 quiet integration test\n#123 quiet integration test\n"
     );
 }

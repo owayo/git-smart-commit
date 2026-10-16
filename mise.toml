@@ -5,4 +5,4 @@
 # プロファイルとコンポーネントを明示し、GitHub Actions の minimal 環境にも
 # rustfmt / clippy を導入する。Apple Intelligence のビルドには、mise 管理外の
 # Xcode（swiftc と macOS 26 以降の SDK）も必要。
-rust = { version = "1.98.1", profile = "minimal", components = ["rustfmt", "clippy"] }
+rust = { version = "1.99.0", profile = "minimal", components = ["rustfmt", "clippy"] }

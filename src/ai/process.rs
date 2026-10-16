@@ -409,13 +409,13 @@ impl AiService {
             // 端末と生成ログの `error` に diff が流れ込む。`error` は詳細度
             // (`content = "metadata"`)の振り分け対象外なので、そこでは止まらない。
             if !stderr_str.trim().is_empty() {
-                return Err(AppError::AiProviderError(format!(
+                return Err(AppError::AiProviderEmptyResponse(format!(
                     "{} returned an empty response (stderr: {})",
                     provider.name(),
                     Self::extract_error(stderr_str, provider)
                 )));
             }
-            return Err(AppError::AiProviderError(format!(
+            return Err(AppError::AiProviderEmptyResponse(format!(
                 "{} returned an empty response",
                 provider.name()
             )));

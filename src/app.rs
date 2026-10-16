@@ -747,7 +747,14 @@ impl App {
         if let Some(dev_log) = &self.dev_log
             && !matches!(result, Err(AppError::NotGitRepository))
         {
-            dev_log.finish(result.as_ref().err().map(|e| e.to_string()));
+            let error = match &result {
+                // 確認の拒否は `finish_declined` が `declined` として記録済み。拒否で返る
+                // UserCancelled をエラーとして渡すと、記録後の失敗とみなされて `failed` に
+                // 上書きされ、`declined` が一度も残らなくなる
+                Err(AppError::UserCancelled) => None,
+                other => other.as_ref().err().map(|e| e.to_string()),
+            };
+            dev_log.finish(error);
         }
 
         result
@@ -770,19 +777,22 @@ impl App {
 
     /// 生成ログへ実行の結末を記録する(ログ無効なら何もしない)
     ///
-    /// status は `committed` / `dry-run` / `declined` / `generated` に統一する
+    /// status は `committed` / `dry-run` / `declined` / `skipped` / `generated` に統一する
     /// (どのモードだったかは `invocation.mode` 側が持つ)。コミットハッシュは
-    /// 実際に履歴が動いたときだけ記録する — dry-run や中止で現在の HEAD を
-    /// 書くと、そのコミットを生成物と読み違える。
-    fn record_dev_log_result(&self, status: &str, provider: &str, message: &str) {
+    /// 実際に履歴が動いたときだけ、書き換えたコミットを指す `commit_rev` から記録する
+    /// — dry-run や中止で現在の HEAD を書くと、そのコミットを生成物と読み違える。
+    /// HEAD 以外を書き換える reword では、`commit_rev` は HEAD ではない。
+    fn record_dev_log_result(
+        &self,
+        status: &str,
+        provider: &str,
+        message: &str,
+        commit_rev: Option<&str>,
+    ) {
         if self.dev_log.is_none() {
             return;
         }
-        let commit_hash = if status == "committed" {
-            self.git.get_head_hash().ok()
-        } else {
-            None
-        };
+        let commit_hash = commit_rev.and_then(|rev| self.git.resolve_commit_hash(rev).ok());
         if let Some(dev_log) = &self.dev_log {
             dev_log.set_result(RunResult {
                 status: status.to_string(),
@@ -792,6 +802,71 @@ impl App {
                 error: None,
             });
         }
+    }
+
+    // 以下の 4 つは commit / amend / squash / reword が共有する終了処理。
+    // 確認後の検査(staged・index の tree・HEAD)と git 操作はモードごとに順序も
+    // 文言も違うので、各 run_* に残す。ここに寄せるのは完全に同じ形の部分だけ。
+
+    /// ドライランの結末を記録して知らせる(履歴は動かさない)
+    fn finish_dry_run(&self, cli: &Cli, provider_name: &str, message: &str, notice: &str) {
+        self.record_dev_log_result("dry-run", provider_name, message, None);
+        if !cli.quiet {
+            println!("{}", notice.yellow());
+        }
+    }
+
+    /// 確認で拒否されたことを記録して知らせ、`UserCancelled` を返す
+    fn finish_declined(
+        &self,
+        cli: &Cli,
+        provider_name: &str,
+        message: &str,
+        notice: &str,
+    ) -> Result<(), AppError> {
+        self.record_dev_log_result("declined", provider_name, message, None);
+        if !cli.quiet {
+            println!("{}", notice.yellow());
+        }
+        Err(AppError::UserCancelled)
+    }
+
+    /// 履歴の書き換えが成功した後に、記録・表示・通知をこの順で行う
+    ///
+    /// `committed_rev` は書き換えたコミットを指すリビジョン(生成ログのハッシュに使う)。
+    /// `quiet_notice` は `--quiet` 時の 1 語(フックやスクリプトが読む)、
+    /// `notice` は通常時の成功表示。
+    fn report_committed(
+        &self,
+        cli: &Cli,
+        provider_name: &str,
+        message: &str,
+        committed_rev: &str,
+        quiet_notice: &str,
+        notice: &str,
+    ) {
+        self.record_dev_log_result("committed", provider_name, message, Some(committed_rev));
+        if cli.quiet {
+            println!("{}", quiet_notice);
+        } else {
+            println!("{}", notice.green().bold());
+        }
+        if self.nano_buddy {
+            crate::notify::notify_commit_message(message);
+        }
+    }
+
+    /// auto-push が有効なら push する(新しいコミットを作る commit と squash だけが呼ぶ)
+    fn push_if_enabled(&self, cli: &Cli) -> Result<(), AppError> {
+        if self.git.is_auto_push_enabled(self.auto_push) {
+            self.git.push()?;
+            if cli.quiet {
+                println!("Pushed");
+            } else {
+                println!("{}", "✓ Pushed to remote successfully!".green().bold());
+            }
+        }
+        Ok(())
     }
 
     /// 専用ワークフローを持つモードを振り分ける
@@ -906,10 +981,12 @@ impl App {
 
         // ドライランモードの処理
         if cli.dry_run {
-            self.record_dev_log_result("dry-run", provider_name, &message);
-            if !cli.quiet {
-                println!("{}", "Dry run mode - no commit was made.".yellow());
-            }
+            self.finish_dry_run(
+                cli,
+                provider_name,
+                &message,
+                "Dry run mode - no commit was made.",
+            );
             return Ok(());
         }
 
@@ -917,6 +994,9 @@ impl App {
         if cli.auto_confirm || self.confirm_commit()? {
             // コミット直前にステージ済み変更を再確認（競合状態防止）
             if !self.git.has_staged_changes() {
+                // 生成は済んでいるので、結末を残さないと生成ログでは
+                // エラーの無い `failed` になる。正常な見送りとして記録する
+                self.record_dev_log_result("skipped", provider_name, &message, None);
                 if !cli.quiet {
                     println!(
                         "{}",
@@ -942,31 +1022,17 @@ impl App {
                 ));
             }
             self.git.commit(&message)?;
-            self.record_dev_log_result("committed", provider_name, &message);
-            if cli.quiet {
-                println!("Committed");
-            } else {
-                println!("{}", "✓ Commit created successfully!".green().bold());
-            }
-            if self.nano_buddy {
-                crate::notify::notify_commit_message(&message);
-            }
-
-            // auto-push が有効な場合は push も実行
-            if self.git.is_auto_push_enabled(self.auto_push) {
-                self.git.push()?;
-                if cli.quiet {
-                    println!("Pushed");
-                } else {
-                    println!("{}", "✓ Pushed to remote successfully!".green().bold());
-                }
-            }
+            self.report_committed(
+                cli,
+                provider_name,
+                &message,
+                "HEAD",
+                "Committed",
+                "✓ Commit created successfully!",
+            );
+            self.push_if_enabled(cli)?;
         } else {
-            self.record_dev_log_result("declined", provider_name, &message);
-            if !cli.quiet {
-                println!("{}", "Commit cancelled.".yellow());
-            }
-            return Err(AppError::UserCancelled);
+            return self.finish_declined(cli, provider_name, &message, "Commit cancelled.");
         }
 
         Ok(())
@@ -1027,10 +1093,12 @@ impl App {
 
         // ドライランモードの処理
         if cli.dry_run {
-            self.record_dev_log_result("dry-run", provider_name, &message);
-            if !cli.quiet {
-                println!("{}", "Dry run mode - commit was not amended.".yellow());
-            }
+            self.finish_dry_run(
+                cli,
+                provider_name,
+                &message,
+                "Dry run mode - commit was not amended.",
+            );
             return Ok(());
         }
 
@@ -1045,21 +1113,16 @@ impl App {
                 ));
             }
             self.git.amend_commit(&message)?;
-            self.record_dev_log_result("committed", provider_name, &message);
-            if cli.quiet {
-                println!("Amended");
-            } else {
-                println!("{}", "✓ Commit amended successfully!".green().bold());
-            }
-            if self.nano_buddy {
-                crate::notify::notify_commit_message(&message);
-            }
+            self.report_committed(
+                cli,
+                provider_name,
+                &message,
+                "HEAD",
+                "Amended",
+                "✓ Commit amended successfully!",
+            );
         } else {
-            self.record_dev_log_result("declined", provider_name, &message);
-            if !cli.quiet {
-                println!("{}", "Amend cancelled.".yellow());
-            }
-            return Err(AppError::UserCancelled);
+            return self.finish_declined(cli, provider_name, &message, "Amend cancelled.");
         }
 
         Ok(())
@@ -1154,10 +1217,12 @@ impl App {
 
         // ドライランモードの処理
         if cli.dry_run {
-            self.record_dev_log_result("dry-run", provider_name, &message);
-            if !cli.quiet {
-                println!("{}", "Dry run mode - no squash was performed.".yellow());
-            }
+            self.finish_dry_run(
+                cli,
+                provider_name,
+                &message,
+                "Dry run mode - no squash was performed.",
+            );
             return Ok(());
         }
 
@@ -1201,36 +1266,17 @@ impl App {
                 }
                 return Err(commit_err);
             }
-            self.record_dev_log_result("committed", provider_name, &message);
-            if cli.quiet {
-                println!("Squashed");
-            } else {
-                println!(
-                    "{}",
-                    format!("✓ {} commits squashed successfully!", commit_count)
-                        .green()
-                        .bold()
-                );
-            }
-            if self.nano_buddy {
-                crate::notify::notify_commit_message(&message);
-            }
-
-            // auto-push が有効な場合は push も実行
-            if self.git.is_auto_push_enabled(self.auto_push) {
-                self.git.push()?;
-                if cli.quiet {
-                    println!("Pushed");
-                } else {
-                    println!("{}", "✓ Pushed to remote successfully!".green().bold());
-                }
-            }
+            self.report_committed(
+                cli,
+                provider_name,
+                &message,
+                "HEAD",
+                "Squashed",
+                &format!("✓ {} commits squashed successfully!", commit_count),
+            );
+            self.push_if_enabled(cli)?;
         } else {
-            self.record_dev_log_result("declined", provider_name, &message);
-            if !cli.quiet {
-                println!("{}", "Squash cancelled.".yellow());
-            }
-            return Err(AppError::UserCancelled);
+            return self.finish_declined(cli, provider_name, &message, "Squash cancelled.");
         }
 
         Ok(())
@@ -1289,7 +1335,7 @@ impl App {
             true,
         )?;
 
-        self.record_dev_log_result("generated", provider_name, &message);
+        self.record_dev_log_result("generated", provider_name, &message, None);
 
         // 標準出力にメッセージのみを出力（余計な装飾なし）
         println!("{}", message);
@@ -1385,10 +1431,12 @@ impl App {
 
         // ドライランモードの処理
         if cli.dry_run {
-            self.record_dev_log_result("dry-run", provider_name, &message);
-            if !cli.quiet {
-                println!("{}", "Dry run mode - commit was not reworded.".yellow());
-            }
+            self.finish_dry_run(
+                cli,
+                provider_name,
+                &message,
+                "Dry run mode - commit was not reworded.",
+            );
             return Ok(());
         }
 
@@ -1401,20 +1449,16 @@ impl App {
                 ));
             }
             self.git.reword_commit_by_hash(&hash, &message)?;
-            self.record_dev_log_result("committed", provider_name, &message);
-            if cli.quiet {
-                println!("Reworded");
-            } else {
-                println!(
-                    "{}",
-                    format!("✓ Commit {} reworded successfully!", short_hash)
-                        .green()
-                        .bold()
-                );
-            }
-            if self.nano_buddy {
-                crate::notify::notify_commit_message(&message);
-            }
+            // 書き換え後の対象は HEAD から同じ位置(first-parent で n - 1 個前)にある。
+            // 直前の HEAD 比較で、位置を求めてから履歴が動いていないことは確かめてある
+            self.report_committed(
+                cli,
+                provider_name,
+                &message,
+                &format!("HEAD~{}", n - 1),
+                "Reworded",
+                &format!("✓ Commit {} reworded successfully!", short_hash),
+            );
             if !cli.quiet {
                 println!(
                     "{}",
@@ -1423,11 +1467,7 @@ impl App {
                 );
             }
         } else {
-            self.record_dev_log_result("declined", provider_name, &message);
-            if !cli.quiet {
-                println!("{}", "Reword cancelled.".yellow());
-            }
-            return Err(AppError::UserCancelled);
+            return self.finish_declined(cli, provider_name, &message, "Reword cancelled.");
         }
 
         Ok(())
