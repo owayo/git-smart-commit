@@ -787,7 +787,11 @@ impl AiService {
 
     /// ログ集計と Apple の縮約で共用する、変更ファイルのヘッダー・要約行。
     pub(super) fn diff_file_entries(diff: &str) -> impl Iterator<Item = &str> {
-        diff.lines().filter(|line| {
+        let has_overview = diff.starts_with("[Complete change overview]\n");
+        diff.lines().filter(move |line| {
+            if has_overview {
+                return line.starts_with("[File] ");
+            }
             line.starts_with("diff --git ")
                 || line.starts_with("diff --cc ")
                 || line.starts_with("diff --combined ")
@@ -3914,6 +3918,18 @@ mod tests {
     #[test]
     fn test_count_diff_blocks_on_empty_diff() {
         assert_eq!(AiService::count_diff_blocks(""), 0);
+    }
+
+    #[test]
+    fn test_count_diff_blocks_prefers_complete_overview_to_partial_bodies() {
+        let diff = "[Complete change overview]\n[File] first.txt | +20 -10\n\
+                    [File] last.txt | +1 -0\n\ndiff --git a/first.txt b/first.txt\n\
+                    @@ -1 +1 @@\n-old\n+new\n+[File] fake.txt | +1 -0";
+        assert_eq!(AiService::count_diff_blocks(diff), 2);
+        assert_eq!(
+            AiService::diff_file_entries(diff).collect::<Vec<_>>().len(),
+            2
+        );
     }
 
     /// `-p` によるプロバイダー明示指定は ai-usage ゲートの判定を引き継がない。

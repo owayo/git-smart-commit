@@ -26,11 +26,15 @@ flowchart LR
 - Lockfile contents replaced with a path and change kind (added, modified, deleted, renamed, or copied), e.g. `[Lockfile] modified: Cargo.lock`. Renames and copies retain both paths; control characters such as newlines in paths are escaped.
 - Quoted diff headers with spaces or non-ASCII file paths are handled correctly
 - Files matching `.git-sc-ignore` patterns retain only their paths, with a notice that the contents were omitted
-- Truncated at 10,000 characters
+- Diffs within 10,000 characters keep their existing format. Larger diffs retain a complete file overview with added/deleted line counts, then share a 10,000-character body budget across files. Small files return their unused share to larger files.
 
 Lockfile summaries need no configuration and apply to normal commits, amend, squash, reword, and `--generate-for`. Matching filenames in any directory are `*.lock`, `*.lockb`, `*.lockfile`, `package-lock.json`, `npm-shrinkwrap.json`, `pnpm-lock.yaml`, `go.sum`, and `Package.resolved`. The literal filenames `.lock`, `.lockb`, and `.lockfile` also match. The suffix rules cover files such as `Cargo.lock`, `yarn.lock`, `Gemfile.lock`, `composer.lock`, `uv.lock`, and `bun.lock`.
 
 Summaries are produced before the character limit is applied, so large lockfile contents do not crowd out other changes. Lockfile-only changes can still generate a message. Files matching `.git-sc-ignore` keep only their paths and the omission notice, including lockfiles and binary files.
+
+For larger diffs, the complete overview and omission notices are outside the body budget: even an overview longer than 10,000 characters is retained. Counts come from the original diff before contents are omitted; binary files show `binary` instead of line counts. Renames and copies show both paths. Combined merge diffs label their counts `combined rows`, counting each displayed added/deleted row once across parent columns. The prompt states how many file bodies were omitted or shortened, including ignored files, lockfiles, and binaries. Excerpts preserve complete lines and CRLF content where possible. `--generate-for` combines the original diffs before processing, so later commits keep their full overview too. Multiple changes to the same path in different commits appear separately. Developer logs count the overview entries without counting excerpt headers again.
+
+Overview entries mark shortened excerpts with `[body truncated]`. Apple Intelligence may further shorten the overview and excerpts to fit its smaller on-device context window; that separate pass reports the number of unlisted files.
 
 ## Security Notes
 

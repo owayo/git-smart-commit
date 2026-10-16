@@ -14,6 +14,12 @@ const MAX_DIFF_CHARS: usize = 10000;
 /// 除外対象はパスだけを残し、本文を渡していないことを AI に知らせる。
 const IGNORED_CONTENT_NOTICE: &str = "[content omitted by .git-sc-ignore]";
 
+struct DiffFileExcerpt {
+    overview: String,
+    content: String,
+    body_omitted: bool,
+}
+
 /// diff の出力形式をユーザーの Git 設定から切り離すための引数
 ///
 /// `.git-sc-ignore` の除外は `diff --git a/... b/...` 行からパスを読んで判定する。
@@ -378,8 +384,7 @@ impl GitService {
     fn extract_combined_diff_path(header: &str) -> Option<String> {
         let rest = header
             .strip_prefix("diff --cc ")
-            .or_else(|| header.strip_prefix("diff --combined "))?
-            .trim();
+            .or_else(|| header.strip_prefix("diff --combined "))?;
         if rest.is_empty() {
             return None;
         }
@@ -501,7 +506,7 @@ impl GitService {
             return Some((path.clone(), path));
         }
 
-        let rest = header.strip_prefix("diff --git ")?.trim();
+        let rest = header.strip_prefix("diff --git ")?;
 
         if !rest.contains('"') {
             // 同一パスのスペース含み変更を先に中央分割で処理する。
@@ -523,7 +528,7 @@ impl GitService {
         if !rest.starts_with('"')
             && let Some(quote_pos) = rest.find('"')
         {
-            let before_part = rest[..quote_pos].trim_end();
+            let before_part = rest[..quote_pos].strip_suffix(' ')?;
             let (after_path, _) = Self::decode_quoted_diff_path_with_rest(&rest[quote_pos + 1..])?;
             return Some((
                 before_part.strip_prefix("a/")?.to_string(),
@@ -533,7 +538,7 @@ impl GitService {
 
         // 先頭がクォートの場合はクォート解析、そうでなければ空白分割
         let (before_path, rest_after) = Self::take_diff_header_path(rest)?;
-        let rest_after = rest_after.trim_start();
+        let rest_after = rest_after.strip_prefix(' ')?;
 
         // 残り側がクォートなら再度クォート解析、そうでなければ末尾までを
         // そのまま after_path として扱う（`"a/旧.txt" b/new name.txt` のような
@@ -697,7 +702,13 @@ impl GitService {
     }
 
     /// diffを最大文字数に切り詰める
+    #[cfg(test)]
     pub fn truncate_diff(diff: &str) -> String {
+        Self::truncate_diff_with_source(diff, diff, None)
+    }
+
+    /// 上限以内の差分はそのまま。超過した場合は raw diff の全ファイル一覧を残す。
+    fn truncate_diff_with_source(diff: &str, source: &str, ignore: Option<&Gitignore>) -> String {
         // バイト長 <= MAX_DIFF_CHARS なら必ず文字数も収まる (UTF-8 は 1 文字 >= 1 バイト)
         // 大半の diff はこの早期 return で全文走査を回避する
         if diff.len() <= MAX_DIFF_CHARS {
@@ -710,6 +721,10 @@ impl GitService {
             Some((idx, _)) => idx,
             None => return diff.to_string(),
         };
+
+        if let Some(excerpts) = Self::diff_file_excerpts(source, ignore) {
+            return Self::render_diff_excerpts(excerpts);
+        }
 
         let truncated = &diff[..cutoff];
 
@@ -724,6 +739,133 @@ impl GitService {
         )
     }
 
+    /// 行数は本文を除外・要約する前に数える。hunk 外の --- / +++ は数えない。
+    fn diff_block_overview(block: &[&str]) -> String {
+        let paths = Self::ignore_candidate_paths(block);
+        let path = match paths.as_slice() {
+            [.., before, after] if before != after => format!(
+                "{} -> {}",
+                Self::summary_path(before),
+                Self::summary_path(after)
+            ),
+            [.., path] => Self::summary_path(path),
+            [] => Self::summary_path(block.first().copied().unwrap_or("unknown")),
+        };
+        if block
+            .iter()
+            .any(|line| line.starts_with("Binary files ") || *line == "GIT binary patch")
+        {
+            return format!("[File] {path} | binary");
+        }
+
+        let mut added = 0usize;
+        let mut deleted = 0usize;
+        let mut columns = 0usize;
+        let mut combined = false;
+        for line in block {
+            let at_count = line.bytes().take_while(|byte| *byte == b'@').count();
+            if at_count >= 2 && line.as_bytes().get(at_count) == Some(&b' ') {
+                columns = if at_count == 2 { 1 } else { at_count - 1 };
+                combined |= columns > 1;
+                continue;
+            }
+            if columns == 0 || line.len() < columns {
+                continue;
+            }
+            let signs = &line.as_bytes()[..columns];
+            // combined diff の親別列は行を重複計数せず、表示された変更行として数える。
+            if signs.iter().all(|sign| matches!(sign, b' ' | b'+' | b'-')) {
+                added += usize::from(signs.contains(&b'+'));
+                deleted += usize::from(signs.contains(&b'-'));
+            }
+        }
+        let qualifier = if combined { " (combined rows)" } else { "" };
+        format!("[File] {path} | +{added} -{deleted}{qualifier}")
+    }
+
+    fn diff_file_excerpts(diff: &str, ignore: Option<&Gitignore>) -> Option<Vec<DiffFileExcerpt>> {
+        let lines = Self::split_diff_lines(diff);
+        let mut excerpts = Vec::new();
+        let mut index = 0;
+        while index < lines.len() {
+            if !Self::is_diff_block_start(lines[index]) {
+                index += 1;
+                continue;
+            }
+            let start = index;
+            index += 1;
+            while index < lines.len() && !Self::is_diff_block_start(lines[index]) {
+                index += 1;
+            }
+            let block = &lines[start..index];
+            let raw = block.join("\n");
+            let filtered = match ignore {
+                Some(ignore) => Self::filter_ignored_files(&raw, ignore),
+                None => raw.clone(),
+            };
+            let content = Self::summarize_diff(&filtered);
+            let mut overview = Self::diff_block_overview(block);
+            if filtered != raw {
+                overview.push(' ');
+                overview.push_str(IGNORED_CONTENT_NOTICE);
+            } else if content != filtered {
+                overview.push_str(" [lockfile/binary content omitted]");
+            }
+            excerpts.push(DiffFileExcerpt {
+                overview,
+                body_omitted: content != raw,
+                content,
+            });
+        }
+        (!excerpts.is_empty()).then_some(excerpts)
+    }
+
+    /// 小さいファイルの余りを再配分し、先頭の大きなファイルによる予算の独占を防ぐ。
+    fn render_diff_excerpts(excerpts: Vec<DiffFileExcerpt>) -> String {
+        let mut sizes = excerpts
+            .iter()
+            .enumerate()
+            .map(|(index, excerpt)| (excerpt.content.chars().count(), index))
+            .collect::<Vec<_>>();
+        sizes.sort_unstable();
+        let mut allocations = vec![0; excerpts.len()];
+        // 本文を連結する改行も本文予算に含める。一覧と通知はこの予算の別枠。
+        let mut remaining = MAX_DIFF_CHARS.saturating_sub(excerpts.len().saturating_sub(1));
+        for (position, (size, index)) in sizes.iter().enumerate() {
+            let share = remaining / (sizes.len() - position);
+            allocations[*index] = (*size).min(share);
+            remaining -= allocations[*index];
+        }
+        let mut overview = String::from("[Complete change overview]\n");
+        let mut bodies = Vec::new();
+        let mut omitted = 0usize;
+        for (excerpt, allocation) in excerpts.iter().zip(allocations) {
+            let body = match excerpt.content.char_indices().nth(allocation) {
+                Some((cutoff, _)) => {
+                    let prefix = &excerpt.content[..cutoff];
+                    prefix.rfind('\n').map_or("", |end| &prefix[..end])
+                }
+                None => &excerpt.content,
+            };
+            overview.push_str(&excerpt.overview);
+            if body.len() < excerpt.content.len() {
+                overview.push_str(" [body truncated]");
+            }
+            overview.push('\n');
+            omitted += usize::from(excerpt.body_omitted || body.len() < excerpt.content.len());
+            if !body.is_empty() {
+                bodies.push(body);
+            }
+        }
+        format!(
+            "{overview}\n... (diff truncated: exceeded {MAX_DIFF_CHARS} characters)\n\
+             [{omitted} of {} file bodies omitted or truncated; complete file list above; \
+             body budget {MAX_DIFF_CHARS} characters]\n\n{}",
+            excerpts.len(),
+            bodies.join("\n")
+        )
+    }
+
     /// diffに対して全てのフィルタリングを適用
     ///
     /// `.git-sc-ignore` が存在するのに適用できない場合はエラーを返す。
@@ -734,8 +876,9 @@ impl GitService {
         //    バイナリフィルタより先に実行する必要がある。
         //    summarize_diff は diff --git ヘッダーをサマリー行に変換するため、
         //    先に実行するとignoreパターンがバイナリファイルに適用されなくなる。
-        let filtered = if let Some(ignore) = self.load_ignore_patterns()? {
-            Self::filter_ignored_files(diff, &ignore)
+        let ignore = self.load_ignore_patterns()?;
+        let filtered = if let Some(ignore) = &ignore {
+            Self::filter_ignored_files(diff, ignore)
         } else {
             diff.to_string()
         };
@@ -744,7 +887,11 @@ impl GitService {
         let filtered = Self::summarize_diff(&filtered);
 
         // 3. 文字数制限を適用
-        Ok(Self::truncate_diff(&filtered))
+        Ok(Self::truncate_diff_with_source(
+            &filtered,
+            diff,
+            ignore.as_ref(),
+        ))
     }
 
     /// Git のパスはプラットフォームによらず `/` 区切り。
@@ -766,7 +913,7 @@ impl GitService {
 
     /// デコード済みパスを一行で表示する。制御文字で要約行が分裂するのを防ぐ。
     fn summary_path(path: &str) -> String {
-        if path.chars().any(char::is_control) || path.contains(['"', '\\']) {
+        if path.trim() != path || path.chars().any(char::is_control) || path.contains(['"', '\\']) {
             format!("{path:?}")
         } else {
             path.to_string()
@@ -1320,6 +1467,25 @@ impl GitService {
 
     /// 指定されたコミットハッシュの差分を取得
     pub fn get_commit_diff_by_hash(&self, hash: &str) -> Result<String, AppError> {
+        self.apply_all_filters(&self.get_raw_commit_diff_by_hash(hash)?)
+    }
+
+    /// 各コミットの raw diff を結合してから一度だけ要約・予算配分する。
+    pub fn get_commit_diffs_by_hashes(&self, hashes: &[String]) -> Result<String, AppError> {
+        let mut combined = String::new();
+        for hash in hashes {
+            let raw = self.get_raw_commit_diff_by_hash(hash)?;
+            if !raw.trim().is_empty() {
+                if !combined.is_empty() && !combined.ends_with('\n') {
+                    combined.push('\n');
+                }
+                combined.push_str(&raw);
+            }
+        }
+        self.apply_all_filters(&combined)
+    }
+
+    fn get_raw_commit_diff_by_hash(&self, hash: &str) -> Result<String, AppError> {
         // 検証と同時にコミット ID へ解決し、以降は解決済みの ID だけを git に渡す。
         // 注釈付きタグ(`--generate-for v1` など)を生のまま `git show` に渡すと、diff の前に
         // タグオブジェクト自身(`tag v1` / `Tagger: 名前 <メール>` / タグ本文)が出力され、
@@ -1336,8 +1502,7 @@ impl GitService {
         let mut args = vec!["show", "--no-show-signature", "--format=", "-U0"];
         args.extend_from_slice(DIFF_FORMAT_ARGS);
         args.extend_from_slice(&["--end-of-options", &commit, "--"]);
-        let raw = self.run_git_raw(&args)?;
-        self.apply_all_filters(&raw)
+        self.run_git_raw(&args)
     }
 
     /// 指定されたコミットハッシュのメッセージを取得
@@ -2273,6 +2438,149 @@ index 1234567..abcdefg 100644
         let diff = "short content";
         let result = GitService::truncate_diff(diff);
         assert_eq!(result, diff);
+    }
+
+    #[test]
+    fn test_large_diff_overview_keeps_rename_copy_and_combined_counts() {
+        let rename = "diff --git a/old.txt b/new b/path.txt\nsimilarity index 90%\nrename from old.txt\nrename to new b/path.txt\n@@ -1 +1,2 @@\n-old\n+new\n+++literal plus";
+        let copy = "diff --git a/source.txt b/copy.txt\nsimilarity index 100%\ncopy from source.txt\ncopy to copy.txt";
+        let combined = "diff --cc \"caf\\303\\251.txt\"\nindex a,b..c\n@@@ -1 -1 +1 @@@\n--removed\n++added\n  context";
+        let large = format!(
+            "diff --git a/a.txt b/a.txt\n@@ -0,0 +1 @@\n+{}",
+            "長".repeat(MAX_DIFF_CHARS)
+        );
+        let result = GitService::truncate_diff(&format!("{large}\n{rename}\n{copy}\n{combined}"));
+        for summary in [
+            "old.txt -> new b/path.txt | +2 -1",
+            "source.txt -> copy.txt | +0 -0",
+            "café.txt | +1 -1 (combined rows)",
+        ] {
+            assert!(result.contains(summary), "missing {summary}: {result}");
+        }
+    }
+
+    #[test]
+    fn test_large_diff_overview_never_truncates_inventory() {
+        let diff = (0..400)
+            .map(|index| format!("diff --git a/file-{index:03}.txt b/file-{index:03}.txt\n@@ -1 +1 @@\n-old\n+new\n"))
+            .collect::<String>();
+        let result = GitService::truncate_diff(&diff);
+        // 一覧自体が本文予算を超える場合も名前と行数を削らない。
+        for index in 0..400 {
+            assert!(result.contains(&format!("file-{index:03}.txt | +1 -1")));
+        }
+        assert!(result.contains("file bodies omitted or truncated"));
+        let (_, body) = result
+            .split_once("body budget 10000 characters]\n\n")
+            .unwrap();
+        assert!(body.chars().count() <= MAX_DIFF_CHARS);
+    }
+
+    #[test]
+    fn test_large_diff_shares_body_budget_across_large_files() {
+        let diff = ["first", "second"]
+            .into_iter()
+            .map(|name| {
+                format!(
+                    "diff --git a/{name}.txt b/{name}.txt\n@@ -0,0 +1,1500 @@\n{}",
+                    format!("+{name} body line\n").repeat(1500)
+                )
+            })
+            .collect::<String>();
+        let result = GitService::truncate_diff(&diff);
+        let (_, body) = result
+            .split_once("body budget 10000 characters]\n\n")
+            .unwrap();
+        assert!(body.contains("+first body line\n"));
+        assert!(body.contains("+second body line\n"));
+        assert!(body.chars().count() <= MAX_DIFF_CHARS);
+        assert!(result.contains("2 of 2 file bodies omitted or truncated"));
+        assert_eq!(result.matches("[body truncated]").count(), 2);
+    }
+
+    #[test]
+    fn test_many_diff_files_keep_inventory_without_exceeding_body_budget() {
+        let count = MAX_DIFF_CHARS + 2;
+        let diff = (0..count)
+            .map(|index| {
+                format!("diff --git a/file-{index}.txt b/file-{index}.txt\n@@ -0,0 +1 @@\n+added\n")
+            })
+            .collect::<String>();
+        let result = GitService::truncate_diff(&diff);
+        let (overview, body) = result
+            .split_once("body budget 10000 characters]\n\n")
+            .unwrap();
+        assert_eq!(
+            overview
+                .lines()
+                .filter(|line| line.starts_with("[File] "))
+                .count(),
+            count
+        );
+        assert!(body.chars().count() <= MAX_DIFF_CHARS);
+    }
+
+    #[test]
+    fn test_large_diff_preserves_spaces_and_escapes_control_characters_in_paths() {
+        let mut diff = format!(
+            "diff --git a/large.txt b/large.txt\n@@ -0,0 +1 @@\n+{}\n",
+            "x".repeat(MAX_DIFF_CHARS)
+        );
+        for name in [
+            " leading.txt",
+            "trailing.txt ",
+            " both.txt ",
+            "line\n[File] | \"name\".txt",
+        ] {
+            let a = if name.contains(['\n', '"']) {
+                format!("{:?}", format!("a/{name}"))
+            } else {
+                format!("a/{name}")
+            };
+            let b = if name.contains(['\n', '"']) {
+                format!("{:?}", format!("b/{name}"))
+            } else {
+                format!("b/{name}")
+            };
+            diff.push_str(&format!("diff --git {a} {b}\n@@ -0,0 +1 @@\n+change\n"));
+        }
+        let result = GitService::truncate_diff(&diff);
+        for expected in [
+            "[File] \" leading.txt\" | +1 -0",
+            "[File] \"trailing.txt \" | +1 -0",
+            "[File] \" both.txt \" | +1 -0",
+            "[File] \"line\\n[File] | \\\"name\\\".txt\" | +1 -0",
+        ] {
+            assert!(result.contains(expected), "missing {expected}: {result}");
+        }
+        assert_eq!(
+            result
+                .lines()
+                .filter(|line| line.starts_with("[File] "))
+                .count(),
+            5
+        );
+        assert!(!result.contains(" -> "));
+        assert_eq!(
+            GitService::extract_combined_diff_path("diff --cc  name "),
+            Some(" name ".to_string())
+        );
+        assert_eq!(
+            GitService::extract_file_paths_from_diff_header("diff --git a/old  \"b/new\\tname\""),
+            Some(("old ".to_string(), "new\tname".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_large_diff_allocation_keeps_crlf_and_small_file_bodies() {
+        let diff = format!(
+            "diff --git a/a.txt b/a.txt\n@@ -0,0 +1 @@\n+{}\ndiff --git a/z.txt b/z.txt\n@@ -1 +1 @@\n-old\n+new\r\n",
+            "文".repeat(MAX_DIFF_CHARS)
+        );
+        let result = GitService::truncate_diff(&diff);
+        assert!(result.contains("z.txt | +1 -1"));
+        assert!(result.contains("+new\r\n") || result.ends_with("+new\r"));
+        assert!(!result.contains('\u{fffd}'));
     }
 
     #[test]
