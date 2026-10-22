@@ -2681,6 +2681,37 @@ fn test_reword_succeeds_with_rebase_merges_true() {
     );
 }
 
+/// log.showRoot は表示の設定なので、ルートの変更まで「差分なし」にしない。
+#[cfg(unix)]
+#[rstest::rstest]
+#[case(&["--amend", "--dry-run"])]
+#[case(&["--reword", "HEAD", "--dry-run"])]
+#[case(&["--generate-for", "HEAD"])]
+fn test_root_commit_modes_ignore_log_show_root_false(#[case] args: &[&str]) {
+    let dir = setup_git_repo_with_commit();
+    let path = setup_fake_opencode_path(&dir);
+    let configured = std::process::Command::new("git")
+        .args(["config", "log.showRoot", "false"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(configured.status.success());
+    let head_before = head_hash(&dir);
+
+    git_sc!()
+        .args(args)
+        .args(["-p", "opencode"])
+        .env("PATH", path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("feat: quiet integration test"));
+
+    assert_eq!(head_hash(&dir), head_before);
+}
+
 /// `diff.relative = true` の設定下でサブディレクトリから実行しても、
 /// cwd の外にある staged 変更を検出して squash を拒否する。
 ///

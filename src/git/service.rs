@@ -1188,7 +1188,7 @@ impl GitService {
         config_auto_push.unwrap_or(false)
     }
 
-    /// 直前のコミットのdiffを取得（バイナリファイル、.git-sc-ignore対象、空白のみの変更を除外）
+    /// 直前の差分を取得し、バイナリ・lock・除外対象の本文を省略する。空白の変更は残す。
     pub fn get_last_commit_diff(&self) -> Result<String, AppError> {
         self.get_commit_diff_by_hash("HEAD")
     }
@@ -1499,7 +1499,8 @@ impl GitService {
         // `git show --output=<path>` で任意ファイルを上書きできてしまう)。
         // 末尾の `--` はリビジョンとパスの区切り。無いと `HEAD` などと同名のファイルが
         // 作業ツリーにあるだけで「リビジョンかファイル名か曖昧」として失敗する。
-        let mut args = vec!["show", "--no-show-signature", "--format=", "-U0"];
+        // log.showRoot=false はルートコミットの差分を隠すため、--root で明示的に取得する。
+        let mut args = vec!["show", "--root", "--no-show-signature", "--format=", "-U0"];
         args.extend_from_slice(DIFF_FORMAT_ARGS);
         args.extend_from_slice(&["--end-of-options", &commit, "--"]);
         self.run_git_raw(&args)
@@ -1725,8 +1726,12 @@ impl GitService {
         // 全行 `pick` のまま有効なので rebase は exit 0 で完了し、git-sc は「成功」と表示
         // しながらメッセージが一切変わらなかった(= 無言の no-op)。ユーザーは reword 済みと
         // 信じて force push まで案内される。
+        // rebase.updateRefs=false で他ブランチの自動更新を防ぐ。
+        // --no-update-refs が無い Git 2.38 未満でも動くよう、設定を実行時だけ上書きする。
         let mut rebase_cmd = Command::new("git");
-        rebase_cmd.arg("-c").arg("rebase.abbreviateCommands=false");
+        rebase_cmd
+            .args(["-c", "rebase.abbreviateCommands=false"])
+            .args(["-c", "rebase.updateRefs=false"]);
         rebase_cmd
             .arg("rebase")
             .arg("-i")
@@ -3843,6 +3848,59 @@ index 555..666 100644
         );
     }
 
+    /// ユーザーの updateRefs 設定で、指定していないブランチまで移動しない。
+    /// HEAD の amend、通常の rebase、最古コミットの --root 経路を確認する。
+    #[rstest::rstest]
+    #[case(1)]
+    #[case(2)]
+    #[case(4)]
+    fn test_reword_with_update_refs_config_preserves_other_branches(#[case] n: usize) {
+        let temp_dir = setup_temp_git_repo();
+        let repo = temp_dir.path();
+        let mut other_branches = Vec::new();
+        for index in 0..4 {
+            let file = format!("file-{index}.txt");
+            std::fs::write(repo.join(&file), format!("content {index}\n")).unwrap();
+            run_git_in(repo, &["add", &file]);
+            run_git_in(repo, &["commit", "-m", &format!("commit {index}")]);
+            let branch = format!("saved-{index}");
+            run_git_in(repo, &["branch", &branch]);
+            other_branches.push((branch, git_output_in(repo, &["rev-parse", "HEAD"])));
+        }
+        run_git_in(repo, &["config", "rebase.updateRefs", "true"]);
+        let branch_before = git_output_in(repo, &["branch", "--show-current"]);
+        let tree_before = git_output_in(repo, &["rev-parse", "HEAD^{tree}"]);
+        let service = GitService::with_repo_path(repo.to_path_buf());
+
+        service.reword_commit(n, "rewritten target").unwrap();
+
+        for (branch, original_hash) in other_branches {
+            assert_eq!(
+                git_output_in(repo, &["rev-parse", &branch]),
+                original_hash,
+                "reword が別ブランチ {branch} を移動した"
+            );
+        }
+        assert_eq!(
+            git_output_in(repo, &["branch", "--show-current"]),
+            branch_before
+        );
+        assert_eq!(
+            git_output_in(repo, &["rev-parse", "HEAD^{tree}"]),
+            tree_before
+        );
+        let mut expected = (0..4)
+            .rev()
+            .map(|index| format!("commit {index}"))
+            .collect::<Vec<_>>();
+        expected[n - 1] = "rewritten target".to_string();
+        assert_eq!(
+            git_output_in(repo, &["log", "--format=%s"]),
+            expected.join("\n")
+        );
+        assert!(!service.rebase_in_progress());
+    }
+
     #[test]
     fn test_temp_reword_message_file_is_cleaned_up_on_drop() {
         let path = {
@@ -3885,8 +3943,10 @@ index 555..666 100644
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_get_last_commit_diff_on_root_commit() {
+    #[rstest::rstest]
+    #[case("true")]
+    #[case("false")]
+    fn test_get_last_commit_diff_on_root_commit(#[case] show_root: &str) {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
@@ -3899,6 +3959,7 @@ index 555..666 100644
         std::fs::write(repo.join("file.txt"), "first\n").unwrap();
         run_git_in(repo, &["add", "file.txt"]);
         run_git_in(repo, &["commit", "-m", "initial commit"]);
+        run_git_in(repo, &["config", "log.showRoot", show_root]);
 
         let service = GitService {
             repo_path: repo.to_path_buf(),
@@ -3907,6 +3968,14 @@ index 555..666 100644
         let diff = service.get_last_commit_diff().unwrap();
         assert!(diff.contains("diff --git"));
         assert!(diff.contains("+first"));
+        // amend / reword / generate-for が使う各 API でルートの差分を保持する。
+        assert_eq!(service.get_commit_diff_by_hash("HEAD").unwrap(), diff);
+        assert_eq!(
+            service
+                .get_commit_diffs_by_hashes(&["HEAD".to_string()])
+                .unwrap(),
+            diff
+        );
     }
 
     // ============================================================

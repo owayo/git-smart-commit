@@ -42,6 +42,8 @@ Concurrency guards worth knowing about:
 
 Operation modes (`--amend`, `--squash`, `--reword`, `--generate-for`) are mutually exclusive. Combining them fails during argument parsing instead of silently choosing one mode.
 
+Root commit diffs are read with `git show --root`, so `log.showRoot = false` does not hide changes from `--amend`, `--reword`, or `--generate-for`.
+
 `--amend` note:
 - Also works when the current `HEAD` is the root commit.
 - Preserves unrelated staged changes instead of folding them into the amended commit.
@@ -60,6 +62,7 @@ Operation modes (`--amend`, `--squash`, `--reword`, `--generate-for`) are mutual
 - Refuses to rewrite the boundary commit of a shallow clone — the oldest commit you have after cloning with `--depth` — including `HEAD` itself when it is that commit. Rewriting it would drop its parent and cut the history. Run `git fetch --unshallow` first. Commits newer than the boundary, and true root commits, can be reworded as usual.
 - The internal rebase runs with `--no-autosquash`, so a user-level `rebase.autoSquash = true` config cannot silently fold `fixup!`/`squash!` commits into the reworded commit.
 - The internal rebase also overrides `rebase.rebaseMerges` and `rebase.abbreviateCommands`, so these settings cannot redirect the todo editor or make reword silently do nothing.
+- The internal rebase overrides `rebase.updateRefs` with `git -c rebase.updateRefs=false` to preserve other branch tips. This also works with Git versions older than 2.38, which do not recognize `--no-update-refs`.
 
 `--squash` note:
 - Fails before rewriting history when unrelated staged changes already exist. Commit, unstage, or stash them first.

@@ -42,6 +42,8 @@ git-sc のすべてのコマンドとオプション、履歴を書き換える�
 
 操作モード（`--amend`、`--squash`、`--reword`、`--generate-for`）は同時に指定できません。複数指定すると、どれか 1 つを黙って選ぶことはせず、引数の解析時にエラーになります。
 
+最初のコミットの差分は `git show --root` で取得します。`log.showRoot = false` を設定していても、`--amend`・`--reword`・`--generate-for` に差分を渡せます。
+
 `--amend` の注意:
 - 現在の `HEAD` が最初のコミットでも動作します。
 - 無関係なステージ済みの変更は amend 対象のコミットに混ぜず、ステージ済みのまま残します。
@@ -60,6 +62,7 @@ git-sc のすべてのコマンドとオプション、履歴を書き換える�
 - shallow clone の境界のコミット（`--depth` 付きで clone したときに手元にある最古のコミット）は、書き換えずにエラーで停止します。`HEAD` 自身が境界のときも同じです。書き換えると親が外れて履歴が切れるためです。先に `git fetch --unshallow` を実行してください。境界より新しいコミットと、本当の最初のコミットは、これまでどおり reword できます。
 - 内部の rebase は `--no-autosquash` 付きで実行します。そのため、ユーザー設定で `rebase.autoSquash = true` にしていても、範囲内の `fixup!` / `squash!` コミットが reword のついでに畳み込まれることはありません。
 - `rebase.rebaseMerges` と `rebase.abbreviateCommands` も内部で上書きします。これらの設定によって編集対象がずれたり、何も書き換えず成功扱いになったりするのを防ぎます。
+- 内部の rebase は `git -c rebase.updateRefs=false` で他ブランチの参照を保持します。`--no-update-refs` に対応していない Git 2.38 未満でも動くよう、実行時だけ設定を上書きします。
 
 `--squash` の注意:
 - 無関係なステージ済みの変更が既にある場合は、履歴を書き換える前にエラーで停止します。先に commit、unstage、stash のいずれかを行ってください。
