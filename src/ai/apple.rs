@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use crate::error::AppError;
 
-use super::prompt::{CONVENTIONAL_COMMITS_GUIDE, CleanedResponse};
+use super::prompt::{CHANGE_EVIDENCE_RULES, CONVENTIONAL_COMMITS_GUIDE, CleanedResponse};
 use super::service::AiService;
 
 /// `context_size()` が読めなかったときに使う値。
@@ -154,6 +154,7 @@ impl AiService {
             Output ONLY the commit message in {language}. No explanation, no markdown, no code blocks. \
             Never repeat or quote the code changes themselves.\n\n\
             {format_rule}\n\n\
+            {CHANGE_EVIDENCE_RULES}\n\n\
             Style rules:\n\
             - Write exactly ONE commit message. Never combine two messages, and never write two prefixes in a row\n\
             - Use short, direct phrases\n\
@@ -491,6 +492,24 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn test_apple_prompts_keep_evidence_limits_after_compaction() {
+        let instructions = AiService::build_apple_instructions("English", None, true);
+        assert!(instructions.contains("source of truth for what changed"));
+        assert!(instructions.contains("proposals, plans, questions"));
+        let diff = sample_diff(1);
+        let compacted = AiService::compact_diff_for_apple(&diff, 120);
+        let context = Some("Proposed fix: close a resource. Should I implement it?");
+        for (diff, missing_body) in [(&*diff, false), (&*compacted, true)] {
+            let prompt = AiService::build_prompt(diff, &[], "English", None, false, context);
+            assert!(prompt.contains("source of truth for what changed"));
+            assert_eq!(
+                prompt.contains("Information limit: no changed hunk body rows are visible"),
+                missing_body
+            );
+        }
     }
 
     /// 本文を削ってもファイル一覧は残すこと

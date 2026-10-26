@@ -1520,7 +1520,7 @@ mod tests {
         assert!(prompt.contains("<agent-context>"));
         assert!(prompt.contains("</agent-context>"));
         assert!(prompt.contains("Refactored the authentication module to use JWT tokens"));
-        assert!(prompt.contains("IMPORTANT: Use the <agent-context> above as the primary source"));
+        assert!(prompt.contains("not evidence that a proposed change was implemented"));
         // エージェントコンテキストは変更内容セクションより前に配置する。
         let ctx_pos = prompt.find("<agent-context>").unwrap();
         let changes_pos = prompt.find("<changes>").unwrap();
@@ -1528,6 +1528,71 @@ mod tests {
             ctx_pos < changes_pos,
             "エージェントコンテキストは変更内容セクションより前に配置されるべき"
         );
+    }
+
+    #[rstest]
+    #[case(None)]
+    #[case(Some(""))]
+    #[case(Some("Proposed fix: close the PTY master to prevent a hang. Should I implement it?"))]
+    fn test_prompt_uses_only_diff_evidence(#[case] context: Option<&str>) {
+        let diff = "diff --git a/main.py b/main.py\n@@ -1 +1 @@\n-print('{}'.format(value))\n+print(f'{value}')";
+        let prompt =
+            AiService::build_prompt(diff, &[], "English", Some("conventional"), true, context);
+        assert!(prompt.contains("source of truth for what changed"));
+        assert!(prompt.contains("proposals, plans, questions"));
+        assert!(prompt.contains("omitted or truncated content"));
+        assert!(prompt.contains("one bullet per supported key change"));
+        assert!(!prompt.contains("primary source"));
+        assert!(!prompt.contains("Include 2-5 bullet points"));
+        if let Some(context) = context.filter(|context| !context.is_empty()) {
+            assert!(prompt.contains(context));
+        } else {
+            assert!(!prompt.contains("<agent-context>"));
+        }
+    }
+
+    #[rstest]
+    #[case("diff --git a/a b/a\n@@ -1 +1 @@\n-old\n+new", true)]
+    #[case("diff --git a/a b/a\n@@ -0,0 +1 @@\n+", true)]
+    #[case("diff --git a/a b/a\n@@ -1 +0,0 @@\n-", true)]
+    #[case("diff --git a/a b/a\n@@ -1 +1 @@\n+++literal", true)]
+    #[case("diff --cc a\n@@@ -1 -1 +1 @@@\n +added", true)]
+    #[case("diff --combined a\n@@@@ -1 -1 -1 +1 @@@@\n-- removed", true)]
+    #[case("diff --git a/a b/a\n@@ -1 +1 @@", false)]
+    #[case(
+        "diff --git a/a b/a\n@@ -1 +1 @@\n context\ndiff --git a/b b/b\n--- a/b\n+++ b/b",
+        false
+    )]
+    #[case(
+        "diff --git a/a b/a\n@@ -1 +1 @@\n context\n\\ No newline at end of file",
+        false
+    )]
+    #[case("diff --git a/a b/a\n[content omitted by .git-sc-ignore]", false)]
+    #[case(
+        "[Complete change overview]\n[File] a | +10 -2 [body truncated]",
+        false
+    )]
+    #[case("[Lockfile] modified: Cargo.lock\n[Binary] added: image.png", false)]
+    #[case(
+        "diff --git a/old b/new\nsimilarity index 100%\nrename from old\nrename to new",
+        false
+    )]
+    #[case("diff --git a/a b/a\nold mode 100644\nnew mode 100755", false)]
+    #[case("", false)]
+    fn test_prompt_reports_when_no_changed_body_rows_are_visible(
+        #[case] diff: &str,
+        #[case] has_body: bool,
+    ) {
+        let prompt = AiService::build_prompt(diff, &[], "English", None, false, None);
+        assert_eq!(
+            prompt.contains("Information limit: no changed hunk body rows are visible"),
+            !has_body,
+            "{diff}"
+        );
+        if !has_body {
+            assert!(prompt.contains("displayed file paths, line counts, and metadata"));
+            assert!(prompt.contains("Do not reconstruct missing code"));
+        }
     }
 
     #[test]
