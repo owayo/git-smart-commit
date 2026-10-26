@@ -15,6 +15,81 @@ macro_rules! git_sc {
     };
 }
 
+/// 除外対象の数にかかわらず、残った本文だけで予算を分ける。
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+#[cfg(unix)]
+fn test_many_ignored_files_do_not_consume_prompt_body_budget(#[case] large_bodies: bool) {
+    let dir = setup_git_repo_with_commit();
+    let path = setup_fake_opencode_path(&dir);
+    std::fs::write(dir.path().join(".git-sc"), "providers = [\"opencode\"]\n").unwrap();
+    std::fs::write(dir.path().join(".git-sc-ignore"), "data/\n").unwrap();
+    std::fs::create_dir(dir.path().join("data")).unwrap();
+    for index in 0..254 {
+        std::fs::write(
+            dir.path()
+                .join(format!("data/record-{index:03}-{}.txt", "x".repeat(60))),
+            "hidden-data-value\n",
+        )
+        .unwrap();
+    }
+    let count = if large_bodies { 1500 } else { 40 };
+    for name in ["first", "second"] {
+        std::fs::write(
+            dir.path().join(format!("{name}.txt")),
+            format!("{name} visible body line\n").repeat(count),
+        )
+        .unwrap();
+    }
+    let staged = std::process::Command::new("git")
+        .args(["add", "data", "first.txt", "second.txt"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(staged.status.success());
+    let output = git_sc!()
+        .args(["--dry-run", "--debug", "-p", "opencode"])
+        .env("PATH", &path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let output = String::from_utf8(output).unwrap();
+    let changes = output.split_once("<changes>\n").unwrap().1;
+    let changes = changes.split_once("\n</changes>").unwrap().0;
+    let (_, body) = changes
+        .split_once("body budget 10000 characters]\n\n")
+        .unwrap();
+    assert_eq!(changes.matches("[File] ").count(), 256);
+    assert_eq!(
+        changes
+            .matches("[content omitted by .git-sc-ignore]")
+            .count(),
+        254
+    );
+    assert!(!changes.contains("hidden-data-value"));
+    assert!(!body.contains("data/record-"));
+    assert!(body.chars().count() <= 10000);
+    for name in ["first", "second"] {
+        let line = format!("+{name} visible body line");
+        let actual = body.lines().filter(|candidate| *candidate == line).count();
+        if large_bodies {
+            assert!(actual > 0 && actual < count, "{name}: {actual}");
+        } else {
+            assert_eq!(actual, count, "{name}");
+        }
+    }
+    assert_eq!(
+        changes.matches("[body truncated]").count(),
+        if large_bodies { 2 } else { 0 }
+    );
+}
+
 /// 大きな先頭ファイルが後続ファイルを隠さず、実際に送るプロンプトに全体像を残す。
 #[test]
 #[cfg(unix)]
