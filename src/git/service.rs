@@ -803,9 +803,15 @@ impl GitService {
                 Some(ignore) => Self::filter_ignored_files(&raw, ignore),
                 None => raw.clone(),
             };
-            let content = Self::summarize_diff(&filtered);
+            let ignored = filtered != raw;
+            // パスと省略通知は一覧に載せるので、本文の予算を使わない。
+            let content = if ignored {
+                String::new()
+            } else {
+                Self::summarize_diff(&filtered)
+            };
             let mut overview = Self::diff_block_overview(block);
-            if filtered != raw {
+            if ignored {
                 overview.push(' ');
                 overview.push_str(IGNORED_CONTENT_NOTICE);
             } else if content != filtered {
@@ -825,12 +831,13 @@ impl GitService {
         let mut sizes = excerpts
             .iter()
             .enumerate()
+            .filter(|(_, excerpt)| !excerpt.content.is_empty())
             .map(|(index, excerpt)| (excerpt.content.chars().count(), index))
             .collect::<Vec<_>>();
         sizes.sort_unstable();
         let mut allocations = vec![0; excerpts.len()];
         // 本文を連結する改行も本文予算に含める。一覧と通知はこの予算の別枠。
-        let mut remaining = MAX_DIFF_CHARS.saturating_sub(excerpts.len().saturating_sub(1));
+        let mut remaining = MAX_DIFF_CHARS.saturating_sub(sizes.len().saturating_sub(1));
         for (position, (size, index)) in sizes.iter().enumerate() {
             let share = remaining / (sizes.len() - position);
             allocations[*index] = (*size).min(share);
@@ -2586,6 +2593,38 @@ index 1234567..abcdefg 100644
         assert!(result.contains("z.txt | +1 -1"));
         assert!(result.contains("+new\r\n") || result.ends_with("+new\r"));
         assert!(!result.contains('\u{fffd}'));
+    }
+
+    #[rstest::rstest]
+    #[case(false)]
+    #[case(true)]
+    fn test_ignored_excerpts_do_not_spend_body_or_separator_budget(#[case] only_ignored: bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut builder = GitignoreBuilder::new(dir.path());
+        builder.add_line(None, "data/").unwrap();
+        let ignore = builder.build().unwrap();
+        // 除外ファイルの区切りだけで予算を使い切る件数も扱う。
+        let count = MAX_DIFF_CHARS + 2;
+        let mut diff = (0..count)
+            .map(|index| {
+                format!(
+                    "diff --git a/data/{index}.txt b/data/{index}.txt\n@@ -0,0 +1 @@\n+hidden\n"
+                )
+            })
+            .collect::<String>();
+        let visible = "diff --git a/visible.txt b/visible.txt\n@@ -0,0 +1 @@\n+visible change";
+        if !only_ignored {
+            diff.push_str(visible);
+        }
+        let filtered = GitService::filter_ignored_files(&diff, &ignore);
+        let result = GitService::truncate_diff_with_source(&filtered, &diff, Some(&ignore));
+        let (overview, body) = result
+            .split_once("body budget 10000 characters]\n\n")
+            .unwrap();
+        assert_eq!(overview.matches(IGNORED_CONTENT_NOTICE).count(), count);
+        assert!(!overview.contains("[body truncated]"));
+        assert!(!body.contains("hidden"));
+        assert_eq!(body, if only_ignored { "" } else { visible });
     }
 
     #[test]
