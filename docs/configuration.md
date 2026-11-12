@@ -29,6 +29,8 @@ git-sc supports hierarchical configuration with project-level overrides:
 
 Project settings override global settings. Fields not specified in project config inherit from global config. You can specify only the fields you want to override — partial `[models]` sections are supported.
 
+Syntax errors, wrong value types, and invalid enum values produce a warning on stderr with the file path and, when available, the line and column. Settings and parser messages are omitted because either can contain credentials. Invalid global configuration falls back to defaults; invalid project configuration falls back to global settings. Neither file is rewritten.
+
 ## Example Configuration
 
 ```toml

@@ -217,7 +217,7 @@ impl AiService {
                                 .strip_suffix('\r')
                                 .unwrap_or(without_newline);
                             if is_debug {
-                                eprintln!("  {}", text.red());
+                                Self::emit_debug_line(silent, &format!("  {}", text.red()));
                             }
                             buf.push_str(text);
                             buf.push('\n');

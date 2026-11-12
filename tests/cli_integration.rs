@@ -15,6 +15,192 @@ macro_rules! git_sc {
     };
 }
 
+/// 構文・型・列挙値のエラーでも、設定値を警告に転載しない。
+#[rstest::rstest]
+#[case(
+    "providers = [{ provider = \"opencode\", env = { API_TOKEN = \"test-only-secret-value\" } }\n"
+)]
+#[case("nano_buddy = \"test-only-secret-value\"\n")]
+#[case("[ai_usage]\nwindow = \"test-only-secret-value\"\n")]
+#[cfg(unix)]
+fn test_invalid_config_warning_does_not_expose_values(
+    #[values(false, true)] global: bool,
+    #[case] content: &str,
+) {
+    let dir = setup_git_repo_with_commit();
+    let path = setup_fake_opencode_path(&dir);
+    stage_change(&dir, "# Test\nconfig warning\n");
+    let config_path = if global {
+        let config_dir = dir.path().join(".config/git-sc");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        config_dir.join("config.toml")
+    } else {
+        dir.path().join(".git-sc")
+    };
+    std::fs::write(&config_path, content).unwrap();
+
+    git_sc!()
+        .args(["--quiet", "--dry-run", "--provider", "opencode"])
+        .env("PATH", path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("feat: quiet integration test"))
+        .stdout(predicate::str::contains("test-only-secret-value").not())
+        .stderr(predicate::str::contains("警告:"))
+        .stderr(predicate::str::contains(config_path.to_str().unwrap()))
+        .stderr(predicate::str::contains("行 "))
+        .stderr(predicate::str::contains("列 "))
+        .stderr(predicate::str::contains(if global {
+            "デフォルト設定を使用します"
+        } else {
+            "グローバル設定にフォールバックします"
+        }))
+        .stderr(predicate::str::contains("test-only-secret-value").not());
+}
+
+/// provider の診断行も、ほかのデバッグブロックと同じ出力先へ送る。
+#[rstest::rstest]
+#[cfg(unix)]
+fn test_provider_stderr_debug_follows_selected_stream(
+    #[values(false, true)] generate_for: bool,
+    #[values(false, true)] quiet: bool,
+    #[values(false, true)] debug: bool,
+) {
+    let dir = setup_git_repo_with_commit();
+    let path = setup_fake_opencode_path(&dir);
+    std::fs::write(
+        dir.path().join("fake-bin/opencode"),
+        "#!/bin/sh\necho provider-diagnostic-marker >&2\necho 'feat: quiet integration test'\n",
+    )
+    .unwrap();
+    stage_change(&dir, "# Test\nprovider diagnostics\n");
+
+    let mut cmd = git_sc!();
+    cmd.args(["--provider", "opencode"]);
+    if generate_for {
+        cmd.args(["--generate-for", "HEAD"]);
+    } else {
+        cmd.arg("--dry-run");
+    }
+    if quiet {
+        cmd.arg("--quiet");
+    }
+    if debug {
+        cmd.arg("--debug");
+    }
+    let output = cmd
+        .env("PATH", path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(
+        stdout.contains("provider-diagnostic-marker"),
+        debug && !generate_for
+    );
+    assert_eq!(
+        stderr.contains("provider-diagnostic-marker"),
+        debug && generate_for
+    );
+    if generate_for {
+        assert_eq!(stdout, "feat: quiet integration test\n");
+    }
+}
+
+/// Git のコメント除去設定があっても、生成した件名と本文を全モードで保持する。
+#[rstest::rstest]
+#[case("commit")]
+#[case("amend")]
+#[case("reword-head")]
+#[case("reword-older")]
+#[case("reword-root")]
+#[case("squash")]
+#[cfg(unix)]
+fn test_hash_prefixed_message_survives_strip_cleanup(
+    #[case] mode: &str,
+    #[values(false, true)] with_body: bool,
+) {
+    let dir = setup_git_repo_with_commit();
+    let base = std::process::Command::new("git")
+        .args(["branch", "base"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(base.status.success());
+    commit_change(&dir, "second\n", "second commit");
+    commit_change(&dir, "third\n", "third commit");
+    let path = setup_fake_opencode_path(&dir);
+    std::fs::write(
+        dir.path().join("fake-bin/opencode"),
+        "#!/bin/sh\nprintf '<commit>#123 fix login\\n\\n# Keep this explanation\\n- details</commit>\\n'\n",
+    )
+    .unwrap();
+    let config = std::process::Command::new("git")
+        .args(["config", "commit.cleanup", "strip"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(config.status.success());
+    let mut cmd = git_sc!();
+    cmd.args(["--quiet", "--yes", "--provider", "opencode"]);
+    let target = match mode {
+        "commit" => {
+            stage_change(&dir, "fourth\n");
+            "HEAD"
+        }
+        "amend" => {
+            cmd.arg("--amend");
+            "HEAD"
+        }
+        "squash" => {
+            cmd.args(["--squash", "base"]);
+            "HEAD"
+        }
+        _ => {
+            let target = match mode {
+                "reword-head" => "HEAD",
+                "reword-older" => "HEAD~1",
+                "reword-root" => "HEAD~2",
+                _ => unreachable!(),
+            };
+            cmd.args(["--reword", target]);
+            target
+        }
+    };
+    if with_body {
+        cmd.arg("--body");
+    }
+    cmd.env("PATH", path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let output = std::process::Command::new("git")
+        .args(["show", "-s", "--format=%B", target, "--"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim_end(),
+        if with_body {
+            "#123 fix login\n\n# Keep this explanation\n- details"
+        } else {
+            "#123 fix login"
+        }
+    );
+}
+
 /// 除外対象の数にかかわらず、残った本文だけで予算を分ける。
 #[rstest::rstest]
 #[case(false)]

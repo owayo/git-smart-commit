@@ -1182,7 +1182,8 @@ impl GitService {
 
     /// 指定されたメッセージでコミットを作成
     pub fn commit(&self, message: &str) -> Result<(), AppError> {
-        self.run_git_ok(&["commit", "-m", message])
+        // `commit.cleanup=strip` でもチケット番号などの `#` 行を消さない。
+        self.run_git_ok(&["commit", "--cleanup=whitespace", "-m", message])
     }
 
     /// リモートにpush
@@ -1204,7 +1205,14 @@ impl GitService {
     pub fn amend_commit(&self, message: &str) -> Result<(), AppError> {
         // depth 1 の shallow clone では HEAD 自身が境界で、amend すると親が外れる
         self.refuse_shallow_boundary(1)?;
-        self.run_git_ok(&["commit", "--amend", "--only", "-m", message])
+        self.run_git_ok(&[
+            "commit",
+            "--amend",
+            "--only",
+            "--cleanup=whitespace",
+            "-m",
+            message,
+        ])
     }
 
     /// リモートURLを取得（origin）
@@ -1674,20 +1682,21 @@ impl GitService {
         // `commit.cleanup=strip` が `#` で始まる行をコメントとして削る。件名が
         // `#123 fix login` なら件名が消えて本文の 1 行目が件名に繰り上がり、件名だけなら
         // `Aborting commit due to empty commit message.` で失敗していた。HEAD の reword
-        // (n == 1) と通常のコミットは `-m` なので whitespace の整形だけで `#` 行が残り、
+        // (n == 1) と通常のコミットは、既定設定なら `-m` で whitespace 整形だけになり `#` 行が残り、
         // 経路によって結果が食い違っていた。
         //
-        // exec で実行する `git commit --amend --only --allow-empty -F "$GIT_SC_MSG_FILE"` は
-        // エディタを開かないので、整形は n == 1 の `-m` と同じ whitespace になる。
+        // exec にも `--cleanup=whitespace` を渡し、ユーザーが `commit.cleanup=strip` を
+        // 設定していても、n == 1 の経路と同じく生成した `#` 行を残す。
         // - `--only`: n == 1 の amend と同じく index の内容を混ぜない
         // - `--allow-empty`: 空のコミットも reword できた旧方式を保つ(付けないと
         //   「amend すると空になる」として拒否される)
         // - メッセージファイルのパスは todo に書かず `$GIT_SC_MSG_FILE` のまま残し、exec を
         //   実行するシェルに展開させる(パスをシェル文字列に埋め込まない)。スクリプト中の
         //   `\"\$GIT_SC_MSG_FILE\"` は内側の sh で `"$GIT_SC_MSG_FILE"` という文字列になる
-        // `-c commit.cleanup=whitespace` を rebase 全体に付ける案は、範囲内で pick されるだけの
-        // 他のコミットのメッセージ(末尾空白・連続空行)まで書き換えるので採らない。exec は
-        // 対象の 1 コミットにしか効かない。exec が失敗する(commit-msg フックの拒否など)と
+        // rebase 全体は `commit.cleanup=verbatim` に固定し、pick するだけの他コミットの
+        // メッセージ(末尾空白・連続空行・`#` 行)を利用者の cleanup 設定から守る。
+        // exec の `--cleanup=whitespace` は対象の 1 コミットだけに効く。
+        // exec が失敗する(commit-msg フックの拒否など)と
         // rebase はそこで止まって非ゼロで終わるため、下の失敗経路で abort される。
         //
         // `rebase.abbreviateCommands=false` を後段の rebase 起動側で強制するため、
@@ -1710,7 +1719,7 @@ impl GitService {
             r#"sh -c 'IFS= read -r first < "$1" || exit 1; "#,
             r#"case "$first" in "pick "*) ;; "#,
             r#"*) echo "git-sc: unexpected rebase todo (first line is not a pick)" >&2; exit 1;; esac; "#,
-            r#"{ printf "%s\n" "$first" "exec git commit --amend --only --allow-empty -F \"\$GIT_SC_MSG_FILE\""; "#,
+            r#"{ printf "%s\n" "$first" "exec git commit --amend --only --allow-empty --cleanup=whitespace -F \"\$GIT_SC_MSG_FILE\""; "#,
             r#"sed 1d "$1"; } > "$1.git-sc" && mv "$1.git-sc" "$1"' --"#
         )
         .to_string();
@@ -1738,7 +1747,8 @@ impl GitService {
         let mut rebase_cmd = Command::new("git");
         rebase_cmd
             .args(["-c", "rebase.abbreviateCommands=false"])
-            .args(["-c", "rebase.updateRefs=false"]);
+            .args(["-c", "rebase.updateRefs=false"])
+            .args(["-c", "commit.cleanup=verbatim"]);
         rebase_cmd
             .arg("rebase")
             .arg("-i")
@@ -1790,7 +1800,14 @@ impl GitService {
 
     /// コミットメッセージを変更（amend）
     fn amend_commit_message(&self, new_message: &str) -> Result<(), AppError> {
-        self.run_git_ok(&["commit", "--amend", "--only", "-m", new_message])
+        self.run_git_ok(&[
+            "commit",
+            "--amend",
+            "--only",
+            "--cleanup=whitespace",
+            "-m",
+            new_message,
+        ])
     }
 }
 
@@ -6424,8 +6441,15 @@ Binary files /dev/null and b/script.bin differ"#;
         assert_eq!(older, format!("{message}\n"));
     }
 
-    #[test]
-    fn test_reword_older_commit_leaves_other_commit_messages_byte_identical() {
+    #[rstest]
+    #[case(None)]
+    #[case(Some("whitespace"))]
+    #[case(Some("strip"))]
+    #[case(Some("scissors"))]
+    #[case(Some("verbatim"))]
+    fn test_reword_older_commit_leaves_other_commit_messages_byte_identical(
+        #[case] cleanup: Option<&str>,
+    ) {
         // 対象以外のコミットは pick し直すだけなので、メッセージの整形
         // (末尾空白・連続空行・`#` 行の除去)を一切受けてはいけない。
         let temp_dir = setup_temp_git_repo();
@@ -6450,6 +6474,10 @@ Binary files /dev/null and b/script.bin differ"#;
             ],
         );
         assert_eq!(raw_commit_message(repo, "HEAD"), verbatim);
+
+        if let Some(cleanup) = cleanup {
+            run_git_in(repo, &["config", "commit.cleanup", cleanup]);
+        }
 
         let service = GitService::with_repo_path(repo.to_path_buf());
         service.reword_commit(2, "reworded target").unwrap();

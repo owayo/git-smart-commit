@@ -789,6 +789,22 @@ impl Config {
             .filter(|path| path.exists()))
     }
 
+    /// 設定値を含む可能性がある診断本文を使わず、エラーの位置だけを返す。
+    fn parse_error_location(content: &str, error: &toml::de::Error) -> String {
+        let Some(prefix) = error.span().and_then(|span| content.get(..span.start)) else {
+            return "位置不明".to_string();
+        };
+        let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
+        let column = prefix
+            .rsplit('\n')
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .count()
+            + 1;
+        format!("行 {line}, 列 {column}")
+    }
+
     /// グローバル設定を PartialConfig として読み込む
     fn load_global_partial() -> Result<Option<PartialConfig>, AppError> {
         let path = Self::global_config_path()?;
@@ -803,12 +819,12 @@ impl Config {
         match toml::from_str(&content) {
             Ok(config) => Ok(Some(config)),
             Err(e) => {
-                // パースエラーの場合は警告を出してデフォルトを使用
-                // ファイルは上書きしない
+                // Display はソース行を、message() も型・列挙値エラーでは値を含む。
+                // 認証情報を転載しないよう位置だけを示し、ファイルを残して既定値を使う。
                 eprintln!(
                     "警告: グローバル設定ファイルの構文エラー ({}): {}\nデフォルト設定を使用します。",
                     path.display(),
-                    e
+                    Self::parse_error_location(&content, &e)
                 );
                 Ok(None)
             }
@@ -829,9 +845,9 @@ impl Config {
             Ok(config) => Ok(Some(config)),
             Err(e) => {
                 eprintln!(
-                    "警告: プロジェクト設定ファイルの構文エラー ({}):{}\nグローバル設定にフォールバックします。",
+                    "警告: プロジェクト設定ファイルの構文エラー ({}): {}\nグローバル設定にフォールバックします。",
                     path.display(),
-                    e
+                    Self::parse_error_location(&content, &e)
                 );
                 Ok(None)
             }
@@ -1141,6 +1157,22 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
     use rstest::rstest;
+
+    #[rstest]
+    #[case("nano_buddy = \"test-only-secret\"\n", "行 1, 列 14")]
+    #[case("# 設定\r\nnano_buddy = \"test-only-secret\"\r\n", "行 2, 列 14")]
+    #[case("language = \"日本語\";\n", "行 1, 列 17")]
+    #[case("providers = [", "行 1, 列 14")]
+    fn test_config_parse_error_location(#[case] content: &str, #[case] expected: &str) {
+        let error = toml::from_str::<PartialConfig>(content).unwrap_err();
+        assert_eq!(Config::parse_error_location(content, &error), expected);
+    }
+
+    #[test]
+    fn test_config_parse_error_without_span_does_not_expose_message() {
+        let error = <toml::de::Error as serde::de::Error>::custom("test-only-secret");
+        assert_eq!(Config::parse_error_location("", &error), "位置不明");
+    }
 
     #[test]
     fn test_default_config() {
