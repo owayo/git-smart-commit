@@ -91,6 +91,11 @@ pub enum AppError {
     #[error("無効なコミットハッシュ: {0}")]
     InvalidCommitHash(String),
 
+    #[error(
+        "コミット指定が曖昧です: {0}。完全なコミットハッシュまたは refs/ から始まる参照名を指定してください。"
+    )]
+    AmbiguousCommitHash(String),
+
     #[error("--generate-for と --{0} は同時に使用できません")]
     ConflictingOptions(String),
 

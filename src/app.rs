@@ -1343,7 +1343,7 @@ impl App {
         // 生成・確認の前に対象を固定する。HEAD の移動だけでなく、タグやブランチの
         // 参照先だけが動いても、AI が見たコミットと書き換えるコミットを一致させる。
         let head_before_generate = self.git.head_snapshot();
-        let hash = self.git.resolve_commit_hash(target)?;
+        let hash = self.git.resolve_reword_target(target)?;
 
         // 短いハッシュを取得して表示用に使用（文字境界に対応するため chars ベースで切り出す）
         let short_hash_owned: String = hash.chars().take(7).collect();
