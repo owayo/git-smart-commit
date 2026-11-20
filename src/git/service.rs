@@ -260,6 +260,66 @@ impl GitService {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
+    /// 履歴を書き換える前に、裸の短縮ハッシュと同名の ref がないことを確かめる。
+    pub fn resolve_reword_target(&self, hash: &str) -> Result<String, AppError> {
+        let resolved = self.resolve_commit_hash(hash);
+        let full_len = match &resolved {
+            Ok(commit) => commit.len(),
+            // 同名の ref が tree や blob を指し、コミットに解決できないこともある。
+            Err(AppError::InvalidCommitHash(_)) => 64,
+            Err(_) => return resolved,
+        };
+        if !(4..full_len).contains(&hash.len()) || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return resolved;
+        }
+
+        let objects = self.run_git(&["rev-parse", &format!("--disambiguate={hash}")])?;
+        // SHA-1 の完全 ID を SHA-256 の 40 桁の短縮 ID と取り違えない。
+        if !objects.lines().any(|oid| oid.len() > hash.len()) {
+            return resolved;
+        }
+
+        // Git 自身に短い ref 名を展開させる。複数の ref があっても、少なくとも一つ
+        // 存在することが分かればよい。オブジェクト ID だけなら標準出力は空になる。
+        let reference = self.run_git(&[
+            "-c",
+            "core.warnAmbiguousRefs=false",
+            "rev-parse",
+            "--revs-only",
+            "--no-flags",
+            "--symbolic-full-name",
+            "--end-of-options",
+            hash,
+        ])?;
+        if !reference.is_empty() {
+            return Err(AppError::AmbiguousCommitHash(hash.to_string()));
+        }
+        let commit = resolved?;
+        if !self.short_hash_matches_commit(&objects, &commit)? {
+            return Err(AppError::AmbiguousCommitHash(hash.to_string()));
+        }
+        Ok(commit)
+    }
+
+    fn short_hash_matches_commit(&self, objects: &str, commit: &str) -> Result<bool, AppError> {
+        if objects == commit {
+            return Ok(true);
+        }
+
+        // 最初の解決後に同名の ref が削除された場合も、オブジェクト候補から
+        // 同じコミットを一意に選べることを確かめる。注釈付きタグはここで peel する。
+        let mut matched = false;
+        for object in objects.lines() {
+            match self.resolve_commit_hash(object) {
+                Ok(candidate) if !matched && candidate == commit => matched = true,
+                Ok(_) => return Ok(false),
+                Err(AppError::InvalidCommitHash(_)) => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(matched)
+    }
+
     // ============================================================
     // 内部ユーティリティ
     // ============================================================
@@ -5419,37 +5479,57 @@ Binary files /dev/null and b/script.bin differ"#;
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_verify_commit_hash_accepts_valid_short_hash() {
-        // 短縮ハッシュもコミットとして検証される
-        use tempfile::TempDir;
-
-        let temp_dir = TempDir::new().unwrap();
+    #[rstest::rstest]
+    #[case("sha1", 7)]
+    #[case("sha256", 40)]
+    fn test_resolve_short_and_full_reword_targets(#[case] format: &str, #[case] short_len: usize) {
+        let temp_dir = tempfile::TempDir::new().unwrap();
         let repo = temp_dir.path();
 
-        run_git_in(repo, &["init"]);
+        run_git_in(repo, &["init", &format!("--object-format={format}")]);
         run_git_in(repo, &["config", "user.name", "Test User"]);
         run_git_in(repo, &["config", "user.email", "test@example.com"]);
-
-        std::fs::write(repo.join("file.txt"), "content\n").unwrap();
-        run_git_in(repo, &["add", "file.txt"]);
-        run_git_in(repo, &["commit", "-m", "test"]);
+        run_git_in(repo, &["commit", "--allow-empty", "-m", "target"]);
+        run_git_in(repo, &["commit", "--allow-empty", "-m", "other"]);
 
         let service = GitService {
             repo_path: repo.to_path_buf(),
         };
+        let target = git_output_in(repo, &["rev-parse", "HEAD~1"]);
+        let other = git_output_in(repo, &["rev-parse", "HEAD"]);
+        let short = git_output_in(
+            repo,
+            &["rev-parse", &format!("--short={short_len}"), "HEAD~1"],
+        );
+        assert_eq!(service.resolve_reword_target(&short).unwrap(), target);
 
-        // git rev-parse --short HEAD で短縮ハッシュを取得
-        let short_hash = Command::new("git")
-            .args(["rev-parse", "--short", "HEAD"])
-            .current_dir(repo)
-            .output()
-            .unwrap();
-        let short_hash = String::from_utf8_lossy(&short_hash.stdout)
-            .trim()
-            .to_string();
+        run_git_in(repo, &["tag", "-a", "annotated", "-m", "tag", &target]);
+        let short_tag = git_output_in(repo, &["rev-parse", "--short", "annotated"]);
+        assert_eq!(service.resolve_reword_target(&short_tag).unwrap(), target);
 
-        assert!(service.verify_commit_hash(&short_hash).is_ok());
+        run_git_in(repo, &["tag", &short, "HEAD"]);
+        run_git_in(repo, &["tag", &target, "HEAD"]);
+        run_git_in(repo, &["pack-refs", "--all"]);
+        assert!(matches!(
+            service.resolve_reword_target(&short),
+            Err(AppError::AmbiguousCommitHash(_)),
+        ));
+        assert_eq!(service.resolve_reword_target(&target).unwrap(), target);
+        assert_eq!(
+            service
+                .resolve_reword_target(&format!("refs/tags/{short}"))
+                .unwrap(),
+            other,
+        );
+
+        run_git_in(
+            repo,
+            &["update-ref", &format!("refs/tags/{short}"), "HEAD^{tree}"],
+        );
+        assert!(matches!(
+            service.resolve_reword_target(&short),
+            Err(AppError::AmbiguousCommitHash(_)),
+        ));
     }
 
     #[test]

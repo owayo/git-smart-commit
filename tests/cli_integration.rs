@@ -1901,6 +1901,47 @@ fn test_quiet_reword_invalid_hash_suppresses_progress_output() {
         .stderr(predicate::str::contains("無効なコミットハッシュ"));
 }
 
+#[rstest::rstest]
+#[case("refs/tags")]
+#[case("refs/heads")]
+#[cfg(unix)]
+fn test_reword_rejects_ambiguous_short_hash(#[case] namespace: &str) {
+    let dir = setup_git_repo_with_commit();
+    let path = setup_fake_opencode_path(&dir);
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    };
+    commit_change(&dir, "second\n", "second commit");
+    let short = git(&["rev-parse", "--short", "HEAD~1"]);
+    let original_head = head_hash(&dir);
+    git(&["update-ref", &format!("{namespace}/{short}"), "HEAD"]);
+    git(&["config", "core.warnAmbiguousRefs", "false"]);
+
+    let result = git_sc!()
+        .args([
+            "--quiet",
+            "--reword",
+            &short,
+            "--yes",
+            "--provider",
+            "opencode",
+        ])
+        .env("PATH", path)
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .current_dir(dir.path())
+        .assert();
+
+    assert_eq!(head_hash(&dir), original_head, "{result}");
+    result.failure().stderr(predicate::str::contains("曖昧"));
+}
+
 #[test]
 fn test_reword_multibyte_hash_does_not_panic() {
     // 表示用の短縮ハッシュ計算で文字境界違反によるパニックが起きないことを確認する。
